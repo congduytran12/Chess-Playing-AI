@@ -16,9 +16,9 @@ import asyncio
 # Initialize the mixer
 p.mixer.init()
 # Load sound files
-move_sound = p.mixer.Sound("sounds/move-sound.mp3")
-capture_sound = p.mixer.Sound("sounds/capture.mp3")
-promote_sound = p.mixer.Sound("sounds/promote.mp3")
+move_sound = p.mixer.Sound("sounds/move-sound.ogg")
+capture_sound = p.mixer.Sound("sounds/capture.ogg")
+promote_sound = p.mixer.Sound("sounds/promote.ogg")
 
 BOARD_WIDTH = BOARD_HEIGHT = 512
 MOVE_LOG_PANEL_WIDTH = 250
