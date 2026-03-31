@@ -2,5 +2,10 @@
   "name": "chess-ai",
   "version": "1.0.0",
   "scripts": {
-    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game"  }
+    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game && node inject-speed-insights.js",
+    "postbuild": "node inject-speed-insights.js"
+  },
+  "dependencies": {
+    "@vercel/speed-insights": "^2.0.0"
+  }
 }
