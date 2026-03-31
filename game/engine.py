@@ -33,6 +33,7 @@ class GameState():
         self.whiteToMove = True
         # set playerWantsToPlayAsBlack = True if you want to flip board and play as black
         self.playerWantsToPlayAsBlack = False
+        Move.is_playing_as_black = self.playerWantsToPlayAsBlack
         self.moveLog = []
         # keeping track of king positions to prevent from checks and also it makes castling easier
         if (self.playerWantsToPlayAsBlack):
@@ -689,6 +690,8 @@ class castleRights():
 
 
 class Move():
+    is_playing_as_black = False
+
     # mapping keys to values
     # board[0][0] position in chess board is denoted as a7 (position of Black Rook)
 
@@ -725,8 +728,7 @@ class Move():
         self.moveID = self.startRow * 1000 + self.startCol * \
             100 + self.endRow * 10 + self.endCol
         # pawn promotion
-        gs = GameState()
-        if (gs.playerWantsToPlayAsBlack):
+        if (Move.is_playing_as_black):
             self.isPawnPromotion = (self.pieceMoved == "wp" and self.endRow == 7) or (
                 self.pieceMoved == "bp" and self.endRow == 0)
         else:

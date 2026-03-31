@@ -99,13 +99,11 @@ def findRandomMoves(validMoves):
 
 
 def findBestMove(gs, validMoves):
-    global nextMove, whitePawnScores, blackPawnScores
+    global nextMove
     nextMove = None
     random.shuffle(validMoves)
-
-    if gs.playerWantsToPlayAsBlack:
-        # Swap the variables
-        whitePawnScores, blackPawnScores = blackPawnScores, whitePawnScores
+    # Move ordering - evaluate captures and promotions first to dramatically improve alpha-beta pruning
+    validMoves.sort(key=lambda x: (x.isCapture, x.isPawnPromotion), reverse=True)
 
     SET_WHITE_AS_BOT = 1 if gs.whiteToMove else -1
 
@@ -133,6 +131,8 @@ def findMoveNegaMaxAlphaBeta(gs, validMoves, depth, alpha, beta, turnMultiplier)
     for move in validMoves:
         gs.makeMove(move)
         nextMoves = gs.getValidMoves()  # opponent validmoves
+        # Move ordering
+        nextMoves.sort(key=lambda x: (x.isCapture, x.isPawnPromotion), reverse=True)
         '''
         negative sign because what ever opponents best score is, is worst score for us
         negative turnMultiplier because it changes turns after moves made 
@@ -179,11 +179,14 @@ def scoreBoard(gs):
                 piecePositionScore = 0
                 # score positionally based on piece type
                 if square[1] != "K":
+                    # Map the row back to standard coordinates if the board is flipped
+                    eval_row = 7 - row if gs.playerWantsToPlayAsBlack else row
+                    
                     # return score of the piece at that position
                     if square[1] == "p":
-                        piecePositionScore = piecePositionScores[square][row][col]
+                        piecePositionScore = piecePositionScores[square][eval_row][col]
                     else:
-                        piecePositionScore = piecePositionScores[square[1]][row][col]
+                        piecePositionScore = piecePositionScores[square[1]][eval_row][col]
                 if SET_WHITE_AS_BOT:
                     if square[0] == 'w':
                         score += pieceScore[square[1]] + \
