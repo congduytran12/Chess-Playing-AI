@@ -90,7 +90,7 @@ piecePositionScores = {"N": knightScores, "B": bishopScores, "Q": queenScores,
 
 CHECKMATE = 1000
 STALEMATE = 0
-DEPTH = 4
+DEPTH = 3
 SET_WHITE_AS_BOT = -1
 
 
