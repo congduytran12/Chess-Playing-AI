@@ -179,6 +179,7 @@ async def main():
     previousPos = ""
     countMovesForDraw = 0
     COUNT_DRAW = 0
+    gameOverTime = 0
     while running:
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
             not gs.whiteToMove and playerBlackHuman)
@@ -187,8 +188,29 @@ async def main():
                 running = False
             # Mouse Handler
             elif e.type == p.MOUSEBUTTONDOWN:
+                location = p.mouse.get_pos()
+                
+                # Check for restart button click or click after game over
+                restartBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 80, 150, 50)
+                if restartBtnRect.collidepoint(location) or gameOver:
+                    gs = GameState()
+                    if gs.playerWantsToPlayAsBlack:
+                        gs.board = gs.board1
+                    validMoves = gs.getValidMoves()
+                    squareSelected = ()
+                    playerClicks = []
+                    moveMade = False
+                    animate = False
+                    gameOver = False
+                    moveUndone = True
+                    positionHistory = ""
+                    previousPos = ""
+                    countMovesForDraw = 0
+                    COUNT_DRAW = 0
+                    AIThinking = False
+                    continue
+
                 if not gameOver:  # allow mouse handling only if its not game over
-                    location = p.mouse.get_pos()
                     col = location[0]//SQ_SIZE
                     row = location[1]//SQ_SIZE
                     # if user clicked on same square twice or user click outside board
@@ -249,14 +271,20 @@ async def main():
                     moveUndone = True
                 if e.key == p.K_r:  # reset board when 'r' is pressed
                     gs = GameState()
+                    if gs.playerWantsToPlayAsBlack:
+                        gs.board = gs.board1
                     validMoves = gs.getValidMoves()
                     squareSelected = ()
                     playerClicks = []
                     moveMade = False
                     animate = False
                     gameOver = False
-
                     moveUndone = True
+                    positionHistory = ""
+                    previousPos = ""
+                    countMovesForDraw = 0
+                    COUNT_DRAW = 0
+                    AIThinking = False
 
         # AI move finder
         if not gameOver and not humanTurn and not moveUndone:
@@ -323,17 +351,52 @@ async def main():
         drawGameState(screen, gs, validMoves, squareSelected, moveLogFont)
 
         if COUNT_DRAW == 1:
+            if not gameOver:
+                gameOverTime = p.time.get_ticks()
             gameOver = True
             text = 'Draw due to repetition'
             drawEndGameText(screen, text)
-        if gs.stalemate:
+        elif gs.stalemate:
+            if not gameOver:
+                gameOverTime = p.time.get_ticks()
             gameOver = True
             text = 'Stalemate'
             drawEndGameText(screen, text)
         elif gs.checkmate:
+            if not gameOver:
+                gameOverTime = p.time.get_ticks()
             gameOver = True
             text = 'Black wins by checkmate' if gs.whiteToMove else 'White wins by checkmate'
             drawEndGameText(screen, text)
+
+        # Draw restart button
+        restartBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 80, 150, 50)
+        p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), restartBtnRect)
+        btnFont = p.font.SysFont("Times New Roman", 24, True, False)
+        textObject = btnFont.render("Restart", True, p.Color('white'))
+        textLocation = restartBtnRect.move(
+            restartBtnRect.width / 2 - textObject.get_width() / 2,
+            restartBtnRect.height / 2 - textObject.get_height() / 2
+        )
+        screen.blit(textObject, textLocation)
+
+        if gameOver and p.time.get_ticks() - gameOverTime > 4000:
+            gs = GameState()
+            if gs.playerWantsToPlayAsBlack:
+                gs.board = gs.board1
+            validMoves = gs.getValidMoves()
+            squareSelected = ()
+            playerClicks = []
+            moveMade = False
+            animate = False
+            gameOver = False
+            moveUndone = True
+            positionHistory = ""
+            previousPos = ""
+            countMovesForDraw = 0
+            COUNT_DRAW = 0
+            AIThinking = False
+            gameOverTime = 0
 
         clock.tick(MAX_FPS)
         p.display.flip()
@@ -343,6 +406,15 @@ async def main():
 def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont):
     drawSquare(screen)  # draw square on board
     highlightSquares(screen, gs, validMoves, squareSelected)
+    
+    # Check/Checkmate effect: Highlight the king's square in red
+    if gs.inCheck:
+        row, col = gs.whiteKinglocation if gs.whiteToMove else gs.blackKinglocation
+        s = p.Surface((SQ_SIZE, SQ_SIZE))
+        s.set_alpha(200 if gs.checkmate else 100) # Darker red for checkmate, lighter for check
+        s.fill(p.Color("red"))
+        screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
+        
     drawPieces(screen, gs.board)
     drawMoveLog(screen, gs, moveLogFont)
 
@@ -482,6 +554,16 @@ def drawEndGameText(screen, text):
     # Create a second rendering of the text with a slight offset for a shadow effect
     textObject = font.render(text, 0, p.Color('Black'))
     screen.blit(textObject, textLocation.move(1, 1))
+
+    # Add subtitle "Click anywhere to restart"
+    subFont = p.font.SysFont("Times New Roman", 25, False, False)
+    subTextObject = subFont.render("Click anywhere or wait to restart", True, p.Color('darkgray'))
+    subLocation = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(
+        BOARD_WIDTH/2 - subTextObject.get_width()/2, BOARD_HEIGHT/2 + text_height/2 + 20)
+        
+    screen.blit(subTextObject, subLocation)
+    subTextObject = subFont.render("Click anywhere or wait to restart", 0, p.Color('Black'))
+    screen.blit(subTextObject, subLocation.move(1, 1))
 
 
 # if we import main then main function wont run it will run only while running this file

@@ -77,8 +77,8 @@ class GameState():
             self.blackCastleQueenside = False
 
         # pawn promotion
-        # if move.isPawnPromotion:
-            # self.board[move.endRow][move.endCol] = move.pieceMoved[0] + 'Q'
+        if move.isPawnPromotion:
+            self.board[move.endRow][move.endCol] = move.pieceMoved[0] + 'Q'
 
         # enpassant move
         if move.isEnpassantMove:
