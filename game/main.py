@@ -20,8 +20,8 @@ move_sound = p.mixer.Sound("sounds/move-sound.ogg")
 capture_sound = p.mixer.Sound("sounds/capture.ogg")
 promote_sound = p.mixer.Sound("sounds/promote.ogg")
 
-BOARD_WIDTH = BOARD_HEIGHT = 512
-MOVE_LOG_PANEL_WIDTH = 250
+BOARD_WIDTH = BOARD_HEIGHT = 768
+MOVE_LOG_PANEL_WIDTH = 375
 MOVE_LOG_PANEL_HEIGHT = BOARD_HEIGHT
 DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
@@ -81,37 +81,31 @@ def loadImages():
 
 
 def pawnPromotionPopup(screen, gs):
-    font = p.font.SysFont("Times New Roman", 30, False, False)
+    font = p.font.SysFont("Times New Roman", 45, False, False)
     text = font.render("Choose promotion:", True, p.Color("black"))
 
     # Create buttons for promotion choices with images
-    button_width, button_height = 100, 100
+    button_width, button_height = 150, 150
     buttons = [
-        p.Rect(100, 200, button_width, button_height),
-        p.Rect(200, 200, button_width, button_height),
-        p.Rect(300, 200, button_width, button_height),
-        p.Rect(400, 200, button_width, button_height)
+        p.Rect(50, 300, button_width, button_height),
+        p.Rect(225, 300, button_width, button_height),
+        p.Rect(400, 300, button_width, button_height),
+        p.Rect(575, 300, button_width, button_height)
     ]
 
     if gs.whiteToMove:
         button_images = [
-            p.transform.smoothscale(p.image.load(
-                "images1/bQ.png"), (100, 100)),
-            p.transform.smoothscale(p.image.load(
-                "images1/bR.png"), (100, 100)),
-            p.transform.smoothscale(p.image.load(
-                "images1/bB.png"), (100, 100)),
-            p.transform.smoothscale(p.image.load("images1/bN.png"), (100, 100))
+            p.transform.smoothscale(p.image.load("images1/bQ.png"), (150, 150)),
+            p.transform.smoothscale(p.image.load("images1/bR.png"), (150, 150)),
+            p.transform.smoothscale(p.image.load("images1/bB.png"), (150, 150)),
+            p.transform.smoothscale(p.image.load("images1/bN.png"), (150, 150))
         ]
     else:
         button_images = [
-            p.transform.smoothscale(p.image.load(
-                "images1/wQ.png"), (100, 100)),
-            p.transform.smoothscale(p.image.load(
-                "images1/wR.png"), (100, 100)),
-            p.transform.smoothscale(p.image.load(
-                "images1/wB.png"), (100, 100)),
-            p.transform.smoothscale(p.image.load("images1/wN.png"), (100, 100))
+            p.transform.smoothscale(p.image.load("images1/wQ.png"), (150, 150)),
+            p.transform.smoothscale(p.image.load("images1/wR.png"), (150, 150)),
+            p.transform.smoothscale(p.image.load("images1/wB.png"), (150, 150)),
+            p.transform.smoothscale(p.image.load("images1/wN.png"), (150, 150))
         ]
 
     while True:
@@ -160,7 +154,7 @@ async def main():
         (BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH, BOARD_HEIGHT))
     clock = p.time.Clock()
     screen.fill(p.Color(LIGHT_SQUARE_COLOR))
-    moveLogFont = p.font.SysFont("Times New Roman", 12, False, False)
+    moveLogFont = p.font.SysFont("Times New Roman", 18, False, False)
     # Creating gamestate object calling our constructor
     gs = GameState()
     if (gs.playerWantsToPlayAsBlack):
@@ -470,7 +464,7 @@ def animateMove(move, screen, board, clock):
 
 def drawEndGameText(screen, text):
     # create font object with type and size of font you want
-    font = p.font.SysFont("Times New Roman", 30, False, False)
+    font = p.font.SysFont("Times New Roman", 45, False, False)
     # use the above font and render text (0 ? antialias)
     textObject = font.render(text, True, p.Color('black'))
 
