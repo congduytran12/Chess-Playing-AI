@@ -286,7 +286,6 @@ async def main():
                 if multiplayerMode and not networkConnected:
                     hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
                     joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                    inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
                     
                     if hostBtn.collidepoint(location):
                         multiplayerRole = 'host'
@@ -295,17 +294,21 @@ async def main():
                         networkConnected = True
                         continue
                     elif joinBtn.collidepoint(location):
+                        # Use native browser prompt in WASM, fallback to input() locally
+                        try:
+                            import js as _js
+                            entered = _js.prompt("Enter the 4-digit room ID from the host:")
+                            if entered:
+                                roomCode = str(entered).strip().upper()[:4]
+                        except ImportError:
+                            entered = input("Enter room ID: ")
+                            roomCode = entered.strip().upper()[:4]
                         if len(roomCode) == 4:
                             multiplayerRole = 'client'
                             net.set_topic(roomCode)
                             asyncio.ensure_future(net.send({'type': 'join'}))
                             networkConnected = True
                         continue
-                    elif inputRect.collidepoint(location):
-                        inputBoxActive = True
-                        continue
-                    else:
-                        inputBoxActive = False
                         
                 if modeBtnRect.collidepoint(location):
                     multiplayerMode = not multiplayerMode
@@ -412,13 +415,6 @@ async def main():
 
             # Key Handler
             elif e.type == p.KEYDOWN:
-                if multiplayerMode and not networkConnected and inputBoxActive:
-                    if e.key == p.K_BACKSPACE:
-                        roomCode = roomCode[:-1]
-                    elif len(roomCode) < 4 and e.unicode.isalnum():
-                        roomCode += e.unicode.upper()
-                    continue
-
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
                         await net.send({'type': 'undo_request'})
