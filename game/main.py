@@ -536,7 +536,7 @@ async def main():
         # Draw restart button
         restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), restartBtnRect)
-        btnFont = p.font.SysFont("Arial", 24, True, False)
+        btnFont = p.font.SysFont("Times New Roman", 24, True, False)
         textObject = btnFont.render("Restart", True, p.Color('white'))
         textLocation = restartBtnRect.move(
             restartBtnRect.width / 2 - textObject.get_width() / 2,
@@ -561,7 +561,7 @@ async def main():
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), dropdownMainRect)
         p.draw.rect(screen, p.Color('black'), dropdownMainRect, 1)
 
-        diff_font = p.font.SysFont("Arial", 20, True, False)
+        diff_font = p.font.SysFont("Times New Roman", 20, True, False)
         titles = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
         
         main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
@@ -637,7 +637,7 @@ def drawSquare(screen):
                 col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
                 
     # Draw rank and file labels
-    font = p.font.SysFont("Arial", 14, True, False)
+    font = p.font.SysFont("Times New Roman", 14, True, False)
     for row in range(DIMENSION):
         # Draw rank labels (8 to 1)
         rank_text = str(8 - row)
