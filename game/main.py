@@ -190,6 +190,21 @@ async def main():
             elif e.type == p.MOUSEBUTTONDOWN:
                 location = p.mouse.get_pos()
                 
+                # Check for undo button click
+                undoBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 140, 150, 50)
+                if undoBtnRect.collidepoint(location):
+                    gs.undoMove()
+                    if playerWhiteHuman != playerBlackHuman: # playing against AI
+                        gs.undoMove()
+                    moveMade = True
+                    animate = False
+                    gameOver = False
+                    moveUndone = True
+                    gameOverTime = 0
+                    squareSelected = ()
+                    playerClicks = []
+                    continue
+
                 # Check for restart button click or click after game over
                 restartBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 80, 150, 50)
                 if restartBtnRect.collidepoint(location) or gameOver:
@@ -263,12 +278,15 @@ async def main():
             elif e.type == p.KEYDOWN:
                 if e.key == p.K_z:  # undo when z is pressed
                     gs.undoMove()
-                    # when user undo move valid move change, here we could use [ validMoves = gs.getValidMoves() ] which would update the current validMoves after undo
+                    if playerWhiteHuman != playerBlackHuman: # playing against AI
+                        gs.undoMove()
                     moveMade = True
                     animate = False
                     gameOver = False
-
                     moveUndone = True
+                    gameOverTime = 0
+                    squareSelected = ()
+                    playerClicks = []
                 if e.key == p.K_r:  # reset board when 'r' is pressed
                     gs = GameState()
                     if gs.playerWantsToPlayAsBlack:
@@ -379,6 +397,16 @@ async def main():
             restartBtnRect.height / 2 - textObject.get_height() / 2
         )
         screen.blit(textObject, textLocation)
+
+        # Draw undo button
+        undoBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 140, 150, 50)
+        p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), undoBtnRect)
+        textObjectUndo = btnFont.render("Undo", True, p.Color('white'))
+        textLocationUndo = undoBtnRect.move(
+            undoBtnRect.width / 2 - textObjectUndo.get_width() / 2,
+            undoBtnRect.height / 2 - textObjectUndo.get_height() / 2
+        )
+        screen.blit(textObjectUndo, textLocationUndo)
 
         if gameOver and p.time.get_ticks() - gameOverTime > 4000:
             gs = GameState()
