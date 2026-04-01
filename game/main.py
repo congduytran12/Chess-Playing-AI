@@ -518,6 +518,24 @@ def drawSquare(screen):
             color = colors[((row + col) % 2)]
             p.draw.rect(screen, color, p.Rect(
                 col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
+                
+    # Draw rank and file labels
+    font = p.font.SysFont("Arial", 14, True, False)
+    for row in range(DIMENSION):
+        # Draw rank labels (8 to 1)
+        rank_text = str(8 - row)
+        text_color = p.Color(DARK_SQUARE_COLOR) if (row % 2) == 0 else p.Color(LIGHT_SQUARE_COLOR)
+        text_obj = font.render(rank_text, True, text_color)
+        text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(2, 2)
+        screen.blit(text_obj, text_loc)
+
+    for col in range(DIMENSION):
+        # Draw file labels (a to h)
+        file_text = chr(ord('a') + col)
+        text_color = p.Color(DARK_SQUARE_COLOR) if (7 + col) % 2 == 0 else p.Color(LIGHT_SQUARE_COLOR)
+        text_obj = font.render(file_text, True, text_color)
+        text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 2, SQ_SIZE - text_obj.get_height() - 2)
+        screen.blit(text_obj, text_loc)
 
 
 def highlightSquares(screen, gs, validMoves, squareSelected):
