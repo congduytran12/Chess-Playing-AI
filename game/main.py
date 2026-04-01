@@ -9,6 +9,7 @@
 
 import sys
 import pygame as p
+import chessAi
 from engine import GameState, Move
 from chessAi import findRandomMoves, findBestMove
 import asyncio
@@ -172,6 +173,7 @@ async def main():
     playerWhiteHuman = not SET_WHITE_AS_BOT
     playerBlackHuman = not SET_BLACK_AS_BOT
     AIThinking = False  # True if ai is thinking
+    dropdown_open = False
 
     moveUndone = False
     pieceCaptured = False
@@ -190,8 +192,26 @@ async def main():
             elif e.type == p.MOUSEBUTTONDOWN:
                 location = p.mouse.get_pos()
                 
+                # Dropdown logic
+                btn_w = 200
+                btn_h = 40
+                dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
+                
+                if dropdown_open:
+                    dropdown_open = False
+                    for i in range(4):
+                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
+                        if optRect.collidepoint(location):
+                            chessAi.DEPTH = i + 1
+                            break
+                    continue
+                
+                if dropdownMainRect.collidepoint(location):
+                    dropdown_open = True
+                    continue
+                
                 # Check for undo button click
-                undoBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 140, 150, 50)
+                undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
                 if undoBtnRect.collidepoint(location):
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
@@ -206,7 +226,7 @@ async def main():
                     continue
 
                 # Check for restart button click or click after game over
-                restartBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 80, 150, 50)
+                restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
                 if restartBtnRect.collidepoint(location) or gameOver:
                     gs = GameState()
                     if gs.playerWantsToPlayAsBlack:
@@ -388,7 +408,7 @@ async def main():
             drawEndGameText(screen, text)
 
         # Draw restart button
-        restartBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 80, 150, 50)
+        restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), restartBtnRect)
         btnFont = p.font.SysFont("Times New Roman", 24, True, False)
         textObject = btnFont.render("Restart", True, p.Color('white'))
@@ -399,7 +419,7 @@ async def main():
         screen.blit(textObject, textLocation)
 
         # Draw undo button
-        undoBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - 75, BOARD_HEIGHT - 140, 150, 50)
+        undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), undoBtnRect)
         textObjectUndo = btnFont.render("Undo", True, p.Color('white'))
         textLocationUndo = undoBtnRect.move(
@@ -407,6 +427,40 @@ async def main():
             undoBtnRect.height / 2 - textObjectUndo.get_height() / 2
         )
         screen.blit(textObjectUndo, textLocationUndo)
+
+        # Draw Dropdown
+        btn_w = 200
+        btn_h = 40
+        dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
+        p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), dropdownMainRect)
+        p.draw.rect(screen, p.Color('black'), dropdownMainRect, 1)
+
+        diff_font = p.font.SysFont("Times New Roman", 20, True, False)
+        titles = ["Easy", "Normal", "Hard", "Very Hard"]
+        
+        main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
+        textObj = diff_font.render(main_text, True, p.Color('white'))
+        textLoc = dropdownMainRect.move(
+            dropdownMainRect.width / 2 - textObj.get_width() / 2,
+            dropdownMainRect.height / 2 - textObj.get_height() / 2
+        )
+        screen.blit(textObj, textLoc)
+
+        if dropdown_open:
+            for i in range(4):
+                optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
+                # Hover effect
+                mouse_pos = p.mouse.get_pos()
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                p.draw.rect(screen, color, optRect)
+                p.draw.rect(screen, p.Color('black'), optRect, 1)
+
+                optTextObj = diff_font.render(titles[i], True, p.Color('white'))
+                optTextLoc = optRect.move(
+                    optRect.width / 2 - optTextObj.get_width() / 2,
+                    optRect.height / 2 - optTextObj.get_height() / 2
+                )
+                screen.blit(optTextObj, optTextLoc)
 
         if gameOver and p.time.get_ticks() - gameOverTime > 4000:
             gs = GameState()
