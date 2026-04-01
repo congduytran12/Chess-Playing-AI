@@ -22,6 +22,9 @@ import chessAi
 from engine import GameState, Move
 from chessAi import findRandomMoves, findBestMove
 import asyncio
+from network import net
+import random
+import string
 
 # Initialize the mixer
 p.mixer.init()
@@ -184,6 +187,13 @@ async def main():
     AIThinking = False  # True if ai is thinking
     dropdown_open = False
 
+    multiplayerMode = False
+    multiplayerRole = None
+    roomCode = ""
+    inputBoxActive = False
+    networkConnected = False
+    opponentRequestedUndo = False
+
     moveUndone = False
     pieceCaptured = False
     positionHistory = ""
@@ -192,8 +202,41 @@ async def main():
     COUNT_DRAW = 0
     gameOverTime = 0
     while running:
+        if multiplayerMode and networkConnected:
+            for msg in net.get_messages():
+                mtype = msg.get('type')
+                if mtype == 'join' and multiplayerRole == 'host':
+                    pass
+                elif mtype == 'move':
+                    moveStr = msg.get('move')
+                    startPoint = (moveStr[0][0], moveStr[0][1])
+                    endPoint = (moveStr[1][0], moveStr[1][1])
+                    remoteMove = Move(startPoint, endPoint, gs.board)
+                    if msg.get('promo'):
+                        remoteMove.isPawnPromotion = True
+                    gs.makeMove(remoteMove)
+                    if remoteMove.isPawnPromotion:
+                        gs.board[remoteMove.endRow][remoteMove.endCol] = remoteMove.pieceMoved[0] + msg.get('promoPiece')
+                    
+                    if remoteMove.pieceCaptured != '--' or remoteMove.isEnpassantMove: capture_sound.play()
+                    else: move_sound.play()
+                    
+                    moveMade = True
+                    animate = True
+                    squareSelected = ()
+                    playerClicks = []
+                elif mtype == 'undo_request':
+                    opponentRequestedUndo = True
+                elif mtype == 'undo_response':
+                    if msg.get('accepted'):
+                        gs.undoMove()
+                        gs.undoMove()
+                        moveMade = True
+
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
             not gs.whiteToMove and playerBlackHuman)
+        if multiplayerMode and networkConnected:
+            humanTurn = (gs.whiteToMove and multiplayerRole == 'host') or (not gs.whiteToMove and multiplayerRole == 'client')
         for e in p.event.get():
             if e.type == p.QUIT:
                 running = False
@@ -219,9 +262,64 @@ async def main():
                     dropdown_open = True
                     continue
                 
+                # Multiplayer UI Handling
+                panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 160)
+                if opponentRequestedUndo:
+                    acceptBtn = p.Rect(panel_rect.x, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
+                    denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
+                    if acceptBtn.collidepoint(location):
+                        opponentRequestedUndo = False
+                        gs.undoMove()
+                        gs.undoMove()
+                        moveMade = True
+                        asyncio.create_task(net.send({'type': 'undo_response', 'accepted': True}))
+                        continue
+                    elif denyBtn.collidepoint(location):
+                        opponentRequestedUndo = False
+                        asyncio.create_task(net.send({'type': 'undo_response', 'accepted': False}))
+                        continue
+                
+                btn_w = 200
+                btn_h = 40
+                modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
+                
+                if multiplayerMode and not networkConnected:
+                    hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
+                    joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
+                    inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
+                    
+                    if hostBtn.collidepoint(location):
+                        multiplayerRole = 'host'
+                        roomCode = ''.join(random.choices(string.digits, k=4))
+                        net.set_topic(roomCode)
+                        networkConnected = True
+                        continue
+                    elif joinBtn.collidepoint(location):
+                        if len(roomCode) == 4:
+                            multiplayerRole = 'client'
+                            net.set_topic(roomCode)
+                            asyncio.create_task(net.send({'type': 'join'}))
+                            networkConnected = True
+                        continue
+                    elif inputRect.collidepoint(location):
+                        inputBoxActive = True
+                        continue
+                    else:
+                        inputBoxActive = False
+                        
+                if modeBtnRect.collidepoint(location):
+                    multiplayerMode = not multiplayerMode
+                    roomCode = ""
+                    inputBoxActive = False
+                    if multiplayerMode: dropdown_open = False
+                    continue
+                
                 # Check for undo button click
                 undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
                 if undoBtnRect.collidepoint(location):
+                    if multiplayerMode and networkConnected:
+                        await net.send({'type': 'undo_request'})
+                        continue
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
                         gs.undoMove()
@@ -286,6 +384,15 @@ async def main():
                                         promotion_choice
                                     promote_sound.play()
                                     pieceCaptured = False
+                                else:
+                                    promotion_choice = ""
+                                if multiplayerMode and networkConnected:
+                                    await net.send({
+                                        'type': 'move',
+                                        'move': [(validMoves[i].startRow, validMoves[i].startCol), (validMoves[i].endRow, validMoves[i].endCol)],
+                                        'promo': validMoves[i].isPawnPromotion,
+                                        'promoPiece': promotion_choice
+                                    })
                                 # add sound for human move
                                 if (pieceCaptured or move.isEnpassantMove):
                                     # Play capture sound
@@ -305,7 +412,17 @@ async def main():
 
             # Key Handler
             elif e.type == p.KEYDOWN:
+                if multiplayerMode and not networkConnected and inputBoxActive:
+                    if e.key == p.K_BACKSPACE:
+                        roomCode = roomCode[:-1]
+                    elif len(roomCode) < 4 and e.unicode.isalnum():
+                        roomCode += e.unicode.upper()
+                    continue
+
                 if e.key == p.K_z:  # undo when z is pressed
+                    if multiplayerMode and networkConnected:
+                        await net.send({'type': 'undo_request'})
+                        continue
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
                         gs.undoMove()
@@ -334,7 +451,7 @@ async def main():
                     AIThinking = False
 
         # AI move finder
-        if not gameOver and not humanTurn and not moveUndone:
+        if not gameOver and not humanTurn and not moveUndone and not (multiplayerMode and networkConnected):
             if not AIThinking:
                 AIThinking = True
                 await asyncio.sleep(0.1)
