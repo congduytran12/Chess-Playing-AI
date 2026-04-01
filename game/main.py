@@ -272,11 +272,11 @@ async def main():
                         gs.undoMove()
                         gs.undoMove()
                         moveMade = True
-                        asyncio.create_task(net.send({'type': 'undo_response', 'accepted': True}))
+                        asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': True}))
                         continue
                     elif denyBtn.collidepoint(location):
                         opponentRequestedUndo = False
-                        asyncio.create_task(net.send({'type': 'undo_response', 'accepted': False}))
+                        asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': False}))
                         continue
                 
                 btn_w = 200
@@ -298,7 +298,7 @@ async def main():
                         if len(roomCode) == 4:
                             multiplayerRole = 'client'
                             net.set_topic(roomCode)
-                            asyncio.create_task(net.send({'type': 'join'}))
+                            asyncio.ensure_future(net.send({'type': 'join'}))
                             networkConnected = True
                         continue
                     elif inputRect.collidepoint(location):
@@ -352,7 +352,7 @@ async def main():
                     AIThinking = False
                     continue
 
-                if not gameOver:  # allow mouse handling only if its not game over
+                if not gameOver and location[0] < BOARD_WIDTH:  # only handle board clicks within board area
                     col = location[0]//SQ_SIZE
                     row = location[1]//SQ_SIZE
                     # if user clicked on same square twice or user click outside board
