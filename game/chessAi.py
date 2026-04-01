@@ -27,6 +27,7 @@ WAYS TO IMPROVE AI AND MAKE AI FASTER
 
 
 import random
+import asyncio
 pieceScore = {"K": 0, "Q": 9, "R": 5, "B": 3, "N": 3, "p": 1}
 
 knightScores = [[1, 1, 1, 1, 1, 1, 1, 1],
@@ -97,18 +98,19 @@ SET_WHITE_AS_BOT = -1
 def findRandomMoves(validMoves):
     return validMoves[random.randint(0, len(validMoves) - 1)]
 
+nodes_visited = 0
 
-def findBestMove(gs, validMoves):
-    global nextMove
+async def findBestMove(gs, validMoves):
+    global nextMove, nodes_visited
     nextMove = None
+    nodes_visited = 0
     random.shuffle(validMoves)
     # Move ordering - evaluate captures and promotions first to dramatically improve alpha-beta pruning
     validMoves.sort(key=lambda x: (x.isCapture, x.isPawnPromotion), reverse=True)
 
     SET_WHITE_AS_BOT = 1 if gs.whiteToMove else -1
 
-    findMoveNegaMaxAlphaBeta(gs, validMoves, DEPTH, -
-                             CHECKMATE, CHECKMATE,  SET_WHITE_AS_BOT)
+    await findMoveNegaMaxAlphaBeta(gs, validMoves, DEPTH, -CHECKMATE, CHECKMATE,  SET_WHITE_AS_BOT)
 
     return nextMove
 
@@ -120,8 +122,13 @@ beta is keeping track of minimum so far
 '''
 
 
-def findMoveNegaMaxAlphaBeta(gs, validMoves, depth, alpha, beta, turnMultiplier):
-    global nextMove
+async def findMoveNegaMaxAlphaBeta(gs, validMoves, depth, alpha, beta, turnMultiplier):
+    global nextMove, nodes_visited
+    
+    nodes_visited += 1
+    if nodes_visited % 500 == 0:
+        await asyncio.sleep(0)
+        
     if depth == 0:
         return turnMultiplier * scoreBoard(gs)
 
@@ -138,8 +145,7 @@ def findMoveNegaMaxAlphaBeta(gs, validMoves, depth, alpha, beta, turnMultiplier)
         negative turnMultiplier because it changes turns after moves made 
         -beta, -alpha (new max, new min) our max become opponents new min and our min become opponents new max
         '''
-        score = - \
-            findMoveNegaMaxAlphaBeta(
+        score = - await findMoveNegaMaxAlphaBeta(
                 gs, nextMoves, depth-1, -beta, -alpha, -turnMultiplier)
         if score > maxScore:
             maxScore = score

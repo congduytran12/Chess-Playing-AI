@@ -338,7 +338,7 @@ async def main():
             if not AIThinking:
                 AIThinking = True
                 await asyncio.sleep(0.1)
-                AIMove = findBestMove(gs, validMoves)
+                AIMove = await findBestMove(gs, validMoves)
                 if AIMove is None:
                     AIMove = findRandomMoves(validMoves)
 
