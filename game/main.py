@@ -292,6 +292,8 @@ async def main():
                         roomCode = ''.join(random.choices(string.digits, k=4))
                         net.set_topic(roomCode)
                         networkConnected = True
+                        playerWhiteHuman = True
+                        playerBlackHuman = True
                         continue
                     elif joinBtn.collidepoint(location):
                         # Use native browser prompt in WASM, fallback to input() locally
@@ -308,6 +310,8 @@ async def main():
                             net.set_topic(roomCode)
                             asyncio.ensure_future(net.send({'type': 'join'}))
                             networkConnected = True
+                            playerWhiteHuman = True
+                            playerBlackHuman = True
                         continue
                         
                 if modeBtnRect.collidepoint(location):
@@ -358,6 +362,10 @@ async def main():
                 if not gameOver and location[0] < BOARD_WIDTH:  # only handle board clicks within board area
                     col = location[0]//SQ_SIZE
                     row = location[1]//SQ_SIZE
+                    # Flip coordinates for black player in multiplayer
+                    if multiplayerMode and networkConnected and multiplayerRole == 'client':
+                        row = 7 - row
+                        col = 7 - col
                     # if user clicked on same square twice or user click outside board
                     if squareSelected == (row, col) or col >= 8:
                         squareSelected = ()  # deselect
@@ -508,7 +516,8 @@ async def main():
             animate = False
             moveUndone = False
 
-        drawGameState(screen, gs, validMoves, squareSelected, moveLogFont)
+        flip_board = multiplayerMode and networkConnected and multiplayerRole == 'client'
+        drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip_board)
 
         if COUNT_DRAW == 1:
             if not gameOver:
@@ -653,23 +662,25 @@ async def main():
         await asyncio.sleep(0)
 
 
-def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont):
-    drawSquare(screen)  # draw square on board
-    highlightSquares(screen, gs, validMoves, squareSelected)
+def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip=False):
+    drawSquare(screen, flip)  # draw square on board
+    highlightSquares(screen, gs, validMoves, squareSelected, flip)
     
     # Check/Checkmate effect: Highlight the king's square in red
     if gs.inCheck:
         row, col = gs.whiteKinglocation if gs.whiteToMove else gs.blackKinglocation
+        if flip:
+            row, col = 7 - row, 7 - col
         s = p.Surface((SQ_SIZE, SQ_SIZE))
-        s.set_alpha(200 if gs.checkmate else 100) # Darker red for checkmate, lighter for check
+        s.set_alpha(200 if gs.checkmate else 100)
         s.fill(p.Color("red"))
         screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
         
-    drawPieces(screen, gs.board)
+    drawPieces(screen, gs.board, flip)
     drawMoveLog(screen, gs, moveLogFont)
 
 
-def drawSquare(screen):
+def drawSquare(screen, flip=False):
     global colors
     colors = [p.Color(LIGHT_SQUARE_COLOR), p.Color(DARK_SQUARE_COLOR)]
     for row in range(DIMENSION):
@@ -681,48 +692,53 @@ def drawSquare(screen):
     # Draw rank and file labels
     font = p.font.SysFont("Times New Roman", 14, True, False)
     for row in range(DIMENSION):
-        # Draw rank labels (8 to 1)
-        rank_text = str(8 - row)
+        # Draw rank labels (1 to 8 from bottom, or 8 to 1 when flipped)
+        rank_num = (row + 1) if flip else (8 - row)
+        rank_text = str(rank_num)
         text_color = p.Color(DARK_SQUARE_COLOR) if (row % 2) == 0 else p.Color(LIGHT_SQUARE_COLOR)
         text_obj = font.render(rank_text, True, text_color)
         text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(2, 2)
         screen.blit(text_obj, text_loc)
 
     for col in range(DIMENSION):
-        # Draw file labels (a to h)
-        file_text = chr(ord('a') + col)
+        # Draw file labels (a-h left to right, or h-a when flipped)
+        file_char = chr(ord('h') - col) if flip else chr(ord('a') + col)
+        file_text = file_char
         text_color = p.Color(DARK_SQUARE_COLOR) if (7 + col) % 2 == 0 else p.Color(LIGHT_SQUARE_COLOR)
         text_obj = font.render(file_text, True, text_color)
         text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 2, SQ_SIZE - text_obj.get_height() - 2)
         screen.blit(text_obj, text_loc)
 
 
-def highlightSquares(screen, gs, validMoves, squareSelected):
+def highlightSquares(screen, gs, validMoves, squareSelected, flip=False):
     if squareSelected != ():  # make sure there is a square to select
         row, col = squareSelected
-        # make sure they click there own piece
-        if gs.board[row][col][0] == ('w' if gs.whiteToMove else 'b'):
-            # highlight selected piece square
-            # Surface in pygame used to add images or transperency feature
+        draw_row = (7 - row) if flip else row
+        draw_col = (7 - col) if flip else col
+        if gs.board[row][col][0] == ('w' if gs.whiteToMove else 'b'):  # only highlight if selected piece belongs to current player
+            # highlight selected square
             s = p.Surface((SQ_SIZE, SQ_SIZE))
-            # set_alpha --> transperancy value (0 transparent)
-            s.set_alpha(100)
+            s.set_alpha(100)  # transparency value
             s.fill(p.Color(MOVE_HIGHLIGHT_COLOR))
-            screen.blit(s, (col*SQ_SIZE, row*SQ_SIZE))
+            screen.blit(s, (draw_col*SQ_SIZE, draw_row*SQ_SIZE))
             # highlighting valid square
             s.fill(p.Color(POSSIBLE_MOVE_COLOR))
             for move in validMoves:
                 if move.startRow == row and move.startCol == col:
-                    screen.blit(s, (move.endCol*SQ_SIZE, move.endRow*SQ_SIZE))
+                    end_r = (7 - move.endRow) if flip else move.endRow
+                    end_c = (7 - move.endCol) if flip else move.endCol
+                    screen.blit(s, (end_c*SQ_SIZE, end_r*SQ_SIZE))
 
 
-def drawPieces(screen, board):
+def drawPieces(screen, board, flip=False):
     for row in range(DIMENSION):
         for col in range(DIMENSION):
             piece = board[row][col]
             if piece != "--":
+                draw_row = (7 - row) if flip else row
+                draw_col = (7 - col) if flip else col
                 screen.blit(IMAGES[piece], p.Rect(
-                    col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
+                    draw_col * SQ_SIZE, draw_row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
 
 def drawMoveLog(screen, gs, font):
