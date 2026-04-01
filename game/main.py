@@ -8,6 +8,15 @@
 # Responsible for handling user input and displaying the current Gamestate object
 
 import sys
+import ctypes
+
+# Fix Pygame resolution blurriness on Windows by telling the OS this app is high DPI aware
+if sys.platform == 'win32':
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 import pygame as p
 import chessAi
 from engine import GameState, Move
@@ -410,7 +419,7 @@ async def main():
         # Draw restart button
         restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), restartBtnRect)
-        btnFont = p.font.SysFont("Times New Roman", 24, True, False)
+        btnFont = p.font.SysFont("Arial", 24, True, False)
         textObject = btnFont.render("Restart", True, p.Color('white'))
         textLocation = restartBtnRect.move(
             restartBtnRect.width / 2 - textObject.get_width() / 2,
@@ -435,7 +444,7 @@ async def main():
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), dropdownMainRect)
         p.draw.rect(screen, p.Color('black'), dropdownMainRect, 1)
 
-        diff_font = p.font.SysFont("Times New Roman", 20, True, False)
+        diff_font = p.font.SysFont("Arial", 20, True, False)
         titles = ["Easy", "Normal", "Hard", "Very Hard"]
         
         main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
