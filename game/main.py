@@ -249,18 +249,19 @@ async def main():
                 btn_h = 40
                 dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
                 
-                if dropdown_open:
-                    dropdown_open = False
-                    for i in range(5):
-                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
-                        if optRect.collidepoint(location):
-                            chessAi.DEPTH = i + 1
-                            break
-                    continue
-                
-                if dropdownMainRect.collidepoint(location):
-                    dropdown_open = True
-                    continue
+                if not multiplayerMode:
+                    if dropdown_open:
+                        dropdown_open = False
+                        for i in range(5):
+                            optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
+                            if optRect.collidepoint(location):
+                                chessAi.DEPTH = i + 1
+                                break
+                        continue
+                    
+                    if dropdownMainRect.collidepoint(location):
+                        dropdown_open = True
+                        continue
                 
                 # Multiplayer UI Handling
                 panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 160)
@@ -300,8 +301,10 @@ async def main():
                         try:
                             import js as _js
                             entered = _js.prompt("Enter the 4-digit room ID from the host:")
-                            if entered:
-                                roomCode = str(entered).strip().upper()[:4]
+                            if entered is not None:
+                                # Convert JsProxy to Python string safely
+                                roomCode = entered.to_py() if hasattr(entered, 'to_py') else str(entered)
+                                roomCode = roomCode.strip()[:4].upper()
                         except ImportError:
                             entered = input("Enter room ID: ")
                             roomCode = entered.strip().upper()[:4]
