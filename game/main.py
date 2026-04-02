@@ -187,6 +187,7 @@ async def main():
     AIThinking = False  # True if ai is thinking
     dropdown_open = False
 
+    currentModeIndex = 0 # 0: Local vs AI, 1: Local 2-Player, 2: Online Multiplayer
     multiplayerMode = False
     multiplayerRole = None
     roomCode = ""
@@ -278,6 +279,41 @@ async def main():
                     gameOverTime = 0
                     squareSelected = ()
                     playerClicks = []
+                    continue
+
+                # Check for mode button click
+                btn_w = 200
+                btn_h = 40
+                modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
+                if modeBtnRect.collidepoint(location):
+                    currentModeIndex = (currentModeIndex + 1) % 3
+                    if currentModeIndex == 0: # Local vs AI
+                        multiplayerMode = False
+                        playerWhiteHuman = True
+                        playerBlackHuman = False
+                    elif currentModeIndex == 1: # Local 2-Player
+                        multiplayerMode = False
+                        playerWhiteHuman = True
+                        playerBlackHuman = True
+                    elif currentModeIndex == 2: # Online Multiplayer
+                        multiplayerMode = True
+                    
+                    # Reset game on mode change
+                    gs = GameState()
+                    if gs.playerWantsToPlayAsBlack:
+                        gs.board = gs.board1
+                    validMoves = gs.getValidMoves()
+                    squareSelected = ()
+                    playerClicks = []
+                    moveMade = False
+                    animate = False
+                    gameOver = False
+                    moveUndone = True
+                    positionHistory = ""
+                    previousPos = ""
+                    countMovesForDraw = 0
+                    COUNT_DRAW = 0
+                    AIThinking = False
                     continue
 
                 # Check for restart button click or click after game over
@@ -508,7 +544,9 @@ async def main():
         modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), modeBtnRect)
         p.draw.rect(screen, p.Color('black'), modeBtnRect, 1)
-        mode_text = "Mode: Online Multiplayer" if multiplayerMode else "Mode: Local vs AI"
+        
+        mode_texts = ["Mode: Local vs AI", "Mode: Local 2-Player", "Mode: Online Multiplayer"]
+        mode_text = mode_texts[currentModeIndex]
         textObj = diff_font.render(mode_text, True, p.Color('white'))
         textLoc = modeBtnRect.move(
             modeBtnRect.width / 2 - textObj.get_width() / 2,
