@@ -245,23 +245,24 @@ async def main():
             elif e.type == p.MOUSEBUTTONDOWN:
                 location = p.mouse.get_pos()
                 
-                # Dropdown logic
-                btn_w = 200
-                btn_h = 40
-                dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
-                
-                if dropdown_open:
-                    dropdown_open = False
-                    for i in range(4):
-                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
-                        if optRect.collidepoint(location):
-                            chessAi.DEPTH = i + 1
-                            break
-                    continue
-                
-                if dropdownMainRect.collidepoint(location):
-                    dropdown_open = True
-                    continue
+                # Dropdown logic (Only for Local vs AI)
+                if currentModeIndex == 0:
+                    btn_w = 200
+                    btn_h = 40
+                    dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
+                    
+                    if dropdown_open:
+                        dropdown_open = False
+                        for i in range(4):
+                            optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
+                            if optRect.collidepoint(location):
+                                chessAi.DEPTH = i + 1
+                                break
+                        continue
+                    
+                    if dropdownMainRect.collidepoint(location):
+                        dropdown_open = True
+                        continue
                 
                 # Check for undo button click
                 undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
@@ -315,6 +316,53 @@ async def main():
                     COUNT_DRAW = 0
                     AIThinking = False
                     continue
+
+                # Online Multiplayer Click Handlers
+                if currentModeIndex == 2:
+                    btn_w = 200
+                    btn_h = 40
+                    if not networkConnected:
+                        hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
+                        joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
+                        inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
+                        
+                        if hostBtn.collidepoint(location):
+                            if not roomCode:
+                                roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+                            net.set_topic(roomCode)
+                            multiplayerRole = 'host'
+                            networkConnected = True
+                            continue
+                        
+                        if joinBtn.collidepoint(location):
+                            if roomCode:
+                                net.set_topic(roomCode)
+                                multiplayerRole = 'client'
+                                networkConnected = True
+                            continue
+                            
+                        if inputRect.collidepoint(location):
+                            inputBoxActive = True
+                            continue
+                        else:
+                            inputBoxActive = False
+                    else:
+                        if opponentRequestedUndo:
+                            panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 100)
+                            acceptBtn = p.Rect(panel_rect.x, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
+                            denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
+                            
+                            if acceptBtn.collidepoint(location):
+                                await net.send({'type': 'undo_response', 'accepted': True})
+                                gs.undoMove()
+                                gs.undoMove()
+                                opponentRequestedUndo = False
+                                moveMade = True
+                                continue
+                            if denyBtn.collidepoint(location):
+                                await net.send({'type': 'undo_response', 'accepted': False})
+                                opponentRequestedUndo = False
+                                continue
 
                 # Check for restart button click or click after game over
                 restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
@@ -395,11 +443,20 @@ async def main():
                                 animate = True
                                 squareSelected = ()
                                 playerClicks = []
-                        if not moveMade:
-                            playerClicks = [squareSelected]
+                        playerClicks = [squareSelected]
 
             # Key Handler
             elif e.type == p.KEYDOWN:
+                if inputBoxActive:
+                    if e.key == p.K_BACKSPACE:
+                        roomCode = roomCode[:-1]
+                    elif e.key == p.K_RETURN:
+                        inputBoxActive = False
+                    else:
+                        if len(roomCode) < 12:
+                            roomCode += e.unicode
+                    continue
+
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
                         await net.send({'type': 'undo_request'})
@@ -432,7 +489,7 @@ async def main():
                     AIThinking = False
 
         # AI move finder
-        if not gameOver and not humanTurn and not moveUndone and not (multiplayerMode and networkConnected):
+        if currentModeIndex == 0 and not gameOver and not humanTurn and not moveUndone:
             if not AIThinking:
                 AIThinking = True
                 await asyncio.sleep(0.1)
@@ -597,38 +654,38 @@ async def main():
                     tDeny = diff_font.render("Deny", True, p.Color("white"))
                     screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, 10))
 
-        else:
+        elif currentModeIndex == 0:
             # Draw Dropdown
             dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
             p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), dropdownMainRect)
             p.draw.rect(screen, p.Color('black'), dropdownMainRect, 1)
 
-        diff_font = p.font.SysFont("Arial", 20, True, False)
-        titles = ["Easy", "Normal", "Hard", "Very Hard"]
-        
-        main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
-        textObj = diff_font.render(main_text, True, p.Color('white'))
-        textLoc = dropdownMainRect.move(
-            dropdownMainRect.width / 2 - textObj.get_width() / 2,
-            dropdownMainRect.height / 2 - textObj.get_height() / 2
-        )
-        screen.blit(textObj, textLoc)
+            diff_font = p.font.SysFont("Arial", 20, True, False)
+            titles = ["Easy", "Normal", "Hard", "Very Hard"]
+            
+            main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
+            textObj = diff_font.render(main_text, True, p.Color('white'))
+            textLoc = dropdownMainRect.move(
+                dropdownMainRect.width / 2 - textObj.get_width() / 2,
+                dropdownMainRect.height / 2 - textObj.get_height() / 2
+            )
+            screen.blit(textObj, textLoc)
 
-        if dropdown_open:
-            for i in range(4):
-                optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
-                # Hover effect
-                mouse_pos = p.mouse.get_pos()
-                color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
-                p.draw.rect(screen, color, optRect)
-                p.draw.rect(screen, p.Color('black'), optRect, 1)
+            if dropdown_open:
+                for i in range(4):
+                    optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
+                    # Hover effect
+                    mouse_pos = p.mouse.get_pos()
+                    color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                    p.draw.rect(screen, color, optRect)
+                    p.draw.rect(screen, p.Color('black'), optRect, 1)
 
-                optTextObj = diff_font.render(titles[i], True, p.Color('white'))
-                optTextLoc = optRect.move(
-                    optRect.width / 2 - optTextObj.get_width() / 2,
-                    optRect.height / 2 - optTextObj.get_height() / 2
-                )
-                screen.blit(optTextObj, optTextLoc)
+                    optTextObj = diff_font.render(titles[i], True, p.Color('white'))
+                    optTextLoc = optRect.move(
+                        optRect.width / 2 - optTextObj.get_width() / 2,
+                        optRect.height / 2 - optTextObj.get_height() / 2
+                    )
+                    screen.blit(optTextObj, optTextLoc)
 
         if gameOver and p.time.get_ticks() - gameOverTime > 4000:
             gs = GameState()
