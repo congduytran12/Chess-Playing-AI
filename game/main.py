@@ -251,8 +251,8 @@ async def main():
                 
                 if dropdown_open:
                     dropdown_open = False
-                    for i in range(5):
-                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
+                    for i in range(4):
+                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
                         if optRect.collidepoint(location):
                             chessAi.DEPTH = i + 1
                             break
@@ -566,7 +566,7 @@ async def main():
             p.draw.rect(screen, p.Color('black'), dropdownMainRect, 1)
 
         diff_font = p.font.SysFont("Arial", 20, True, False)
-        titles = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
+        titles = ["Easy", "Normal", "Hard", "Very Hard"]
         
         main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
         textObj = diff_font.render(main_text, True, p.Color('white'))
@@ -577,8 +577,8 @@ async def main():
         screen.blit(textObj, textLoc)
 
         if dropdown_open:
-            for i in range(5):
-                optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
+            for i in range(4):
+                optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (4 - i) * btn_h, btn_w, btn_h)
                 # Hover effect
                 mouse_pos = p.mouse.get_pos()
                 color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
