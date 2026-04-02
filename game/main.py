@@ -192,6 +192,7 @@ async def main():
     multiplayerRole = None
     roomCode = ""
     inputBoxActive = False
+    myPlayerId = "".join(random.choices(string.ascii_letters + string.digits, k=10))
     networkConnected = False
     opponentRequestedUndo = False
 
@@ -205,6 +206,8 @@ async def main():
     while running:
         if multiplayerMode and networkConnected:
             for msg in net.get_messages():
+                if msg.get('sender') == myPlayerId:
+                    continue
                 mtype = msg.get('type')
                 if mtype == 'join' and multiplayerRole == 'host':
                     pass
@@ -268,7 +271,7 @@ async def main():
                 undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
                 if undoBtnRect.collidepoint(location):
                     if multiplayerMode and networkConnected:
-                        await net.send({'type': 'undo_request'})
+                        await net.send({'type': 'undo_request', 'sender': myPlayerId})
                         continue
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
@@ -353,14 +356,14 @@ async def main():
                             denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
                             
                             if acceptBtn.collidepoint(location):
-                                await net.send({'type': 'undo_response', 'accepted': True})
+                                await net.send({'type': 'undo_response', 'accepted': True, 'sender': myPlayerId})
                                 gs.undoMove()
                                 gs.undoMove()
                                 opponentRequestedUndo = False
                                 moveMade = True
                                 continue
                             if denyBtn.collidepoint(location):
-                                await net.send({'type': 'undo_response', 'accepted': False})
+                                await net.send({'type': 'undo_response', 'accepted': False, 'sender': myPlayerId})
                                 opponentRequestedUndo = False
                                 continue
 
@@ -427,7 +430,8 @@ async def main():
                                         'type': 'move',
                                         'move': [(validMoves[i].startRow, validMoves[i].startCol), (validMoves[i].endRow, validMoves[i].endCol)],
                                         'promo': validMoves[i].isPawnPromotion,
-                                        'promoPiece': promotion_choice
+                                        'promoPiece': promotion_choice,
+                                        'sender': myPlayerId
                                     })
                                 # add sound for human move
                                 if (pieceCaptured or move.isEnpassantMove):
@@ -459,7 +463,7 @@ async def main():
 
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
-                        await net.send({'type': 'undo_request'})
+                        await net.send({'type': 'undo_request', 'sender': myPlayerId})
                         continue
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
@@ -543,7 +547,7 @@ async def main():
                     COUNT_DRAW = 0
             # Call animateMove to animate the move
             if animate:
-                animateMove(gs.moveLog[-1], screen, gs.board, clock)
+                animateMove(gs.moveLog[-1], screen, gs.board, clock, flip_board)
             # genetare new set of valid move if valid move is made
             validMoves = gs.getValidMoves()
             moveMade = False
@@ -825,7 +829,7 @@ def drawMoveLog(screen, gs, font):
 
 
 # animating a move
-def animateMove(move, screen, board, clock):
+def animateMove(move, screen, board, clock, flip=False):
     global colors
     # change in row, col
     deltaRow = move.endRow - move.startRow
@@ -839,13 +843,17 @@ def animateMove(move, screen, board, clock):
         row, col = ((move.startRow + deltaRow*frame/frameCount, move.startCol +
                     deltaCol*frame/frameCount))  # how far through the animation
         # for each frame draw the moved piece
-        drawSquare(screen)
-        drawPieces(screen, board)
+        drawSquare(screen, flip)
+        drawPieces(screen, board, flip)
 
         # erase the piece moved from its ending squares
         color = colors[(move.endRow + move.endCol) %
                        2]  # get color of the square
-        endSquare = p.Rect(move.endCol*SQ_SIZE, move.endRow *
+        
+        draw_end_row = (7 - move.endRow) if flip else move.endRow
+        draw_end_col = (7 - move.endCol) if flip else move.endCol
+        
+        endSquare = p.Rect(draw_end_col*SQ_SIZE, draw_end_row *
                            SQ_SIZE, SQ_SIZE, SQ_SIZE)  # pygame rectangle
         p.draw.rect(screen, color, endSquare)
 
@@ -854,13 +862,20 @@ def animateMove(move, screen, board, clock):
             if move.isEnpassantMove:
                 enPassantRow = move.endRow + \
                     1 if move.pieceCaptured[0] == 'b' else move.endRow - 1
-                endSquare = p.Rect(move.endCol*SQ_SIZE, enPassantRow *
+                
+                draw_ep_row = (7 - enPassantRow) if flip else enPassantRow
+                draw_ep_col = (7 - move.endCol) if flip else move.endCol
+                    
+                endSquare = p.Rect(draw_ep_col*SQ_SIZE, draw_ep_row *
                                    SQ_SIZE, SQ_SIZE, SQ_SIZE)  # pygame rectangle
             screen.blit(IMAGES[move.pieceCaptured], endSquare)
 
         # draw moving piece
+        draw_curr_row = (7 - row) if flip else row
+        draw_curr_col = (7 - col) if flip else col
+        
         screen.blit(IMAGES[move.pieceMoved], p.Rect(
-            col*SQ_SIZE, row*SQ_SIZE, SQ_SIZE, SQ_SIZE))
+            draw_curr_col*SQ_SIZE, draw_curr_row*SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
         p.display.flip()
         clock.tick(240)
