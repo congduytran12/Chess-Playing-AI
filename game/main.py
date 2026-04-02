@@ -249,79 +249,17 @@ async def main():
                 btn_h = 40
                 dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
                 
-                if not multiplayerMode:
-                    if dropdown_open:
-                        dropdown_open = False
-                        for i in range(5):
-                            optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
-                            if optRect.collidepoint(location):
-                                chessAi.DEPTH = i + 1
-                                break
-                        continue
-                    
-                    if dropdownMainRect.collidepoint(location):
-                        dropdown_open = True
-                        continue
+                if dropdown_open:
+                    dropdown_open = False
+                    for i in range(5):
+                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
+                        if optRect.collidepoint(location):
+                            chessAi.DEPTH = i + 1
+                            break
+                    continue
                 
-                # Multiplayer UI Handling
-                panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 160)
-                if opponentRequestedUndo:
-                    acceptBtn = p.Rect(panel_rect.x, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
-                    denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
-                    if acceptBtn.collidepoint(location):
-                        opponentRequestedUndo = False
-                        gs.undoMove()
-                        gs.undoMove()
-                        moveMade = True
-                        asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': True}))
-                        continue
-                    elif denyBtn.collidepoint(location):
-                        opponentRequestedUndo = False
-                        asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': False}))
-                        continue
-                
-                btn_w = 200
-                btn_h = 40
-                modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
-                
-                if multiplayerMode and not networkConnected:
-                    hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
-                    joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                    
-                    if hostBtn.collidepoint(location):
-                        multiplayerRole = 'host'
-                        roomCode = ''.join(random.choices(string.digits, k=4))
-                        net.set_topic(roomCode)
-                        networkConnected = True
-                        playerWhiteHuman = True
-                        playerBlackHuman = True
-                        continue
-                    elif joinBtn.collidepoint(location):
-                        # Use native browser prompt in WASM, fallback to input() locally
-                        try:
-                            import js as _js
-                            entered = _js.prompt("Enter the 4-digit room ID from the host:")
-                            if entered is not None:
-                                # Convert JsProxy to Python string safely
-                                roomCode = entered.to_py() if hasattr(entered, 'to_py') else str(entered)
-                                roomCode = roomCode.strip()[:4].upper()
-                        except ImportError:
-                            entered = input("Enter room ID: ")
-                            roomCode = entered.strip().upper()[:4]
-                        if len(roomCode) == 4:
-                            multiplayerRole = 'client'
-                            net.set_topic(roomCode)
-                            asyncio.ensure_future(net.send({'type': 'join'}))
-                            networkConnected = True
-                            playerWhiteHuman = True
-                            playerBlackHuman = True
-                        continue
-                        
-                if modeBtnRect.collidepoint(location):
-                    multiplayerMode = not multiplayerMode
-                    roomCode = ""
-                    inputBoxActive = False
-                    if multiplayerMode: dropdown_open = False
+                if dropdownMainRect.collidepoint(location):
+                    dropdown_open = True
                     continue
                 
                 # Check for undo button click
@@ -627,20 +565,32 @@ async def main():
             p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), dropdownMainRect)
             p.draw.rect(screen, p.Color('black'), dropdownMainRect, 1)
 
-            titles = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
-            main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
-            textObj = diff_font.render(main_text, True, p.Color('white'))
-            screen.blit(textObj, dropdownMainRect.move(dropdownMainRect.width / 2 - textObj.get_width() / 2, dropdownMainRect.height / 2 - textObj.get_height() / 2))
+        diff_font = p.font.SysFont("Arial", 20, True, False)
+        titles = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
+        
+        main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
+        textObj = diff_font.render(main_text, True, p.Color('white'))
+        textLoc = dropdownMainRect.move(
+            dropdownMainRect.width / 2 - textObj.get_width() / 2,
+            dropdownMainRect.height / 2 - textObj.get_height() / 2
+        )
+        screen.blit(textObj, textLoc)
 
-            if dropdown_open:
-                for i in range(5):
-                    optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
-                    mouse_pos = p.mouse.get_pos()
-                    color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
-                    p.draw.rect(screen, color, optRect)
-                    p.draw.rect(screen, p.Color('black'), optRect, 1)
-                    optTextObj = diff_font.render(titles[i], True, p.Color('white'))
-                    screen.blit(optTextObj, optRect.move(optRect.width / 2 - optTextObj.get_width() / 2, optRect.height / 2 - optTextObj.get_height() / 2))
+        if dropdown_open:
+            for i in range(5):
+                optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130 - (5 - i) * btn_h, btn_w, btn_h)
+                # Hover effect
+                mouse_pos = p.mouse.get_pos()
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                p.draw.rect(screen, color, optRect)
+                p.draw.rect(screen, p.Color('black'), optRect, 1)
+
+                optTextObj = diff_font.render(titles[i], True, p.Color('white'))
+                optTextLoc = optRect.move(
+                    optRect.width / 2 - optTextObj.get_width() / 2,
+                    optRect.height / 2 - optTextObj.get_height() / 2
+                )
+                screen.blit(optTextObj, optTextLoc)
 
         if gameOver and p.time.get_ticks() - gameOverTime > 4000:
             gs = GameState()
