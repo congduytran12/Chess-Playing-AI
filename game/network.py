@@ -4,7 +4,7 @@ import time
 
 try:
     import js
-    from pyodide.ffi import to_js
+    from pyodide.ffi import to_js, create_proxy
     import pyodide
     WASM = True
 except ImportError:
@@ -16,12 +16,36 @@ class NetworkManager:
         self.last_sync = int(time.time())
         self.incoming_messages = []
         self.running = False
+        self.source = None
+        self.proxy = None
 
     def set_topic(self, topic):
         self.topic = "chess_app_multiplayer_" + str(topic)
         self.last_sync = int(time.time()) - 3
         self.running = True
-        asyncio.ensure_future(self._poll_loop())
+        
+        if WASM:
+            if self.source:
+                self.source.close()
+            if self.proxy:
+                self.proxy.destroy()
+            
+            url = "https://ntfy.sh/" + self.topic + "/sse"
+            self.source = js.EventSource.new(url)
+            self.proxy = create_proxy(self._handle_message)
+            self.source.onmessage = self.proxy
+        else:
+            asyncio.ensure_future(self._poll_loop())
+
+    def _handle_message(self, event):
+        try:
+            msg = json.loads(event.data)
+            # ntfy SSE sends JSON objects with event, message, etc.
+            if msg.get('event') == 'message':
+                content = json.loads(msg.get('message', '{}'))
+                self.incoming_messages.append(content)
+        except Exception as e:
+            print("SSE message error:", e)
 
     async def send(self, data):
         if not self.topic:
@@ -46,7 +70,8 @@ class NetworkManager:
             threading.Thread(target=_send, daemon=True).start()
 
     async def _poll_loop(self):
-        while self.running:
+        # Native polling loop (only for non-WASM)
+        while self.running and not WASM:
             if not self.topic:
                 await asyncio.sleep(1)
                 continue
@@ -54,25 +79,20 @@ class NetworkManager:
             url = "https://ntfy.sh/" + self.topic + "/json?since=" + str(self.last_sync) + "&poll=1"
 
             try:
-                if WASM:
-                    resp = await js.fetch(url)
-                    text = await resp.text()
-                    lines = str(text).strip().split('\n')
-                else:
-                    import threading, urllib.request
-                    result = []
-                    def _fetch():
-                        try:
-                            req = urllib.request.Request(url)
-                            with urllib.request.urlopen(req, timeout=5) as response:
-                                result.append(response.read().decode('utf-8'))
-                        except Exception:
-                            pass
-                    t = threading.Thread(target=_fetch, daemon=True)
-                    t.start()
-                    while t.is_alive():
-                        await asyncio.sleep(0.1)
-                    lines = result[0].strip().split('\n') if result else []
+                import threading, urllib.request
+                result = []
+                def _fetch():
+                    try:
+                        req = urllib.request.Request(url)
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            result.append(response.read().decode('utf-8'))
+                    except Exception:
+                        pass
+                t = threading.Thread(target=_fetch, daemon=True)
+                t.start()
+                while t.is_alive():
+                    await asyncio.sleep(0.05)
+                lines = result[0].strip().split('\n') if result else []
 
                 for line in lines:
                     if line.strip():
@@ -88,7 +108,7 @@ class NetworkManager:
             except Exception as e:
                 print("Poll error:", e)
 
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.1)  # Faster polling for native
 
     def get_messages(self):
         res = list(self.incoming_messages)
