@@ -93,7 +93,7 @@ def loadImages():
             original_image, (SQ_SIZE, SQ_SIZE))
 
 
-def pawnPromotionPopup(screen, gs):
+async def pawnPromotionPopup(screen, gs):
     font = p.font.SysFont("Times New Roman", 45, False, False)
     text = font.render("Choose promotion:", True, p.Color("black"))
 
@@ -147,6 +147,7 @@ def pawnPromotionPopup(screen, gs):
             screen.blit(button_images[i], button.topleft)
 
         p.display.flip()
+        await asyncio.sleep(0) # Yield for browser UI
 
 
 '''
@@ -417,7 +418,7 @@ async def main():
                                 gs.makeMove(validMoves[i])
                                 if (move.isPawnPromotion):
                                     # Show pawn promotion popup and get the selected piece
-                                    promotion_choice = pawnPromotionPopup(
+                                    promotion_choice = await pawnPromotionPopup(
                                         screen, gs)
                                     # Set the promoted piece on the board
                                     gs.board[move.endRow][move.endCol] = move.pieceMoved[0] + \
@@ -547,10 +548,10 @@ async def main():
                     positionHistory = ""
                     countMovesForDraw = 0
                     COUNT_DRAW = 0
-            # Call animateMove to animate the move
+        # genetare new set of valid move if valid move is made
+        if moveMade:
             if animate:
-                animateMove(gs.moveLog[-1], screen, gs.board, clock, flip_board)
-            # genetare new set of valid move if valid move is made
+                await animateMove(gs.moveLog[-1], screen, gs.board, clock, flip_board)
             validMoves = gs.getValidMoves()
             moveMade = False
             animate = False
@@ -717,8 +718,9 @@ async def main():
             COUNT_DRAW = 0
             AIThinking = False
             gameOverTime = 0
-
+            p.display.flip()
         clock.tick(MAX_FPS)
+        await asyncio.sleep(0) # Essential for WASM performance/UI responsiveness
         p.display.flip()
         await asyncio.sleep(0)
 
@@ -838,7 +840,7 @@ def drawMoveLog(screen, gs, font):
 
 
 # animating a move
-def animateMove(move, screen, board, clock, flip=False):
+async def animateMove(move, screen, board, clock, flip=False):
     global colors
     # change in row, col
     deltaRow = move.endRow - move.startRow
@@ -887,7 +889,7 @@ def animateMove(move, screen, board, clock, flip=False):
             draw_curr_col*SQ_SIZE, draw_curr_row*SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
         p.display.flip()
-        clock.tick(240)
+        await asyncio.sleep(0) # Yield for browser interaction
 
 
 def drawEndGameText(screen, text):
