@@ -247,7 +247,7 @@ async def main():
                 running = False
             # Mouse Handler
             elif e.type == p.MOUSEBUTTONDOWN:
-                location = e.pos
+                location = p.mouse.get_pos()
                 
                 # Dropdown logic (Only for Local vs AI)
                 if currentModeIndex == 0:
@@ -332,6 +332,7 @@ async def main():
                         inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
                         
                         if hostBtn.collidepoint(location):
+                            print("DEBUG: Host button clicked.")
                             if not roomCode:
                                 roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                             net.set_topic(roomCode)
@@ -340,6 +341,7 @@ async def main():
                             continue
                         
                         if joinBtn.collidepoint(location):
+                            print("DEBUG: Join button clicked.")
                             if roomCode:
                                 net.set_topic(roomCode)
                                 multiplayerRole = 'client'

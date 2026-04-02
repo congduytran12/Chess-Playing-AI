@@ -23,6 +23,7 @@ class NetworkManager:
         self.topic = "chess_app_multiplayer_" + str(topic)
         self.last_sync = int(time.time()) - 3
         self.running = True
+        print(f"Network: Connecting to room {self.topic}...")
         
         if WASM:
             if self.source:
