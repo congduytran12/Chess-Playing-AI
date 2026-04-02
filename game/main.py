@@ -40,7 +40,6 @@ DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 30
 IMAGES = {}
-click_pos = None
 
 '''
 
@@ -251,13 +250,6 @@ async def main():
             # Mouse Handler
             elif e.type == p.MOUSEBUTTONDOWN:
                 location = p.mouse.get_pos()
-                global click_pos
-                click_pos = location
-                
-                # SideBar button rects for debugging
-                btn_w, btn_h = 200, 40
-                debugHostRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
-                print(f"DEBUG: Global Click at {location}. Mode: {currentModeIndex}. HostBtn Bounds: {debugHostRect}")
                 
                 # Dropdown logic (Only for Local vs AI)
                 if currentModeIndex == 0:
@@ -282,7 +274,7 @@ async def main():
                 undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
                 if undoBtnRect.collidepoint(location):
                     if multiplayerMode and networkConnected:
-                        await net.send({'type': 'undo_request', 'sender': myPlayerId})
+                        asyncio.ensure_future(net.send({'type': 'undo_request', 'sender': myPlayerId}))
                         continue
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
@@ -370,14 +362,14 @@ async def main():
                             denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
                             
                             if acceptBtn.collidepoint(location):
-                                await net.send({'type': 'undo_response', 'accepted': True, 'sender': myPlayerId})
+                                asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': True, 'sender': myPlayerId}))
                                 gs.undoMove()
                                 gs.undoMove()
                                 opponentRequestedUndo = False
                                 moveMade = True
                                 continue
                             if denyBtn.collidepoint(location):
-                                await net.send({'type': 'undo_response', 'accepted': False, 'sender': myPlayerId})
+                                asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': False, 'sender': myPlayerId}))
                                 opponentRequestedUndo = False
                                 continue
 
@@ -440,13 +432,13 @@ async def main():
                                 else:
                                     promotion_choice = ""
                                 if multiplayerMode and networkConnected:
-                                    await net.send({
+                                    asyncio.ensure_future(net.send({
                                         'type': 'move',
                                         'move': [(validMoves[i].startRow, validMoves[i].startCol), (validMoves[i].endRow, validMoves[i].endCol)],
                                         'promo': validMoves[i].isPawnPromotion,
                                         'promoPiece': promotion_choice,
                                         'sender': myPlayerId
-                                    })
+                                    }))
                                 # add sound for human move
                                 if (pieceCaptured or move.isEnpassantMove):
                                     # Play capture sound
@@ -478,7 +470,7 @@ async def main():
 
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
-                        await net.send({'type': 'undo_request', 'sender': myPlayerId})
+                        asyncio.ensure_future(net.send({'type': 'undo_request', 'sender': myPlayerId}))
                         continue
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
@@ -738,13 +730,8 @@ async def main():
 
 
 def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip=False):
-    global click_pos
     drawSquare(screen, flip)  # draw square on board
     highlightSquares(screen, gs, validMoves, squareSelected, flip)
-    
-    # Click Debug Visualizer (red dot)
-    if click_pos:
-        p.draw.circle(screen, p.Color("red"), click_pos, 5)
     
     # Check/Checkmate effect: Highlight the king's square in red
     if gs.inCheck:
