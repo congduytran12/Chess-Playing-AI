@@ -197,6 +197,7 @@ async def main():
     inputBoxActive = False
     myPlayerId = "".join(random.choices(string.ascii_letters + string.digits, k=10))
     networkConnected = False
+    networkConnecting = False  # True while waiting to open SSE (deferred 1 frame)
     opponentRequestedUndo = False
 
     moveUndone = False
@@ -207,6 +208,14 @@ async def main():
     COUNT_DRAW = 0
     gameOverTime = 0
     while running:
+        # Deferred connection: set_topic is called AFTER a frame yield so the UI
+        # repaints the "Connecting..." state before the SSE EventSource is opened.
+        if networkConnecting:
+            await asyncio.sleep(0)  # Let the screen repaint first
+            net.set_topic(roomCode)
+            networkConnected = True
+            networkConnecting = False
+
         if multiplayerMode and networkConnected:
             for msg in net.get_messages():
                 if msg.get('sender') == myPlayerId:
@@ -335,7 +344,7 @@ async def main():
                 if currentModeIndex == 2:
                     btn_w = 200
                     btn_h = 40
-                    if not networkConnected:
+                    if not networkConnected and not networkConnecting:
                         hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
                         joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
                         inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
@@ -344,17 +353,15 @@ async def main():
                             print("DEBUG: Host button clicked.")
                             if not roomCode:
                                 roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-                            net.set_topic(roomCode)
                             multiplayerRole = 'host'
-                            networkConnected = True
+                            networkConnecting = True  # Deferred: connect next frame
                             continue
                         
                         if joinBtn.collidepoint(location):
                             print("DEBUG: Join button clicked.")
                             if roomCode:
-                                net.set_topic(roomCode)
                                 multiplayerRole = 'client'
-                                networkConnected = True
+                                networkConnecting = True  # Deferred: connect next frame
                             continue
                             
                         if inputRect.collidepoint(location):
@@ -632,7 +639,14 @@ async def main():
         screen.blit(textObj, textLoc)
 
         if multiplayerMode:
-            if not networkConnected:
+            if networkConnecting:
+                # Show a "Connecting..." message while the SSE is being set up
+                connectingRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
+                p.draw.rect(screen, p.Color('gray'), connectingRect)
+                p.draw.rect(screen, p.Color('black'), connectingRect, 1)
+                textObj = diff_font.render("Connecting...", True, p.Color('white'))
+                screen.blit(textObj, connectingRect.move(connectingRect.width / 2 - textObj.get_width() / 2, connectingRect.height / 2 - textObj.get_height() / 2))
+            elif not networkConnected:
                 hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
                 color = p.Color(MOVE_HIGHLIGHT_COLOR) if hostBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
                 p.draw.rect(screen, color, hostBtn)
