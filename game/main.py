@@ -450,7 +450,7 @@ async def main():
                     COUNT_DRAW = 0
             # Call animateMove to animate the move
             if animate:
-                animateMove(gs.moveLog[-1], screen, gs.board, clock, flip_board)
+                animateMove(gs.moveLog[-1], screen, gs.board, clock)
             # genetare new set of valid move if valid move is made
             validMoves = gs.getValidMoves()
             moveMade = False
@@ -730,7 +730,7 @@ def drawMoveLog(screen, gs, font):
 
 
 # animating a move
-def animateMove(move, screen, board, clock, flip=False):
+def animateMove(move, screen, board, clock):
     global colors
     # change in row, col
     deltaRow = move.endRow - move.startRow
@@ -744,17 +744,13 @@ def animateMove(move, screen, board, clock, flip=False):
         row, col = ((move.startRow + deltaRow*frame/frameCount, move.startCol +
                     deltaCol*frame/frameCount))  # how far through the animation
         # for each frame draw the moved piece
-        drawSquare(screen, flip)
-        drawPieces(screen, board, flip)
+        drawSquare(screen)
+        drawPieces(screen, board)
 
         # erase the piece moved from its ending squares
-        # find the draw positions
-        d_endRow = (7 - move.endRow) if flip else move.endRow
-        d_endCol = (7 - move.endCol) if flip else move.endCol
-        
         color = colors[(move.endRow + move.endCol) %
                        2]  # get color of the square
-        endSquare = p.Rect(d_endCol*SQ_SIZE, d_endRow *
+        endSquare = p.Rect(move.endCol*SQ_SIZE, move.endRow *
                            SQ_SIZE, SQ_SIZE, SQ_SIZE)  # pygame rectangle
         p.draw.rect(screen, color, endSquare)
 
@@ -763,17 +759,13 @@ def animateMove(move, screen, board, clock, flip=False):
             if move.isEnpassantMove:
                 enPassantRow = move.endRow + \
                     1 if move.pieceCaptured[0] == 'b' else move.endRow - 1
-                d_enPassantRow = (7 - enPassantRow) if flip else enPassantRow
-                d_enPassantCol = (7 - move.endCol) if flip else move.endCol
-                endSquare = p.Rect(d_enPassantCol*SQ_SIZE, d_enPassantRow *
+                endSquare = p.Rect(move.endCol*SQ_SIZE, enPassantRow *
                                    SQ_SIZE, SQ_SIZE, SQ_SIZE)  # pygame rectangle
             screen.blit(IMAGES[move.pieceCaptured], endSquare)
 
         # draw moving piece
-        d_row = (7 - row) if flip else row
-        d_col = (7 - col) if flip else col
         screen.blit(IMAGES[move.pieceMoved], p.Rect(
-            d_col*SQ_SIZE, d_row*SQ_SIZE, SQ_SIZE, SQ_SIZE))
+            col*SQ_SIZE, row*SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
         p.display.flip()
         clock.tick(240)

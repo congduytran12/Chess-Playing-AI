@@ -12,7 +12,6 @@ except ImportError:
 
 class NetworkManager:
     def __init__(self):
-        self.client_id = str(int(time.time() * 1000))[6:] + str(int(asyncio.get_event_loop().time() * 100) % 1000)
         self.topic = None
         self.last_sync = int(time.time())
         self.incoming_messages = []
@@ -21,14 +20,12 @@ class NetworkManager:
     def set_topic(self, topic):
         self.topic = "chess_app_multiplayer_" + str(topic)
         self.last_sync = int(time.time()) - 3
-        if not self.running:
-            self.running = True
-            asyncio.ensure_future(self._poll_loop())
+        self.running = True
+        asyncio.ensure_future(self._poll_loop())
 
     async def send(self, data):
         if not self.topic:
             return
-        data['sender'] = self.client_id
         url = "https://ntfy.sh/" + self.topic
         raw = json.dumps(data)
 
@@ -82,11 +79,10 @@ class NetworkManager:
                         try:
                             msg = json.loads(line)
                             if msg.get('event') == 'message':
-                                if msg.get('id'):
-                                    self.last_sync = msg['id']
+                                if msg.get('time'):
+                                    self.last_sync = max(self.last_sync, msg['time'] + 1)
                                 content = json.loads(msg.get('message', '{}'))
-                                if content.get('sender') != self.client_id:
-                                    self.incoming_messages.append(content)
+                                self.incoming_messages.append(content)
                         except Exception:
                             pass
             except Exception as e:
