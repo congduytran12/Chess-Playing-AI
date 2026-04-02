@@ -198,6 +198,7 @@ async def main():
     myPlayerId = "".join(random.choices(string.ascii_letters + string.digits, k=10))
     networkConnected = False
     opponentRequestedUndo = False
+    opponentOfferedDraw = False
 
     moveUndone = False
     pieceCaptured = False
@@ -236,9 +237,17 @@ async def main():
                     opponentRequestedUndo = True
                 elif mtype == 'undo_response':
                     if msg.get('accepted'):
-                        gs.undoMove()
-                        gs.undoMove()
+                        gs.undoMove(); gs.undoMove()
                         moveMade = True
+                        opponentRequestedUndo = False
+                elif mtype == 'resign':
+                    gameOver = True; text = 'Opponent resigned. You win!'
+                elif mtype == 'draw_offer':
+                    opponentOfferedDraw = True
+                elif mtype == 'draw_response':
+                    if msg.get('accepted'):
+                        gameOver = True; text = 'Game draw by agreement.'
+                    opponentOfferedDraw = False
 
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
             not gs.whiteToMove and playerBlackHuman)
@@ -333,15 +342,20 @@ async def main():
 
                 # Online Multiplayer Click Handlers
                 if currentModeIndex == 2:
-                    btn_w = 200
-                    btn_h = 40
+                    btn_w, btn_h = 200, 40
                     if not networkConnected:
-                        hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
-                        joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                        inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
-                        
+                        # Quick Play (Random Lobby)
+                        quickBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 300, btn_w, btn_h)
+                        if quickBtn.collidepoint(location):
+                            print("DEBUG: Searching for public game...")
+                            roomCode = ''.join(random.choices(string.ascii_uppercase, k=6))
+                            net.set_topic(roomCode) 
+                            multiplayerRole = 'host'
+                            networkConnected = True
+                            continue
+
+                        hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 250, btn_w, btn_h)
                         if hostBtn.collidepoint(location):
-                            print("DEBUG: Host button clicked.")
                             if not roomCode:
                                 roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                             net.set_topic(roomCode)
@@ -349,35 +363,55 @@ async def main():
                             networkConnected = True
                             continue
                         
-                        if joinBtn.collidepoint(location):
-                            print("DEBUG: Join button clicked.")
-                            if roomCode:
-                                net.set_topic(roomCode)
-                                multiplayerRole = 'client'
-                                networkConnected = True
-                            continue
-                            
+                        inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 170, btn_w, btn_h)
                         if inputRect.collidepoint(location):
                             inputBoxActive = True
                             continue
                         else:
                             inputBoxActive = False
+
+                        joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 120, btn_w, btn_h)
+                        if joinBtn.collidepoint(location) and roomCode:
+                            net.set_topic(roomCode)
+                            multiplayerRole = 'client'
+                            networkConnected = True
+                            continue
                     else:
-                        if opponentRequestedUndo:
+                        resignBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 250, btn_w, btn_h)
+                        drawOfferBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 200, btn_w, btn_h)
+                        
+                        if resignBtn.collidepoint(location):
+                            await net.send({'type': 'resign', 'sender': myPlayerId})
+                            gameOver = True
+                            text = 'You resigned. Opponent wins!'
+                            continue
+                        
+                        if drawOfferBtn.collidepoint(location):
+                            await net.send({'type': 'draw_offer', 'sender': myPlayerId})
+                            continue
+
+                        if opponentRequestedUndo or opponentOfferedDraw:
                             panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 100)
                             acceptBtn = p.Rect(panel_rect.x, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
                             denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
                             
                             if acceptBtn.collidepoint(location):
-                                await net.send({'type': 'undo_response', 'accepted': True, 'sender': myPlayerId})
-                                gs.undoMove()
-                                gs.undoMove()
-                                opponentRequestedUndo = False
-                                moveMade = True
-                                continue
+                                if opponentRequestedUndo:
+                                    await net.send({'type': 'undo_response', 'accepted': True, 'sender': myPlayerId})
+                                    gs.undoMove(); gs.undoMove()
+                                    opponentRequestedUndo = False
+                                else:
+                                    await net.send({'type': 'draw_response', 'accepted': True, 'sender': myPlayerId})
+                                    gameOver = True; text = 'Game Draw by Agreement'
+                                    opponentOfferedDraw = False
+                                moveMade = True; continue
                             if denyBtn.collidepoint(location):
-                                await net.send({'type': 'undo_response', 'accepted': False, 'sender': myPlayerId})
-                                opponentRequestedUndo = False
+                                if opponentRequestedUndo:
+                                    await net.send({'type': 'undo_response', 'accepted': False, 'sender': myPlayerId})
+                                    opponentRequestedUndo = False
+                                else:
+                                    await net.send({'type': 'draw_response', 'accepted': False, 'sender': myPlayerId})
+                                    opponentOfferedDraw = False
                                 continue
 
                 # Check for restart button click or click after game over
@@ -613,71 +647,70 @@ async def main():
 
         btn_w = 200
         btn_h = 40
-        diff_font = p.font.SysFont("Times New Roman", 20, True, False)
+        btn_margin = 10
+        diff_font = p.font.SysFont("Times New Roman", 18, True, False)
+
+        def draw_glass_button(rect, text, color, text_color=p.Color('white'), alpha=180):
+            # Create a glass-like semi-transparent button
+            s = p.Surface((rect.width, rect.height), p.SRCALPHA)
+            s.fill((*color[:3], alpha))
+            p.draw.rect(s, (0,0,0,100), s.get_rect(), 1, 8) # Rounded border
+            screen.blit(s, rect.topleft)
+            
+            text_obj = diff_font.render(text, True, text_color)
+            text_loc = rect.move(rect.width/2 - text_obj.get_width()/2, rect.height/2 - text_obj.get_height()/2)
+            screen.blit(text_obj, text_loc)
 
         # Mode Button (always visible)
-        modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
+        modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 350, btn_w, btn_h)
         mouse_pos = p.mouse.get_pos()
         color = p.Color(MOVE_HIGHLIGHT_COLOR) if modeBtnRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
-        p.draw.rect(screen, color, modeBtnRect)
-        p.draw.rect(screen, p.Color('black'), modeBtnRect, 1)
-        
-        mode_texts = ["Mode: Local vs AI", "Mode: Local 2-Player", "Mode: Online Multiplayer"]
-        mode_text = mode_texts[currentModeIndex]
-        textObj = diff_font.render(mode_text, True, p.Color('white'))
-        textLoc = modeBtnRect.move(
-            modeBtnRect.width / 2 - textObj.get_width() / 2,
-            modeBtnRect.height / 2 - textObj.get_height() / 2
-        )
-        screen.blit(textObj, textLoc)
+        draw_glass_button(modeBtnRect, f"Mode: {['AI', 'Local', 'Online'][currentModeIndex]}", color)
 
         if multiplayerMode:
             if not networkConnected:
-                hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
+                # Random Matchmaking Button
+                quickBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 300, btn_w, btn_h)
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if quickBtn.collidepoint(mouse_pos) else p.Color("darkgreen")
+                draw_glass_button(quickBtn, "Quick Play (Random)", color)
+
+                hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 250, btn_w, btn_h)
                 color = p.Color(MOVE_HIGHLIGHT_COLOR) if hostBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
-                p.draw.rect(screen, color, hostBtn)
-                p.draw.rect(screen, p.Color('black'), hostBtn, 1)
-                textObj = diff_font.render("Host Game (White)", True, p.Color('white'))
-                screen.blit(textObj, hostBtn.move(hostBtn.width / 2 - textObj.get_width() / 2, hostBtn.height / 2 - textObj.get_height() / 2))
+                draw_glass_button(hostBtn, "Host Private Game", color)
 
-                inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
-                color = p.Color('white') if inputBoxActive else p.Color('lightgray')
-                p.draw.rect(screen, color, inputRect)
-                p.draw.rect(screen, p.Color('black'), inputRect, 1)
-                textObj = diff_font.render(roomCode if roomCode else "Type Room ID", True, p.Color('black'))
-                screen.blit(textObj, inputRect.move(inputRect.width / 2 - textObj.get_width() / 2, inputRect.height / 2 - textObj.get_height() / 2))
+                inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 170, btn_w, btn_h)
+                draw_glass_button(inputRect, roomCode if roomCode else "Type Room ID", p.Color('white') if inputBoxActive else p.Color('lightgray'), p.Color('black'), 255)
 
-                joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                color = p.Color(MOVE_HIGHLIGHT_COLOR) if joinBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
-                # Join button is only "active" (colored) if roomCode exists
-                if not roomCode:
-                    color = p.Color('gray')
-                p.draw.rect(screen, color, joinBtn)
-                p.draw.rect(screen, p.Color('black'), joinBtn, 1)
-                textObj = diff_font.render("Join Game (Black)", True, p.Color('white'))
-                screen.blit(textObj, joinBtn.move(joinBtn.width / 2 - textObj.get_width() / 2, joinBtn.height / 2 - textObj.get_height() / 2))
+                joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 120, btn_w, btn_h)
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if joinBtn.collidepoint(mouse_pos) else (p.Color(DARK_SQUARE_COLOR) if roomCode else p.Color('gray'))
+                draw_glass_button(joinBtn, "Join Private Game", color)
+
             else:
-                infoRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                textObj = diff_font.render(f"Connected to Room: {roomCode}", True, p.Color('black'))
-                screen.blit(textObj, infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2))
+                infoRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 300, btn_w, btn_h)
+                draw_glass_button(infoRect, f"Room ID: {roomCode}", p.Color(LIGHT_SQUARE_COLOR), p.Color('black'), 200)
+
+                resignBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 250, btn_w, btn_h)
+                color = p.Color("red") if resignBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                draw_glass_button(resignBtn, "Resign", color)
+
+                drawOfferBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 200, btn_w, btn_h)
+                color = p.Color("orange") if drawOfferBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                draw_glass_button(drawOfferBtn, "Offer Draw", color)
                 
-                if opponentRequestedUndo:
-                    panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 100)
-                    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), panel_rect)
-                    p.draw.rect(screen, p.Color("red"), panel_rect, 2)
-                    textObj = diff_font.render("Opponent requested an Undo!", True, p.Color('black'))
-                    screen.blit(textObj, panel_rect.move(10, 10))
+                # Draw the Request Modal (Undo or Draw)
+                if opponentRequestedUndo or opponentOfferedDraw:
+                    panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 380, MOVE_LOG_PANEL_WIDTH - 40, 120)
+                    draw_glass_button(panel_rect, "", p.Color("black"), alpha=220)
                     
-                    acceptBtn = p.Rect(panel_rect.x, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
-                    denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
+                    req_text = "Opponent wants UNDO" if opponentRequestedUndo else "Opponent offers DRAW"
+                    req_obj = diff_font.render(req_text, True, p.Color("white"))
+                    screen.blit(req_obj, panel_rect.move(panel_rect.width/2 - req_obj.get_width()/2, 10))
                     
-                    p.draw.rect(screen, p.Color("green"), acceptBtn)
-                    tAccept = diff_font.render("Accept", True, p.Color("white"))
-                    screen.blit(tAccept, acceptBtn.move(acceptBtn.width/2 - tAccept.get_width()/2, 10))
+                    acceptBtn = p.Rect(panel_rect.x + 10, panel_rect.y + 50, panel_rect.width // 2 - 15, 40)
+                    denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 50, panel_rect.width // 2 - 15, 40)
                     
-                    p.draw.rect(screen, p.Color("red"), denyBtn)
-                    tDeny = diff_font.render("Deny", True, p.Color("white"))
-                    screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, 10))
+                    draw_glass_button(acceptBtn, "Accept", p.Color("green"), alpha=200)
+                    draw_glass_button(denyBtn, "Decline", p.Color("red"), alpha=200)
 
         elif currentModeIndex == 0:
             # Draw Dropdown
