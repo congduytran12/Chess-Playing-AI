@@ -208,10 +208,10 @@ async def main():
     COUNT_DRAW = 0
     gameOverTime = 0
     while running:
-        # Deferred connection: set_topic is called AFTER a frame yield so the UI
-        # repaints the "Connecting..." state before the SSE EventSource is opened.
+        # Deferred connection: "Connecting..." was drawn and flipped in the previous
+        # frame. Now call set_topic directly (EventSource constructor is fast/async
+        # in JS) and immediately move to the connected state.
         if networkConnecting:
-            await asyncio.sleep(0)  # Let the screen repaint first
             net.set_topic(roomCode)
             networkConnected = True
             networkConnecting = False
