@@ -40,6 +40,7 @@ DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 30
 IMAGES = {}
+click_pos = None
 
 '''
 
@@ -163,7 +164,6 @@ moveBlackLog = []
 
 async def main():
     global click_pos
-    click_pos = None
     # initialize py game
     p.init()
     screen = p.display.set_mode(
