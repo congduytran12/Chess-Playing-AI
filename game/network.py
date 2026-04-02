@@ -35,7 +35,9 @@ class NetworkManager:
             self.proxy = create_proxy(self._handle_message)
             self.source.onmessage = self.proxy
         else:
-            asyncio.ensure_future(self._poll_loop())
+            import threading
+            if not any(t.name == "NtfyListener" for t in threading.enumerate()):
+                threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True).start()
 
     def _handle_message(self, event):
         try:
@@ -50,6 +52,7 @@ class NetworkManager:
     async def send(self, data):
         if not self.topic:
             return
+        
         url = "https://ntfy.sh/" + self.topic
         raw = json.dumps(data)
 
@@ -69,46 +72,44 @@ class NetworkManager:
                     print("Send error:", e)
             threading.Thread(target=_send, daemon=True).start()
 
-    async def _poll_loop(self):
-        # Native polling loop (only for non-WASM)
-        while self.running and not WASM:
+    def _listen_loop(self):
+        # Native streaming loop (one persistent connection, zero polling)
+        import urllib.request
+        retry_delay = 1
+        
+        while self.running:
             if not self.topic:
-                await asyncio.sleep(1)
+                time.sleep(1)
                 continue
 
-            url = "https://ntfy.sh/" + self.topic + "/json?since=" + str(self.last_sync) + "&poll=1"
-
+            url = f"https://ntfy.sh/{self.topic}/json"
             try:
-                import threading, urllib.request
-                result = []
-                def _fetch():
-                    try:
-                        req = urllib.request.Request(url)
-                        with urllib.request.urlopen(req, timeout=5) as response:
-                            result.append(response.read().decode('utf-8'))
-                    except Exception:
-                        pass
-                t = threading.Thread(target=_fetch, daemon=True)
-                t.start()
-                while t.is_alive():
-                    await asyncio.sleep(0.05)
-                lines = result[0].strip().split('\n') if result else []
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    retry_delay = 1 # Reset on success
+                    for line in response:
+                        if not self.running: break
+                        if line.strip():
+                            try:
+                                msg = json.loads(line.decode('utf-8'))
+                                if msg.get('event') == 'message':
+                                    content = json.loads(msg.get('message', '{}'))
+                                    self.incoming_messages.append(content)
+                            except Exception:
+                                pass
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    print(f"Network: Rate limited. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30)
+                else:
+                    time.sleep(1)
+            except Exception:
+                time.sleep(1) # General reconnect delay
 
-                for line in lines:
-                    if line.strip():
-                        try:
-                            msg = json.loads(line)
-                            if msg.get('event') == 'message':
-                                if msg.get('time'):
-                                    self.last_sync = max(self.last_sync, msg['time'] + 1)
-                                content = json.loads(msg.get('message', '{}'))
-                                self.incoming_messages.append(content)
-                        except Exception:
-                            pass
-            except Exception as e:
-                print("Poll error:", e)
-
-            await asyncio.sleep(0.1)  # Faster polling for native
+    async def _poll_loop(self):
+        # Legacy placeholder (no longer used, replaced by _listen_loop)
+        pass
 
     def get_messages(self):
         res = list(self.incoming_messages)

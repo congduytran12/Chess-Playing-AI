@@ -246,7 +246,7 @@ async def main():
                 running = False
             # Mouse Handler
             elif e.type == p.MOUSEBUTTONDOWN:
-                location = p.mouse.get_pos()
+                location = e.pos
                 
                 # Dropdown logic (Only for Local vs AI)
                 if currentModeIndex == 0:
@@ -301,6 +301,7 @@ async def main():
                         playerBlackHuman = True
                     elif currentModeIndex == 2: # Online Multiplayer
                         multiplayerMode = True
+                        inputBoxActive = False # Reset input box on mode change
                     
                     # Reset game on mode change
                     gs = GameState()
@@ -604,7 +605,9 @@ async def main():
 
         # Mode Button (always visible)
         modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
-        p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), modeBtnRect)
+        mouse_pos = p.mouse.get_pos()
+        color = p.Color(MOVE_HIGHLIGHT_COLOR) if modeBtnRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+        p.draw.rect(screen, color, modeBtnRect)
         p.draw.rect(screen, p.Color('black'), modeBtnRect, 1)
         
         mode_texts = ["Mode: Local vs AI", "Mode: Local 2-Player", "Mode: Online Multiplayer"]
@@ -619,7 +622,8 @@ async def main():
         if multiplayerMode:
             if not networkConnected:
                 hostBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
-                p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), hostBtn)
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if hostBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                p.draw.rect(screen, color, hostBtn)
                 p.draw.rect(screen, p.Color('black'), hostBtn, 1)
                 textObj = diff_font.render("Host Game (White)", True, p.Color('white'))
                 screen.blit(textObj, hostBtn.move(hostBtn.width / 2 - textObj.get_width() / 2, hostBtn.height / 2 - textObj.get_height() / 2))
@@ -632,7 +636,11 @@ async def main():
                 screen.blit(textObj, inputRect.move(inputRect.width / 2 - textObj.get_width() / 2, inputRect.height / 2 - textObj.get_height() / 2))
 
                 joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), joinBtn)
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if joinBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                # Join button is only "active" (colored) if roomCode exists
+                if not roomCode:
+                    color = p.Color('gray')
+                p.draw.rect(screen, color, joinBtn)
                 p.draw.rect(screen, p.Color('black'), joinBtn, 1)
                 textObj = diff_font.render("Join Game (Black)", True, p.Color('white'))
                 screen.blit(textObj, joinBtn.move(joinBtn.width / 2 - textObj.get_width() / 2, joinBtn.height / 2 - textObj.get_height() / 2))
