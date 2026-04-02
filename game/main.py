@@ -162,6 +162,8 @@ moveBlackLog = []
 
 
 async def main():
+    global click_pos
+    click_pos = None
     # initialize py game
     p.init()
     screen = p.display.set_mode(
@@ -248,6 +250,13 @@ async def main():
             # Mouse Handler
             elif e.type == p.MOUSEBUTTONDOWN:
                 location = p.mouse.get_pos()
+                global click_pos
+                click_pos = location
+                
+                # SideBar button rects for debugging
+                btn_w, btn_h = 200, 40
+                debugHostRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 280, btn_w, btn_h)
+                print(f"DEBUG: Global Click at {location}. Mode: {currentModeIndex}. HostBtn Bounds: {debugHostRect}")
                 
                 # Dropdown logic (Only for Local vs AI)
                 if currentModeIndex == 0:
@@ -728,8 +737,13 @@ async def main():
 
 
 def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip=False):
+    global click_pos
     drawSquare(screen, flip)  # draw square on board
     highlightSquares(screen, gs, validMoves, squareSelected, flip)
+    
+    # Click Debug Visualizer (red dot)
+    if click_pos:
+        p.draw.circle(screen, p.Color("red"), click_pos, 5)
     
     # Check/Checkmate effect: Highlight the king's square in red
     if gs.inCheck:
