@@ -447,7 +447,8 @@ async def main():
                                 animate = True
                                 squareSelected = ()
                                 playerClicks = []
-                        playerClicks = [squareSelected]
+                        if not moveMade:
+                            playerClicks = [squareSelected]
 
             # Key Handler
             elif e.type == p.KEYDOWN:
