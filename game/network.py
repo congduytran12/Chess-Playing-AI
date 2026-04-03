@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import urllib.parse
 
 try:
     import js
@@ -18,9 +19,7 @@ class NetworkManager:
         self._poll_task = None  # asyncio background task (WASM only)
         self.seen_ids = set()   # Track processed message IDs to avoid duplicates
         
-        # Messaging Servers (Rotation for CORS Failover)
-        self.servers = ["ntfy.sh", "ntfy.net"]
-        self.server_idx = 0
+        self.server = "ntfy.sh"
         
         # Diagnostics
         self.msg_count = 0      # Total message events processed
@@ -35,14 +34,13 @@ class NetworkManager:
         """
         Set the ntfy topic and start listening.
         """
-        self.topic = "chess_app_multiplayer_" + str(topic).strip().upper()
+        self.topic = "multiplayer_" + str(topic).strip().upper()
         self.running = True
         self.seen_ids.clear()
         self.msg_count = 0
         self.poll_count = 0
         self.last_status = "CONNECTING"
         print(f"Network: Connecting to room {self.topic}...")
-        print(f"DEBUG: Initial Server: {self.servers[self.server_idx]}")
 
         if WASM:
             if self._poll_task and not self._poll_task.done():
@@ -54,56 +52,47 @@ class NetworkManager:
                 threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True).start()
 
     async def _wasm_poll_loop(self):
+        """
+        Polls ntfy.sh using a CORS Proxy to bypass browser security restrictions.
+        """
         last_since = "2m"
-        retry_delay = 1.5
-        print("Network: WASM poll loop started.")
+        print("Network: WASM poll loop started (VIA PROXY).")
 
         while self.running and self.topic:
             try:
-                server = self.servers[self.server_idx]
-                url = (
-                    f"https://{server}/{self.topic}/json"
+                # 1. Construct the target ntfy URL
+                ntfy_url = (
+                    f"https://{self.server}/{self.topic}/json"
                     f"?poll=1&since={last_since}&t={time.time()}"
                 )
                 
-                # Use absolute simplest fetch to avoid CORS pre-flight
-                # No headers, mode: cors, cache: no-store
-                opts = to_js({
-                    "method": "GET",
-                    "mode": "cors",
-                    "cache": "no-store",
-                    "credentials": "omit"
-                }, dict_converter=js.Object.fromEntries)
+                # 2. Wrap it in the AllOrigins CORS Proxy
+                # This bypasses the No 'Access-Control-Allow-Origin' header error.
+                proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(ntfy_url)}"
                 
                 try:
-                    response = await js.fetch(url, opts)
+                    # Simple GET with no custom headers to keep it as a 'Simple Request'
+                    response = await js.fetch(proxy_url)
                     status = response.status
+                    
+                    if status == 200:
+                        # AllOrigins returns the ntfy response in the 'contents' field
+                        wrapper = await response.json()
+                        text = str(wrapper.contents)
+                        self.last_status = "API OK"
+                    else:
+                        print(f"Network: Proxy returned status {status}")
+                        self.last_status = f"PROXY ERROR {status}"
+                        await asyncio.sleep(2)
+                        continue
+                        
                 except Exception as e:
-                    # In some environments, a CORS block results in a generic Type Error
-                    print(f"Network: Fetch Exception (Likely CORS Block): {e}")
-                    status = 0
-                
-                self.last_status = f"HTTP {status}"
-
-                if status == 0 or (status >= 400 and status != 429):
-                    self.server_idx = (self.server_idx + 1) % len(self.servers)
-                    print(f"Network: Status {status}. Switching to backup server: {self.servers[self.server_idx]}")
-                    self.last_status = "SWITCHING"
+                    print(f"Network: Fetch Exception (Proxy): {e}")
+                    self.last_status = "FETCH ERROR"
                     await asyncio.sleep(2)
                     continue
-
-                if status == 429:
-                    self.last_status = "RATE-LIMIT"
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, 30)
-                    continue
-
-                self.poll_count += 1
-                retry_delay = 1.5
-                text = str(await response.text())
                 
-                if text.strip():
-                    print(f"DEBUG: Raw Network Receive ({server}): {text.strip()}")
+                self.poll_count += 1
                 
                 if not text.strip():
                     await asyncio.sleep(1.5)
@@ -125,6 +114,7 @@ class NetworkManager:
                                 content = json.loads(msg.get('message', '{}'))
                                 self.incoming_messages.append(content)
                                 self.msg_count += 1
+                                print(f"Network: Received msg ID {msg_id}")
                     except Exception: pass
 
             except asyncio.CancelledError: break
@@ -135,30 +125,25 @@ class NetworkManager:
             await asyncio.sleep(1.5)
 
     async def send(self, data):
+        """
+        Sends move data using navigator.sendBeacon() to bypass CORS.
+        """
         if not self.topic: return
         
-        server = self.servers[self.server_idx]
-        url = f"https://{server}/{self.topic}"
+        url = f"https://{self.server}/{self.topic}"
         raw = json.dumps(data)
         
         if WASM:
             try:
-                # Use simple POST with no custom headers to bypass CORS pre-flight
-                opts = to_js({
-                    "method": "POST",
-                    "body": raw,
-                    "mode": "cors",
-                    "credentials": "omit"
-                }, dict_converter=js.Object.fromEntries)
-                
-                print(f"Network: Transmitting move to {server}...")
-                response = await js.fetch(url, opts)
-                if response.status == 200:
-                    print("Network: Transmission successful.")
+                # navigator.sendBeacon is 'fire-and-forget' and bypasses CORS pre-flight.
+                # It is designed specifically for background telemetry and cross-origin tasks.
+                success = js.navigator.sendBeacon(url, raw)
+                if success:
+                    print("Network: Message queued for transmit (via Beacon).")
                 else:
-                    print(f"Network: Transmission status {response.status}")
+                    print("Network: Beacon failed to queue.")
             except Exception as e:
-                print(f"Network: Transmit error: {e}")
+                print(f"Network: Beacon error: {e}")
         else:
             import threading, urllib.request
             def _send():
@@ -174,8 +159,7 @@ class NetworkManager:
             if not self.topic:
                 time.sleep(1)
                 continue
-            server = self.servers[self.server_idx]
-            url = f"https://{server}/{self.topic}/json"
+            url = f"https://{self.server}/{self.topic}/json"
             try:
                 req = urllib.request.Request(url)
                 with urllib.request.urlopen(req, timeout=60) as response:
