@@ -42,13 +42,18 @@ class handler(BaseHTTPRequestHandler):
         # 4. Proxy the Request (urllib)
         try:
             req = urllib.request.Request(target_url)
+            # Use High-Performance Browser Agent
             req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+            # Request specific JSON lines for speed
+            req.add_header('Accept', 'application/x-ndjson')
             
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=10) as response:
                 content = response.read()
                 self.send_response(response.status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
+                # Latency-Reduction Headers
+                self.send_header('X-Content-Type-Options', 'nosniff')
                 self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
                 self.end_headers()
                 self.wfile.write(content)
@@ -82,7 +87,7 @@ class handler(BaseHTTPRequestHandler):
             req.add_header('Content-Type', 'text/plain')
             req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
             
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with urllib.request.urlopen(req, timeout=5) as response:
                 content = response.read()
                 self.send_response(response.status)
                 self.send_header('Content-Type', 'application/json')

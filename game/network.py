@@ -28,6 +28,7 @@ class NetworkManager:
         self.msg_count = 0      # Total message events processed
         self.poll_count = 0     # How many successful polls made
         self.last_status = "IDLE"
+        self.latency = 0        # Speed in ms
 
     def set_topic(self, topic):
         """
@@ -54,49 +55,41 @@ class NetworkManager:
         Polls ntfy via an internal Binary Tunnel (Base64) to ensure data integrity.
         Includes a persistent backend handshake retry for reliability.
         """
-        # 0. Boot-Safety: Non-blocking Engine Dependency Check
+        # 0. Boot-Safety check
         try:
-            # We use a safer eval check that doesn't trigger security frame errors
             is_ready = js.eval("typeof BrowserFS !== 'undefined'")
-            if is_ready:
-                print("Network: [HEALTH] Dependencies OK.")
-            else:
-                print("Network: [ALERT] Missing Core Dependencies (Attempting Sync Anyway).")
-        except Exception as e:
-            print(f"Network: Dependency check skipped: {e}")
+            if is_ready: print("Network: Dependencies OK.")
+        except: pass
 
         # 1. External Origin Awareness
         origin = str(js.window.location.origin)
         api_base = f"{origin}/api/sync"
         
         # 2. Resilient Handshake Loop
-        print(f"Network: Testing handshake at {api_base}...")
         handshake_complete = False
         retry_count = 0
-        
         while not handshake_complete and self.running and retry_count < 10:
-            self.last_status = f"CONNECTING ({retry_count})"
+            self.last_status = "HANDSHAKING"
             try:
-                # Use a very short timeout for the handshake to avoid hangs
+                start = time.time()
                 handshake_res = await js.fetch(f"{api_base}?test=1")
                 text = str(await handshake_res.text())
                 if "SYNC_READY" in text:
-                    print("Network: Handshake SUCCESS. Tunnel is active.")
-                    self.last_status = "SYNC READY"
                     handshake_complete = True
+                    self.latency = int((time.time() - start) * 1000)
+                    self.last_status = "SYNC READY"
                 else:
                     self.last_status = "RETRYING"
-            except Exception as e:
-                print(f"Network: Handshake attempt {retry_count} failed: {e}")
-                self.last_status = f"SYNC DELAY"
+            except:
+                self.last_status = "GATE DELAY"
             
             if not handshake_complete:
                 retry_count += 1
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
 
-        # 3. Always Start Polling (Even if handshake takes long)
+        # 3. Aggressive Poll Loop
         last_since = "2m"
-        print("Network: Starting messaging tunnel...")
+        print("Network: Starting Aggressive Messaging Tunnel...")
 
         while self.running and self.topic:
             try:
@@ -110,30 +103,31 @@ class NetworkManager:
                 b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
                 proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
                 
+                start_poll = time.time()
                 try:
+                    # Async Fetch via Proxy
                     response = await js.fetch(proxy_url)
                     status = response.status
+                    self.latency = int((time.time() - start_poll) * 1000)
                     
                     if status == 200:
                         text = str(await response.text())
                         self.last_status = "SYNC HEALTHY"
-                        # If we ever hit 200, we consider the handshake resolved
-                        handshake_complete = True
                     else:
-                        print(f"Network: Tunnel status {status}")
                         self.last_status = f"SYNC {status}"
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(0.5)
                         continue
                         
-                except Exception as e:
+                except:
                     self.last_status = "SYNC ERROR"
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1)
                     continue
                 
                 self.poll_count += 1
                 
                 if not text.strip():
-                    await asyncio.sleep(1.5)
+                    # If empty, minimal wait for next poll (0.2s)
+                    await asyncio.sleep(0.2)
                     continue
 
                 for line in text.strip().split('\n'):
@@ -144,7 +138,6 @@ class NetworkManager:
                         msg_id = msg.get('id')
                         if msg_id and msg_id not in self.seen_ids:
                             self.seen_ids.add(msg_id)
-                            # Keep sliding window
                             if len(self.seen_ids) > 200:
                                 sorted_ids = sorted(list(self.seen_ids))
                                 self.seen_ids = set(sorted_ids[100:])
@@ -161,7 +154,8 @@ class NetworkManager:
                 print(f"Network: Tunnel Error: {e}")
                 self.last_status = "ERROR"
 
-            await asyncio.sleep(1.5)
+            # Minimal post-message wait (0.1s) for near-instant response
+            await asyncio.sleep(0.1)
 
     async def send(self, data):
         """
@@ -184,12 +178,12 @@ class NetworkManager:
                     "headers": {"Content-Type": "text/plain"}
                 }, dict_converter=js.Object.fromEntries)
                 
-                print("Network: Sending move via tunnel...")
+                print("Network: Sending move...")
                 response = await js.fetch(proxy_url, opts)
                 if response.status == 200:
-                    print("Network: Piece Transmitted SUCCESS.")
+                    print("Network: Move Transmitted SUCCESS.")
                 else:
-                    print(f"Network: Send failed (Status {response.status})")
+                    print(f"Network: Send failed ({response.status})")
             except Exception as e:
                 print(f"Network: Send error: {e}")
         else:

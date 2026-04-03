@@ -681,7 +681,7 @@ async def main():
                 
                 # Network Stats
                 display_status = net.last_status
-                statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {display_status}", True, p.Color('gray'))
+                statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.latency}ms | {display_status}", True, p.Color('gray'))
                 screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 
                 if opponentRequestedUndo:
