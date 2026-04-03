@@ -29,10 +29,6 @@ class NetworkManager:
         self.poll_count = 0     # How many successful polls made
         self.last_status = "IDLE"
 
-        # Native SSE (non-WASM only)
-        self.source = None
-        self.proxy = None
-
     def set_topic(self, topic):
         """
         Set the ntfy topic and start listening.
@@ -42,7 +38,7 @@ class NetworkManager:
         self.seen_ids.clear()
         self.msg_count = 0
         self.poll_count = 0
-        self.last_status = "CONNECTING"
+        self.last_status = "INITIALIZING"
         print(f"Network: Connecting to room {self.topic}...")
 
         if WASM:
@@ -56,21 +52,33 @@ class NetworkManager:
     async def _wasm_poll_loop(self):
         """
         Polls ntfy via an internal Binary Tunnel (Base64) to ensure data integrity.
-        Includes a backend handshake to verify connectivity.
+        Includes a persistent backend handshake retry for reliability.
         """
-        # 1. Performance Handshake
-        print("Network: Performing internal handshake...")
-        try:
-            handshake_res = await js.fetch("/api/sync?test=1")
-            text = str(await handshake_res.text())
-            if "SYNC_READY" in text:
-                print("Network: Internal Handshake SUCCESS. Tunnel is healthy.")
-                self.last_status = "SYNC READY"
-            else:
-                self.last_status = "SYNC UNSTABLE"
-        except Exception as e:
-            print(f"Network: Handshake Failed: {e}")
-            self.last_status = "GATE ERROR"
+        # 1. Origin-Aware Paths (Essential for Vercel Routing)
+        origin = str(js.window.location.origin)
+        api_base = f"{origin}/api/sync"
+        
+        # 2. Resilient Handshake Retry Loop
+        print(f"Network: Initiating handshake at {api_base}...")
+        handshake_complete = False
+        while not handshake_complete and self.running:
+            self.last_status = "CONNECTING"
+            try:
+                handshake_res = await js.fetch(f"{api_base}?test=1")
+                text = str(await handshake_res.text())
+                if "SYNC_READY" in text:
+                    print("Network: Internal Handshake SUCCESS. Tunnel is healthy.")
+                    self.last_status = "SYNC READY"
+                    handshake_complete = True
+                else:
+                    print(f"Network: Unexpected handshake response: {text[:50]}")
+                    self.last_status = "RETRYING"
+            except Exception as e:
+                print(f"Network: Handshake Failed: {e}")
+                self.last_status = "GATE ERROR"
+            
+            if not handshake_complete:
+                await asyncio.sleep(2) # Wait before retry
 
         last_since = "2m"
         print("Network: WASM poll loop started (VIA BINARY TUNNEL).")
@@ -85,7 +93,7 @@ class NetworkManager:
                 
                 # 2. Binary Encoding (Base64)
                 b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
-                proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
+                proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
                 
                 try:
                     response = await js.fetch(proxy_url)
@@ -149,8 +157,10 @@ class NetworkManager:
         raw = json.dumps(data)
         
         if WASM:
+            origin = str(js.window.location.origin)
+            api_base = f"{origin}/api/sync"
             b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
-            proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
+            proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
             try:
                 opts = to_js({
                     "method": "POST",

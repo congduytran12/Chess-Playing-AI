@@ -669,8 +669,14 @@ async def main():
                 textObj = diff_font.render(f"Room: {roomCode}", True, p.Color('black'))
                 textLoc = infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2)
                 screen.blit(textObj, textLoc)
-                # Connection Indicator
-                dot_color = p.Color('green') if "HEALTHY" in net.last_status or "READY" in net.last_status or "CONNECTING" in net.last_status else p.Color('red')
+                # Connection Indicator (Traffic Light System)
+                if "HEALTHY" in net.last_status or "READY" in net.last_status:
+                    dot_color = p.Color('green')
+                elif "CONNECTING" in net.last_status or "INITIALIZING" in net.last_status or "RETRYING" in net.last_status:
+                    dot_color = p.Color('orange')
+                else:
+                    dot_color = p.Color('red')
+                    
                 p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 
                 # Network Stats
