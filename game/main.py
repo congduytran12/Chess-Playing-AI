@@ -670,10 +670,12 @@ async def main():
                 textLoc = infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2)
                 screen.blit(textObj, textLoc)
                 # Connection Indicator
-                p.draw.circle(screen, p.Color('green'), (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
+                dot_color = p.Color('green') if "200" in net.last_status or "CONNECTING" in net.last_status else p.Color('red')
+                p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 
                 # Network Stats
-                statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.last_status}", True, p.Color('gray'))
+                display_status = "CORS BLOCKED" if "HTTP 0" in net.last_status else net.last_status
+                statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {display_status}", True, p.Color('gray'))
                 screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 
                 if opponentRequestedUndo:
