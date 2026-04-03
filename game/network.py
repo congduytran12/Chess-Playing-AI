@@ -3,6 +3,8 @@ import json
 import time
 import base64
 import urllib.parse
+import urllib.request
+import threading
 
 try:
     import js
@@ -27,6 +29,10 @@ class NetworkManager:
         self.poll_count = 0     # How many successful polls made
         self.last_status = "IDLE"
 
+        # Native SSE (non-WASM only)
+        self.source = None
+        self.proxy = None
+
     def set_topic(self, topic):
         """
         Set the ntfy topic and start listening.
@@ -44,7 +50,6 @@ class NetworkManager:
                 self._poll_task.cancel()
             self._poll_task = asyncio.ensure_future(self._wasm_poll_loop())
         else:
-            import threading
             if not any(t.name == "NtfyListener" for t in threading.enumerate()):
                 threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True).start()
 
@@ -79,7 +84,6 @@ class NetworkManager:
                 )
                 
                 # 2. Binary Encoding (Base64)
-                # This ensures URL parameters (poll, since) are never cut off by proxies or filters.
                 b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
                 proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
                 
@@ -137,16 +141,16 @@ class NetworkManager:
 
     async def send(self, data):
         """
-        Sends move data via the binary tunnel to bypass ad-blockers and CORS.
+        Sends move data via the tunnel (WASM) or direct (Native).
         """
         if not self.topic: return
         
         ntfy_url = f"https://{self.server}/{self.topic}"
-        b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
-        proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
         raw = json.dumps(data)
         
         if WASM:
+            b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
+            proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
             try:
                 opts = to_js({
                     "method": "POST",
@@ -163,16 +167,16 @@ class NetworkManager:
             except Exception as e:
                 print(f"Network: Transmit error: {e}")
         else:
-            import threading, urllib.request
             def _send():
                 try:
                     req = urllib.request.Request(ntfy_url, data=raw.encode('utf-8'), method='POST')
                     urllib.request.urlopen(req, timeout=5)
-                except Exception: pass
+                    print("Network: Transmission SUCCESS (Direct).")
+                except Exception as e:
+                    print("Network: Send error:", e)
             threading.Thread(target=_send, daemon=True).start()
 
     def _listen_loop(self):
-        import urllib.request
         while self.running:
             if not self.topic:
                 time.sleep(1)
@@ -190,6 +194,7 @@ class NetworkManager:
                                     content = json.loads(msg.get('message', '{}'))
                                     self.incoming_messages.append(content)
                                     self.msg_count += 1
+                                    print(f"Network: Received direct msg")
                             except Exception: pass
             except Exception: time.sleep(2)
 
