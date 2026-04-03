@@ -17,6 +17,11 @@ class NetworkManager:
         self.running = False
         self._poll_task = None  # asyncio background task (WASM only)
         self.seen_ids = set()   # Track processed message IDs to avoid duplicates
+        
+        # Diagnostics
+        self.msg_count = 0      # Total message events processed
+        self.poll_count = 0     # How many successful polls made
+        self.last_status = "IDLE"
 
         # Native SSE (non-WASM only)
         self.source = None
@@ -31,6 +36,9 @@ class NetworkManager:
         self.topic = "chess_app_multiplayer_" + str(topic).strip().upper()
         self.running = True
         self.seen_ids.clear()
+        self.msg_count = 0
+        self.poll_count = 0
+        self.last_status = "CONNECTING"
         print(f"Network: Connecting to room {self.topic}...")
 
         if WASM:
@@ -56,8 +64,9 @@ class NetworkManager:
         Polls ntfy.sh using js.fetch.
         Uses message IDs for 'since' parameter to avoid clock skew issues.
         """
-        # Start by fetching the last 30 seconds of messages to catch up
-        last_since = "30s"
+        # Start by fetching recently cached messages (last 2 minutes)
+        # to ensure no moves are missed during join.
+        last_since = "2m"
         retry_delay = 1.5
         print("Network: WASM poll loop started.")
 
@@ -72,13 +81,21 @@ class NetworkManager:
                 opts = to_js({"method": "GET"}, dict_converter=js.Object.fromEntries)
                 response = await js.fetch(url, opts)
                 status = response.status
+                self.last_status = f"HTTP {status}"
 
                 if status == 429:
                     print(f"Network: Rate limited. Retrying in {retry_delay}s...")
+                    self.last_status = "RATE-LIMIT"
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 30)
                     continue
 
+                if status != 200:
+                    print(f"Network: Poll failed with status {status}")
+                    await asyncio.sleep(2)
+                    continue
+
+                self.poll_count += 1
                 retry_delay = 1.5
                 text = str(await response.text())
                 
@@ -99,7 +116,6 @@ class NetworkManager:
                             self.seen_ids.add(msg_id)
                             # Keep seen_ids from growing infinitely
                             if len(self.seen_ids) > 200:
-                                # Simple way to trim the set; slightly inefficient but safe
                                 sorted_ids = sorted(list(self.seen_ids))
                                 self.seen_ids = set(sorted_ids[100:])
                             
@@ -109,20 +125,23 @@ class NetworkManager:
                             if msg.get('event') == 'message':
                                 content = json.loads(msg.get('message', '{}'))
                                 self.incoming_messages.append(content)
-                                print(f"Network: Received message ID {msg_id}")
+                                self.msg_count += 1
+                                print(f"Network: Received msg ID {msg_id}")
                     except Exception as e:
-                        print(f"Network: Message parse error: {e}")
+                        print(f"Network: Msg parse error: {e}")
 
             except asyncio.CancelledError:
                 print("Network: Poll loop cancelled.")
                 break
             except Exception as e:
-                print(f"Network: Poll error: {e}")
+                print(f"Network: Poll loop error: {e}")
+                self.last_status = "ERROR"
 
             # Wait before next poll
             await asyncio.sleep(1.5)
 
         print("Network: WASM poll loop stopped.")
+        self.last_status = "STOPPED"
 
     # ------------------------------------------------------------------
     # Shared: send a message
@@ -133,7 +152,7 @@ class NetworkManager:
 
         url = "https://ntfy.sh/" + self.topic
         raw = json.dumps(data)
-        print(f"Network: Sending message to {self.topic}...")
+        print(f"Network: Transmitting to {self.topic}...")
 
         if WASM:
             try:
@@ -141,9 +160,13 @@ class NetworkManager:
                     {"method": "POST", "body": raw},
                     dict_converter=js.Object.fromEntries
                 )
-                await js.fetch(url, opts)
+                response = await js.fetch(url, opts)
+                if response.status == 200:
+                    print(f"Network: Message successfully transmitted.")
+                else:
+                    print(f"Network: Transmission failed (Status {response.status}).")
             except Exception as e:
-                print("WASM send error:", e)
+                print("WASM transmit error:", e)
         else:
             import threading, urllib.request
             def _send():
@@ -183,6 +206,7 @@ class NetworkManager:
                                 if msg.get('event') == 'message':
                                     content = json.loads(msg.get('message', '{}'))
                                     self.incoming_messages.append(content)
+                                    self.msg_count += 1
                             except Exception:
                                 pass
             except urllib.error.HTTPError as e:

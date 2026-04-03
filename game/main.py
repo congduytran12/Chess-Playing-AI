@@ -414,7 +414,13 @@ async def main():
                         # append player both clicks (place and destination)
                         playerClicks.append(squareSelected)
                     # after second click (at destination)
-                    if len(playerClicks) == 2 and humanTurn:
+                    if len(playerClicks) == 2:
+                        if not humanTurn:
+                            print("Main: Wait for opponent turn.")
+                            squareSelected = ()
+                            playerClicks = []
+                            continue
+                            
                         # user generated a move
                         move = Move(playerClicks[0], playerClicks[1], gs.board)
                         for i in range(len(validMoves)):
@@ -663,6 +669,10 @@ async def main():
                 screen.blit(textObj, textLoc)
                 # Connection Indicator
                 p.draw.circle(screen, p.Color('green'), (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
+                
+                # Network Stats
+                statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.last_status}", True, p.Color('gray'))
+                screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 
                 if opponentRequestedUndo:
                     panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 100)
