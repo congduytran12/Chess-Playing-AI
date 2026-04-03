@@ -7,8 +7,6 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" },
-        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
         { "key": "Access-Control-Allow-Origin", "value": "*" }
       ]
     }
@@ -17,6 +15,10 @@
     {
       "source": "/browserfs.min.js",
       "destination": "https://pygame-web.github.io/pygame-static/browserfs.min.js"
+    },
+    {
+      "source": "/api/sync",
+      "destination": "/api/sync.py"
     }
   ]
 }
