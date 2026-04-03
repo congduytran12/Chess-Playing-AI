@@ -75,7 +75,7 @@ class NetworkManager:
                     self.last_status = "RETRYING"
             except Exception as e:
                 print(f"Network: Handshake Failed: {e}")
-                self.last_status = "GATE ERROR"
+                self.last_status = f"GATE ERROR: {str(e)[:15]}"
             
             if not handshake_complete:
                 await asyncio.sleep(2) # Wait before retry

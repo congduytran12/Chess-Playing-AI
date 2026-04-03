@@ -1,61 +1,93 @@
-from flask import Flask, request, Response
-import requests
+import os
 import base64
+import json
+import urllib.request
+import urllib.parse
+from http.server import BaseHTTPRequestHandler
 
-app = Flask(__name__)
+class handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
 
-@app.route('/api/sync', methods=['GET', 'POST', 'OPTIONS'])
-def sync():
-    # Handle CORS preflight
-    if request.method == 'OPTIONS':
-        response = Response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        return response
-
-    # 1. Handshake Test
-    if request.args.get('test'):
-        response = Response("SYNC_READY", status=200)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
-
-    # 2. Decode the target URL (Base64 to prevent scrambling)
-    encoded_url = request.args.get('url')
-    if not encoded_url:
-        return "Missing url parameter", 400
+    def do_GET(self):
+        # 1. Parse Query Params
+        parsed_url = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed_url.query)
         
-    try:
-        # Pad and decode
-        url = base64.b64decode(encoded_url).decode('utf-8')
-    except Exception as e:
-        return f"Encoding error: {e}", 400
-    
-    try:
-        # Use a realistic User-Agent to avoid IP throttling
-        headers = {
-            # 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Content-Type': 'text/plain'
-        }
-        
-        if request.method == 'POST':
-            # Forward the move with a 10s timeout
-            resp = requests.post(url, data=request.get_data(), headers=headers, timeout=10)
-        else:
-            # Forward the poll with a 15s timeout
-            resp = requests.get(url, headers=headers, timeout=15)
+        # 2. Handshake Test
+        if 'test' in query:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(b"SYNC_READY")
+            return
+
+        # 3. Decode Target URL (Base64)
+        encoded_url = query.get('url', [None])[0]
+        if not encoded_url:
+            self.send_error(400, "Missing url parameter")
+            return
             
-        # Create a response that forwards the data back to the browser
-        response = Response(resp.content, status=resp.status_code)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Content-Type'] = 'application/json'
-        # Add a cache-busting header
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        return response
+        try:
+            target_url = base64.b64decode(encoded_url).decode('utf-8')
+        except Exception as e:
+            self.send_error(400, f"Encoding error: {str(e)}")
+            return
+            
+        # 4. Proxy the Request (urllib)
+        try:
+            req = urllib.request.Request(target_url)
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                content = response.read()
+                self.send_response(response.status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                self.end_headers()
+                self.wfile.write(content)
+        except Exception as e:
+            self.send_error(500, f"Proxy error: {str(e)}")
+
+    def do_POST(self):
+        # 1. Parse Query Params
+        parsed_url = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed_url.query)
         
-    except requests.exceptions.Timeout:
-        return "Target timeout", 504
-    except Exception as e:
-        return str(e), 500
+        # 2. Decode Target URL (Base64)
+        encoded_url = query.get('url', [None])[0]
+        if not encoded_url:
+            self.send_error(400, "Missing url parameter")
+            return
+            
+        try:
+            target_url = base64.b64decode(encoded_url).decode('utf-8')
+        except Exception as e:
+            self.send_error(400, f"Encoding error: {str(e)}")
+            return
+            
+        # 3. Read Body
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        
+        # 4. Proxy the POST (urllib)
+        try:
+            req = urllib.request.Request(target_url, data=body, method='POST')
+            req.add_header('Content-Type', 'text/plain')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content = response.read()
+                self.send_response(response.status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(content)
+        except Exception as e:
+            self.send_error(500, f"Proxy error: {str(e)}")
