@@ -30,7 +30,7 @@ class NetworkManager:
         """
         Set the ntfy topic and start listening.
         """
-        self.topic = "multiplayer_" + str(topic).strip().upper()
+        self.topic = "chess_app_multiplayer_" + str(topic).strip().upper()
         self.running = True
         self.seen_ids.clear()
         self.msg_count = 0
@@ -64,7 +64,7 @@ class NetworkManager:
                 
                 # 2. Gate to Vercel Gateway (Internal)
                 # Since this is the SAME ORIGIN, ad-blockers will not block it.
-                proxy_url = f"/api/proxy?url={urllib.parse.quote(ntfy_url)}"
+                proxy_url = f"/api/sync?url={urllib.parse.quote(ntfy_url)}"
                 
                 try:
                     # Use standard fetch- same origin needs no complex options
@@ -106,6 +106,7 @@ class NetworkManager:
                             last_since = msg_id
                             if msg.get('event') == 'message':
                                 content = json.loads(msg.get('message', '{}'))
+                                print(f"DEBUG: Move received at board layer: {content}")
                                 self.incoming_messages.append(content)
                                 self.msg_count += 1
                                 print(f"Network: Received msg ID {msg_id}")
@@ -125,7 +126,7 @@ class NetworkManager:
         if not self.topic: return
         
         ntfy_url = f"https://{self.server}/{self.topic}"
-        proxy_url = f"/api/proxy?url={urllib.parse.quote(ntfy_url)}"
+        proxy_url = f"/api/sync?url={urllib.parse.quote(ntfy_url)}"
         raw = json.dumps(data)
         
         if WASM:

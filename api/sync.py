@@ -3,8 +3,8 @@ import requests
 
 app = Flask(__name__)
 
-@app.route('/api/proxy', methods=['GET', 'POST', 'OPTIONS'])
-def proxy():
+@app.route('/api/sync', methods=['GET', 'POST', 'OPTIONS'])
+def sync():
     # Handle CORS preflight (though not needed for same-origin, good for safety)
     if request.method == 'OPTIONS':
         response = Response()

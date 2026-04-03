@@ -674,7 +674,7 @@ async def main():
                 p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 
                 # Network Stats
-                display_status = "VERCEL PROXY" if "GATEWAY OK" in net.last_status else net.last_status
+                display_status = "STEALTH SYNC ACTIVE" if "GATEWAY OK" in net.last_status else net.last_status
                 statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {display_status}", True, p.Color('gray'))
                 screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 
