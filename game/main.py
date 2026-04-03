@@ -219,6 +219,11 @@ async def main():
                     startPoint = (moveStr[0][0], moveStr[0][1])
                     endPoint = (moveStr[1][0], moveStr[1][1])
                     remoteMove = Move(startPoint, endPoint, gs.board)
+                    if remoteMove.pieceMoved == '--':
+                        print(f"Main: Ignoring invalid move from {startPoint} to {endPoint} (empty square)")
+                        continue
+                        
+                    print(f"Main: Received move {remoteMove.getChessNotation()}")
                     if msg.get('promo'):
                         remoteMove.isPawnPromotion = True
                     gs.makeMove(remoteMove)
@@ -432,13 +437,15 @@ async def main():
                                 else:
                                     promotion_choice = ""
                                 if multiplayerMode and networkConnected:
-                                    asyncio.ensure_future(net.send({
+                                    move_data = {
                                         'type': 'move',
                                         'move': [(validMoves[i].startRow, validMoves[i].startCol), (validMoves[i].endRow, validMoves[i].endCol)],
                                         'promo': validMoves[i].isPawnPromotion,
                                         'promoPiece': promotion_choice,
                                         'sender': myPlayerId
-                                    }))
+                                    }
+                                    print(f"Main: Sending move {validMoves[i].getChessNotation()}")
+                                    asyncio.ensure_future(net.send(move_data))
                                 # add sound for human move
                                 if (pieceCaptured or move.isEnpassantMove):
                                     # Play capture sound

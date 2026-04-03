@@ -761,6 +761,8 @@ class Move():
         return self.colsToFiles[col] + self.rowsToRanks[row]
 
     def getPieceNotation(self, piece, col):
+        if piece == '--':
+            return "?? "
         if piece[1] == 'p':
             return self.getRankFile(self.startRow, self.startCol) + self.getRankFile(self.endRow, self.endCol)
         return self.pieceNotation[piece[1]] + self.colsToFiles[col]

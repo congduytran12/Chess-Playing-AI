@@ -13,10 +13,10 @@ except ImportError:
 class NetworkManager:
     def __init__(self):
         self.topic = None
-        self.last_sync = int(time.time())
         self.incoming_messages = []
         self.running = False
         self._poll_task = None  # asyncio background task (WASM only)
+        self.seen_ids = set()   # Track processed message IDs to avoid duplicates
 
         # Native SSE (non-WASM only)
         self.source = None
@@ -29,8 +29,8 @@ class NetworkManager:
         In native: starts a background SSE listener thread.
         """
         self.topic = "chess_app_multiplayer_" + str(topic)
-        self.last_sync = int(time.time()) - 3
         self.running = True
+        self.seen_ids.clear()
         print(f"Network: Connecting to room {self.topic}...")
 
         if WASM:
@@ -38,7 +38,6 @@ class NetworkManager:
             if self._poll_task and not self._poll_task.done():
                 self._poll_task.cancel()
             # Schedule the poll loop as a background asyncio task.
-            # ensure_future() returns immediately — no blocking!
             self._poll_task = asyncio.ensure_future(self._wasm_poll_loop())
         else:
             import threading
@@ -54,18 +53,22 @@ class NetworkManager:
     # ------------------------------------------------------------------
     async def _wasm_poll_loop(self):
         """
-        Polls ntfy.sh every ~1.5 seconds using js.fetch.
-        Runs entirely in the background — never blocks the game loop.
+        Polls ntfy.sh using js.fetch.
+        Uses message IDs for 'since' parameter to avoid clock skew issues.
         """
+        # Start by fetching the last 30 seconds of messages to catch up
+        last_since = "30s"
         retry_delay = 1.5
         print("Network: WASM poll loop started.")
 
         while self.running and self.topic:
             try:
+                # Add cache-busting timestamp 't' to the URL
                 url = (
                     f"https://ntfy.sh/{self.topic}/json"
-                    f"?poll=1&since={self.last_sync}"
+                    f"?poll=1&since={last_since}&t={time.time()}"
                 )
+                
                 opts = to_js({"method": "GET"}, dict_converter=js.Object.fromEntries)
                 response = await js.fetch(url, opts)
                 status = response.status
@@ -77,21 +80,38 @@ class NetworkManager:
                     continue
 
                 retry_delay = 1.5
-                # Update timestamp *before* parsing so we don't re-fetch old messages
-                self.last_sync = int(time.time())
-
                 text = str(await response.text())
+                
+                if not text.strip():
+                    await asyncio.sleep(1.5)
+                    continue
+
                 for line in text.strip().split('\n'):
                     line = line.strip()
                     if not line:
                         continue
                     try:
                         msg = json.loads(line)
-                        if msg.get('event') == 'message':
-                            content = json.loads(msg.get('message', '{}'))
-                            self.incoming_messages.append(content)
-                    except Exception:
-                        pass
+                        msg_id = msg.get('id')
+                        
+                        # Process only new message events
+                        if msg_id and msg_id not in self.seen_ids:
+                            self.seen_ids.add(msg_id)
+                            # Keep seen_ids from growing infinitely
+                            if len(self.seen_ids) > 200:
+                                # Simple way to trim the set; slightly inefficient but safe
+                                sorted_ids = sorted(list(self.seen_ids))
+                                self.seen_ids = set(sorted_ids[100:])
+                            
+                            # Update 'since' to the latest ID we've seen
+                            last_since = msg_id
+                            
+                            if msg.get('event') == 'message':
+                                content = json.loads(msg.get('message', '{}'))
+                                self.incoming_messages.append(content)
+                                print(f"Network: Received message ID {msg_id}")
+                    except Exception as e:
+                        print(f"Network: Message parse error: {e}")
 
             except asyncio.CancelledError:
                 print("Network: Poll loop cancelled.")
@@ -113,6 +133,7 @@ class NetworkManager:
 
         url = "https://ntfy.sh/" + self.topic
         raw = json.dumps(data)
+        print(f"Network: Sending message to {self.topic}...")
 
         if WASM:
             try:
