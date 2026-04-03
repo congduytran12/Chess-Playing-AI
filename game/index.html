@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chess Playing AI - Online Multiplayer</title>
+    <!-- Use local (proxied) paths to bypass ORB/CORS security blocks -->
+    <script src="./browserfs.min.js"></script>
+    <script src="./pythons.js" type="module" id="site" data-python="python3.12" 
+            data-LINES=42 data-COLUMNS=132 data-os="vtx,snd,gui" async defer>
+#<!--
+import os, sys, shutil, asyncio, json, time, base64
+
+# Start the game loop
+async def main():
+    while True:
+        await asyncio.sleep(1)
+
+asyncio.run(main())
+//--></script>
+    <style>
+        body { margin: 0; background-color: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
+        #pygame { display: block; margin: 0 auto; width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="pygame"></div>
+</body>
+</html>

@@ -13,8 +13,12 @@
   ],
   "rewrites": [
     {
+      "source": "/pythons.js",
+      "destination": "https://pygame-web.github.io/cdn/0.9.3/pythons.js"
+    },
+    {
       "source": "/browserfs.min.js",
-      "destination": "https://pygame-web.github.io/pygame-static/browserfs.min.js"
+      "destination": "https://pygame-web.github.io/cdn/0.9.3/browserfs.min.js"
     },
     {
       "source": "/api/sync",

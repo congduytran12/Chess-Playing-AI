@@ -1,6 +1,7 @@
 {
   "name": "chess-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scripts": {
-    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game"  }
+    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game && sed -i 's|https://pygame-web.github.io/cdn/0.9.3/||g' game/build/web/index.html"
+  }
 }
