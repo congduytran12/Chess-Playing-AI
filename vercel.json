@@ -2,5 +2,21 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "game/build/web",
-  "framework": null
+  "framework": null,
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" },
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/browserfs.min.js",
+      "destination": "https://pygame-web.github.io/pygame-static/browserfs.min.js"
+    }
+  ]
 }

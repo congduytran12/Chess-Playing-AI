@@ -54,6 +54,15 @@ class NetworkManager:
         Polls ntfy via an internal Binary Tunnel (Base64) to ensure data integrity.
         Includes a persistent backend handshake retry for reliability.
         """
+        # 0. JS Dependency Health Check
+        try:
+            if js.eval("typeof BrowserFS !== 'undefined'"):
+                print("Network: [HEALTH] BrowserFS is LOADED.")
+            else:
+                print("Network: [ALERT] BrowserFS is missing (Check Vercel Proxy).")
+        except:
+            print("Network: [DEBUG] Handshake Pre-check.")
+
         # 1. Origin-Aware Paths (Essential for Vercel Routing)
         origin = str(js.window.location.origin)
         api_base = f"{origin}/api/sync"
