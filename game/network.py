@@ -28,7 +28,7 @@ class NetworkManager:
         In WASM: schedules a non-blocking async poll loop and returns immediately.
         In native: starts a background SSE listener thread.
         """
-        self.topic = "chess_app_multiplayer_" + str(topic)
+        self.topic = "chess_app_multiplayer_" + str(topic).strip().upper()
         self.running = True
         self.seen_ids.clear()
         print(f"Network: Connecting to room {self.topic}...")

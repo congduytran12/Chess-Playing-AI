@@ -472,7 +472,7 @@ async def main():
                         inputBoxActive = False
                     else:
                         if len(roomCode) < 12:
-                            roomCode += e.unicode
+                            roomCode += e.unicode.upper()
                     continue
 
                 if e.key == p.K_z:  # undo when z is pressed
@@ -658,8 +658,11 @@ async def main():
                 screen.blit(textObj, joinBtn.move(joinBtn.width / 2 - textObj.get_width() / 2, joinBtn.height / 2 - textObj.get_height() / 2))
             else:
                 infoRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                textObj = diff_font.render(f"Connected to Room: {roomCode}", True, p.Color('black'))
-                screen.blit(textObj, infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2))
+                textObj = diff_font.render(f"Room: {roomCode}", True, p.Color('black'))
+                textLoc = infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2)
+                screen.blit(textObj, textLoc)
+                # Connection Indicator
+                p.draw.circle(screen, p.Color('green'), (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 
                 if opponentRequestedUndo:
                     panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 100)

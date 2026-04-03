@@ -764,7 +764,7 @@ class Move():
         if piece == '--':
             return "?? "
         if piece[1] == 'p':
-            return self.getRankFile(self.startRow, self.startCol) + self.getRankFile(self.endRow, self.endCol)
+            return self.getRankFile(self.startRow, self.startCol)
         return self.pieceNotation[piece[1]] + self.colsToFiles[col]
 
     # overriding the str() function
