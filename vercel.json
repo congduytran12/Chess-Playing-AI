@@ -9,42 +9,12 @@
       "headers": [
         { "key": "Access-Control-Allow-Origin", "value": "*" }
       ]
-    },
-    {
-      "source": "/(.*)\\.js",
-      "headers": [
-        { "key": "Content-Type", "value": "application/javascript" }
-      ]
     }
   ],
   "rewrites": [
     {
       "source": "/api/sync",
       "destination": "/api/sync.py"
-    },
-    {
-      "source": "/vtx.js",
-      "destination": "https://pygame-web.github.io/cdn/0.9.3/vtx.js"
-    },
-    {
-      "source": "/browserfs.min.js",
-      "destination": "https://pygame-web.github.io/cdn/0.9.3/browserfs.min.js"
-    },
-    {
-      "source": "/pythons.js",
-      "destination": "https://pygame-web.github.io/cdn/0.9.3/pythons.js"
-    },
-    {
-      "source": "/empty.html",
-      "destination": "https://pygame-web.github.io/cdn/0.9.3/empty.html"
-    },
-    {
-      "source": "/(vtx|snd|gui|web)\\.js",
-      "destination": "https://pygame-web.github.io/cdn/0.9.3/$1.js"
-    },
-    {
-      "source": "/(.*)\\.(wasm|data|targz)",
-      "destination": "https://pygame-web.github.io/cdn/0.9.3/$1.$2"
     }
   ]
 }

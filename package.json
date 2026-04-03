@@ -1,7 +1,7 @@
 {
   "name": "chess-ai",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "scripts": {
-    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game && sed -i 's|https://pygame-web.github.io/cdn/0.9.3/||g' game/build/web/index.html"
+    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game && python3 -c \"import pygbag, os, shutil; src=os.path.join(os.path.dirname(pygbag.__file__), 'paka', 'static'); dest='game/build/web'; [shutil.copy(os.path.join(src, f), dest) for f in os.listdir(src) if os.path.isfile(os.path.join(src, f))]\" && sed -i 's|https://pygame-web.github.io/cdn/0.9.3/||g' game/build/web/index.html"
   }
 }
