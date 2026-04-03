@@ -98,6 +98,8 @@ class NetworkManager:
                 self.poll_count += 1
                 retry_delay = 1.5
                 text = str(await response.text())
+                if text.strip():
+                    print(f"DEBUG: Raw Network Receive: {text.strip()}")
                 
                 if not text.strip():
                     await asyncio.sleep(1.5)
@@ -157,7 +159,11 @@ class NetworkManager:
         if WASM:
             try:
                 opts = to_js(
-                    {"method": "POST", "body": raw},
+                    {
+                        "method": "POST",
+                        "body": raw,
+                        "headers": {"Content-Type": "text/plain"}
+                    },
                     dict_converter=js.Object.fromEntries
                 )
                 response = await js.fetch(url, opts)

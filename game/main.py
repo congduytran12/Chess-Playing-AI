@@ -344,6 +344,7 @@ async def main():
                                 roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                             multiplayerRole = 'host'
                             net.set_topic(roomCode)  # instant: starts background poll task
+                            print(f"DEBUG: I am HOST. Full Network Topic: [{net.topic}]")
                             networkConnected = True
                             continue
                         
@@ -352,8 +353,9 @@ async def main():
                             if roomCode:
                                 multiplayerRole = 'client'
                                 net.set_topic(roomCode)  # instant: starts background poll task
+                                print(f"DEBUG: I am CLIENT. Full Network Topic: [{net.topic}]")
                                 networkConnected = True
-                            continue
+                                continue
                             
                         if inputRect.collidepoint(location):
                             inputBoxActive = True
