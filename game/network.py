@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import base64
 import urllib.parse
 
 try:
@@ -49,40 +50,55 @@ class NetworkManager:
 
     async def _wasm_poll_loop(self):
         """
-        Polls ntfy.sh via an internal Vercel Proxy to avoid CORS and ad-blockers.
+        Polls ntfy via an internal Binary Tunnel (Base64) to ensure data integrity.
+        Includes a backend handshake to verify connectivity.
         """
+        # 1. Performance Handshake
+        print("Network: Performing internal handshake...")
+        try:
+            handshake_res = await js.fetch("/api/sync?test=1")
+            text = str(await handshake_res.text())
+            if "SYNC_READY" in text:
+                print("Network: Internal Handshake SUCCESS. Tunnel is healthy.")
+                self.last_status = "SYNC READY"
+            else:
+                self.last_status = "SYNC UNSTABLE"
+        except Exception as e:
+            print(f"Network: Handshake Failed: {e}")
+            self.last_status = "GATE ERROR"
+
         last_since = "2m"
-        print("Network: WASM poll loop started (VIA VERCEL GATEWAY).")
+        print("Network: WASM poll loop started (VIA BINARY TUNNEL).")
 
         while self.running and self.topic:
             try:
-                # 1. Target URL
+                # 1. Target ntfy URL
                 ntfy_url = (
                     f"https://{self.server}/{self.topic}/json"
                     f"?poll=1&since={last_since}&t={time.time()}"
                 )
                 
-                # 2. Gate to Vercel Gateway (Internal)
-                # Since this is the SAME ORIGIN, ad-blockers will not block it.
-                proxy_url = f"/api/sync?url={urllib.parse.quote(ntfy_url)}"
+                # 2. Binary Encoding (Base64)
+                # This ensures URL parameters (poll, since) are never cut off by proxies or filters.
+                b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
+                proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
                 
                 try:
-                    # Use standard fetch- same origin needs no complex options
                     response = await js.fetch(proxy_url)
                     status = response.status
                     
                     if status == 200:
                         text = str(await response.text())
-                        self.last_status = "GATEWAY OK"
+                        self.last_status = "SYNC HEALTHY"
                     else:
-                        print(f"Network: Gateway returned status {status}")
-                        self.last_status = f"GATE ERROR {status}"
+                        print(f"Network: Server returned status {status}")
+                        self.last_status = f"SYNC DELAY {status}"
                         await asyncio.sleep(2)
                         continue
                         
                 except Exception as e:
-                    print(f"Network: Fetch Exception (Gateway): {e}")
-                    self.last_status = "GATE ERROR"
+                    print(f"Network: Fetch Exception: {e}")
+                    self.last_status = "SYNC ERROR"
                     await asyncio.sleep(2)
                     continue
                 
@@ -121,31 +137,31 @@ class NetworkManager:
 
     async def send(self, data):
         """
-        Sends move data via the internal Vercel Gateway to bypass client-side blockers.
+        Sends move data via the binary tunnel to bypass ad-blockers and CORS.
         """
         if not self.topic: return
         
         ntfy_url = f"https://{self.server}/{self.topic}"
-        proxy_url = f"/api/sync?url={urllib.parse.quote(ntfy_url)}"
+        b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
+        proxy_url = f"/api/sync?url={urllib.parse.quote(b64_url)}"
         raw = json.dumps(data)
         
         if WASM:
             try:
-                # Use standard fetch to send the move to the gateway
                 opts = to_js({
                     "method": "POST",
                     "body": raw,
                     "headers": {"Content-Type": "text/plain"}
                 }, dict_converter=js.Object.fromEntries)
                 
-                print("Network: Transmitting move via Vercel Gateway...")
+                print("Network: Transmitting move via binary tunnel...")
                 response = await js.fetch(proxy_url, opts)
                 if response.status == 200:
-                    print("Network: Gateway Transmission successful.")
+                    print("Network: Transmission SUCCESS (via Binary Tunnel).")
                 else:
-                    print(f"Network: Gateway Transmission status {response.status}")
+                    print(f"Network: Transmission failed (Status {response.status})")
             except Exception as e:
-                print(f"Network: Gateway Transmit error: {e}")
+                print(f"Network: Transmit error: {e}")
         else:
             import threading, urllib.request
             def _send():

@@ -670,11 +670,11 @@ async def main():
                 textLoc = infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2)
                 screen.blit(textObj, textLoc)
                 # Connection Indicator
-                dot_color = p.Color('green') if "OK" in net.last_status or "CONNECTING" in net.last_status else p.Color('red')
+                dot_color = p.Color('green') if "HEALTHY" in net.last_status or "READY" in net.last_status or "CONNECTING" in net.last_status else p.Color('red')
                 p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 
                 # Network Stats
-                display_status = "STEALTH SYNC ACTIVE" if "GATEWAY OK" in net.last_status else net.last_status
+                display_status = net.last_status
                 statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {display_status}", True, p.Color('gray'))
                 screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 
