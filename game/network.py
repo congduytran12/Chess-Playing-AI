@@ -26,10 +26,6 @@ class NetworkManager:
         self.poll_count = 0     # How many successful polls made
         self.last_status = "IDLE"
 
-        # Native SSE (non-WASM only)
-        self.source = None
-        self.proxy = None
-
     def set_topic(self, topic):
         """
         Set the ntfy topic and start listening.
@@ -53,42 +49,40 @@ class NetworkManager:
 
     async def _wasm_poll_loop(self):
         """
-        Polls ntfy.sh using a CORS Proxy to bypass browser security restrictions.
+        Polls ntfy.sh via an internal Vercel Proxy to avoid CORS and ad-blockers.
         """
         last_since = "2m"
-        print("Network: WASM poll loop started (VIA PROXY).")
+        print("Network: WASM poll loop started (VIA VERCEL GATEWAY).")
 
         while self.running and self.topic:
             try:
-                # 1. Construct the target ntfy URL
+                # 1. Target URL
                 ntfy_url = (
                     f"https://{self.server}/{self.topic}/json"
                     f"?poll=1&since={last_since}&t={time.time()}"
                 )
                 
-                # 2. Wrap it in the AllOrigins CORS Proxy
-                # This bypasses the No 'Access-Control-Allow-Origin' header error.
-                proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(ntfy_url)}"
+                # 2. Gate to Vercel Gateway (Internal)
+                # Since this is the SAME ORIGIN, ad-blockers will not block it.
+                proxy_url = f"/api/proxy?url={urllib.parse.quote(ntfy_url)}"
                 
                 try:
-                    # Simple GET with no custom headers to keep it as a 'Simple Request'
+                    # Use standard fetch- same origin needs no complex options
                     response = await js.fetch(proxy_url)
                     status = response.status
                     
                     if status == 200:
-                        # AllOrigins returns the ntfy response in the 'contents' field
-                        wrapper = await response.json()
-                        text = str(wrapper.contents)
-                        self.last_status = "API OK"
+                        text = str(await response.text())
+                        self.last_status = "GATEWAY OK"
                     else:
-                        print(f"Network: Proxy returned status {status}")
-                        self.last_status = f"PROXY ERROR {status}"
+                        print(f"Network: Gateway returned status {status}")
+                        self.last_status = f"GATE ERROR {status}"
                         await asyncio.sleep(2)
                         continue
                         
                 except Exception as e:
-                    print(f"Network: Fetch Exception (Proxy): {e}")
-                    self.last_status = "FETCH ERROR"
+                    print(f"Network: Fetch Exception (Gateway): {e}")
+                    self.last_status = "GATE ERROR"
                     await asyncio.sleep(2)
                     continue
                 
@@ -126,29 +120,36 @@ class NetworkManager:
 
     async def send(self, data):
         """
-        Sends move data using navigator.sendBeacon() to bypass CORS.
+        Sends move data via the internal Vercel Gateway to bypass client-side blockers.
         """
         if not self.topic: return
         
-        url = f"https://{self.server}/{self.topic}"
+        ntfy_url = f"https://{self.server}/{self.topic}"
+        proxy_url = f"/api/proxy?url={urllib.parse.quote(ntfy_url)}"
         raw = json.dumps(data)
         
         if WASM:
             try:
-                # navigator.sendBeacon is 'fire-and-forget' and bypasses CORS pre-flight.
-                # It is designed specifically for background telemetry and cross-origin tasks.
-                success = js.navigator.sendBeacon(url, raw)
-                if success:
-                    print("Network: Message queued for transmit (via Beacon).")
+                # Use standard fetch to send the move to the gateway
+                opts = to_js({
+                    "method": "POST",
+                    "body": raw,
+                    "headers": {"Content-Type": "text/plain"}
+                }, dict_converter=js.Object.fromEntries)
+                
+                print("Network: Transmitting move via Vercel Gateway...")
+                response = await js.fetch(proxy_url, opts)
+                if response.status == 200:
+                    print("Network: Gateway Transmission successful.")
                 else:
-                    print("Network: Beacon failed to queue.")
+                    print(f"Network: Gateway Transmission status {response.status}")
             except Exception as e:
-                print(f"Network: Beacon error: {e}")
+                print(f"Network: Gateway Transmit error: {e}")
         else:
             import threading, urllib.request
             def _send():
                 try:
-                    req = urllib.request.Request(url, data=raw.encode('utf-8'), method='POST')
+                    req = urllib.request.Request(ntfy_url, data=raw.encode('utf-8'), method='POST')
                     urllib.request.urlopen(req, timeout=5)
                 except Exception: pass
             threading.Thread(target=_send, daemon=True).start()
