@@ -6,16 +6,19 @@ import urllib.parse
 import urllib.request
 import threading
 
-import sys
+import os
 
-WASM = (sys.platform == 'emscripten')
-
-if WASM:
+try:
     import js
     from pyodide.ffi import to_js, create_proxy
     import pyodide
-else:
+    WASM = True
+except ImportError:
+    WASM = False
     js = None
+
+print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}")
+
 
 class NetworkManager:
     def __init__(self):
