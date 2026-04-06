@@ -10,6 +10,7 @@ try:
     import js
     from pyodide.ffi import to_js, create_proxy
     import pyodide
+    from pyodide.http import pyfetch
     WASM = True
 except ImportError:
     WASM = False
@@ -106,12 +107,12 @@ class NetworkManager:
                 start_poll = time.time()
                 try:
                     # Async Fetch via Proxy
-                    response = await js.fetch(proxy_url)
+                    response = await pyfetch(proxy_url)
                     status = response.status
                     self.latency = int((time.time() - start_poll) * 1000)
                     
                     if status == 200:
-                        text = str(await response.text())
+                        text = await response.string()
                         self.last_status = "SYNC HEALTHY"
                     else:
                         self.last_status = f"SYNC {status}"
@@ -172,14 +173,8 @@ class NetworkManager:
             b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
             proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
             try:
-                opts = to_js({
-                    "method": "POST",
-                    "body": raw,
-                    "headers": {"Content-Type": "text/plain"}
-                }, dict_converter=js.Object.fromEntries)
-                
                 print("Network: Sending move...")
-                response = await js.fetch(proxy_url, opts)
+                response = await pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"})
                 if response.status == 200:
                     print("Network: Move Transmitted SUCCESS.")
                 else:
