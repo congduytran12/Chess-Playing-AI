@@ -7,21 +7,25 @@ import urllib.parse
 import urllib.request
 import threading
 
+import sys
 import os
 
+WASM = (sys.platform == 'emscripten')
 try:
     import js
-    from pyodide.ffi import to_js, create_proxy
     import pyodide
-    from pyodide.http import pyfetch
+    from pyodide.ffi import to_js, create_proxy
     WASM = True
-except ImportError:
-    WASM = False
-    js = None
-    pyfetch = None
+except:
+    # Fallback to sys.platform if js import fails but we are actually in a WASM environment
+    if sys.platform == 'emscripten' or 'pyodide' in sys.modules:
+        WASM = True
+    else:
+        WASM = False
+        js = None
 
+print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
 
-print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}")
 
 
 class NetworkManager:
