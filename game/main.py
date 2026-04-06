@@ -40,6 +40,19 @@ DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 30
 IMAGES = {}
+UI_CACHE = {}
+
+def get_text_surface(text, font_name, size, color, bold=True):
+    """
+    Returns a cached text surface or renders a new one if not found.
+    Reduces the number of font.render calls to once per dynamic change.
+    """
+    key = (text, font_name, size, color, bold)
+    if key not in UI_CACHE:
+        font = p.font.SysFont(font_name, size, bold, False)
+        UI_CACHE[key] = font.render(text, True, p.Color(color))
+    return UI_CACHE[key]
+
 
 '''
 
@@ -205,6 +218,12 @@ async def main():
     countMovesForDraw = 0
     COUNT_DRAW = 0
     gameOverTime = 0
+    
+    # Pre-initialize UI fonts
+    btnFont = p.font.SysFont("Times New Roman", 24, True, False)
+    diff_font = p.font.SysFont("Times New Roman", 20, True, False)
+    stats_font = p.font.SysFont("Arial", 14)
+    
     while running:
 
         if multiplayerMode and networkConnected:
@@ -632,12 +651,13 @@ async def main():
         
         mode_texts = ["Mode: Local vs AI", "Mode: Local 2-Player", "Mode: Online Multiplayer"]
         mode_text = mode_texts[currentModeIndex]
-        textObj = diff_font.render(mode_text, True, p.Color('white'))
+        textObj = get_text_surface(mode_text, "Times New Roman", 20, "white", True)
         textLoc = modeBtnRect.move(
             modeBtnRect.width / 2 - textObj.get_width() / 2,
             modeBtnRect.height / 2 - textObj.get_height() / 2
         )
         screen.blit(textObj, textLoc)
+
 
         if multiplayerMode:
             if not networkConnected:
@@ -645,15 +665,16 @@ async def main():
                 color = p.Color(MOVE_HIGHLIGHT_COLOR) if hostBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
                 p.draw.rect(screen, color, hostBtn)
                 p.draw.rect(screen, p.Color('black'), hostBtn, 1)
-                textObj = diff_font.render("Host Game (White)", True, p.Color('white'))
+                textObj = get_text_surface("Host Game (White)", "Times New Roman", 20, "white", True)
                 screen.blit(textObj, hostBtn.move(hostBtn.width / 2 - textObj.get_width() / 2, hostBtn.height / 2 - textObj.get_height() / 2))
 
                 inputRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 330, btn_w, btn_h)
                 color = p.Color('white') if inputBoxActive else p.Color('lightgray')
                 p.draw.rect(screen, color, inputRect)
                 p.draw.rect(screen, p.Color('black'), inputRect, 1)
-                textObj = diff_font.render(roomCode if roomCode else "Type Room ID", True, p.Color('black'))
+                textObj = get_text_surface(roomCode if roomCode else "Type Room ID", "Times New Roman", 20, "black", True)
                 screen.blit(textObj, inputRect.move(inputRect.width / 2 - textObj.get_width() / 2, inputRect.height / 2 - textObj.get_height() / 2))
+
 
                 joinBtn = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
                 color = p.Color(MOVE_HIGHLIGHT_COLOR) if joinBtn.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
@@ -662,11 +683,11 @@ async def main():
                     color = p.Color('gray')
                 p.draw.rect(screen, color, joinBtn)
                 p.draw.rect(screen, p.Color('black'), joinBtn, 1)
-                textObj = diff_font.render("Join Game (Black)", True, p.Color('white'))
+                textObj = get_text_surface("Join Game (Black)", "Times New Roman", 20, "white", True)
                 screen.blit(textObj, joinBtn.move(joinBtn.width / 2 - textObj.get_width() / 2, joinBtn.height / 2 - textObj.get_height() / 2))
             else:
                 infoRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 230, btn_w, btn_h)
-                textObj = diff_font.render(f"Room: {roomCode}", True, p.Color('black'))
+                textObj = get_text_surface(f"Room: {roomCode}", "Times New Roman", 20, "black", True)
                 textLoc = infoRect.move(infoRect.width / 2 - textObj.get_width() / 2, infoRect.height / 2 - textObj.get_height() / 2)
                 screen.blit(textObj, textLoc)
                 # Connection Indicator (Traffic Light System)
@@ -681,7 +702,8 @@ async def main():
                 
                 # Network Stats
                 display_status = net.last_status
-                statsObj = p.font.SysFont("Arial", 14).render(f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.latency}ms | {display_status}", True, p.Color('gray'))
+                stats_text = f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.latency}ms | {display_status}"
+                statsObj = get_text_surface(stats_text, "Arial", 14, "gray", False)
                 screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 
                 if opponentRequestedUndo:
@@ -712,7 +734,7 @@ async def main():
             titles = ["Easy", "Normal", "Hard", "Very Hard"]
             
             main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
-            textObj = diff_font.render(main_text, True, p.Color('white'))
+            textObj = get_text_surface(main_text, "Arial", 20, "white", True)
             textLoc = dropdownMainRect.move(
                 dropdownMainRect.width / 2 - textObj.get_width() / 2,
                 dropdownMainRect.height / 2 - textObj.get_height() / 2
@@ -728,7 +750,7 @@ async def main():
                     p.draw.rect(screen, color, optRect)
                     p.draw.rect(screen, p.Color('black'), optRect, 1)
 
-                    optTextObj = diff_font.render(titles[i], True, p.Color('white'))
+                    optTextObj = get_text_surface(titles[i], "Arial", 20, "white", True)
                     optTextLoc = optRect.move(
                         optRect.width / 2 - optTextObj.get_width() / 2,
                         optRect.height / 2 - optTextObj.get_height() / 2

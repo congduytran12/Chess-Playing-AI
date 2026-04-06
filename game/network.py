@@ -150,10 +150,12 @@ class NetworkManager:
                                 self.msg_count += 1
                     except Exception: pass
 
-            except asyncio.CancelledError: break
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 print(f"Network: Tunnel Error: {e}")
                 self.last_status = "ERROR"
+                await asyncio.sleep(2) # Back off after error to prevent crash loops
 
             # Minimal post-message wait (0.1s) for near-instant response
             await asyncio.sleep(0.1)
