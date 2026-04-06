@@ -122,16 +122,13 @@ class NetworkManager:
         while self.running and self.topic:
             if not self.poll_in_progress:
                 self.poll_in_progress = True
-                ntfy_url = (
-                    f"https://{self.server}/{self.topic}/json"
-                    f"?poll=1&since={self.last_since}&t={time.time()}"
-                )
-                b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
-                proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
+                # Simplified Topic-Based Request (v8)
+                proxy_url = f"{api_base}?topic={self.topic}&since={self.last_since}"
                 
                 js.window.js_fetch_text(proxy_url, to_js({}), success_proxy, error_proxy)
             
             await asyncio.sleep(0.5)
+
             
         success_proxy.destroy()
         error_proxy.destroy()
@@ -149,8 +146,7 @@ class NetworkManager:
         if WASM:
             origin = str(js.window.location.origin)
             api_base = f"{origin}/api/sync"
-            b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
-            proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
+            proxy_url = f"{api_base}?topic={self.topic}"
             
             def on_send_success(text):
                 print("Network: Move Transmitted SUCCESS.")
@@ -167,6 +163,7 @@ class NetworkManager:
             })
             
             js.window.js_fetch_text(proxy_url, options, s_proxy, e_proxy)
+
 
 
 
