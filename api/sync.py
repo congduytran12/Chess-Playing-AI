@@ -1,145 +1,79 @@
 import os
-import base64
-import json
-import urllib.request
-import urllib.parse
-from http.server import BaseHTTPRequestHandler
+import time
+import requests
+from flask import Flask, request, Response
 
-class handler(BaseHTTPRequestHandler):
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+app = Flask(__name__)
 
-    def do_GET(self):
-        # 1. Parse Query Params
-        parsed_url = urllib.parse.urlparse(self.path)
-        query = urllib.parse.parse_qs(parsed_url.query)
-        
-        # 2. Handshake Test
-        if 'test' in query:
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(b"SYNC_READY")
-            return
+# Use a global session for connection pooling (Performance + socket recycling)
+session = requests.Session()
 
-        # 3. Resolve Target URL
-        encoded_url = query.get('url', [None])[0]
-        topic = query.get('topic', [None])[0]
-        since = query.get('since', ['2m'])[0]
-        
-        target_url = None
-        if topic:
-            # Topic-Based Proxy (Final stable v8)
-            target_url = f"https://ntfy.sh/{topic}/json?poll=1&since={since}&t={time.time()}"
-        elif encoded_url:
-            # Legacy Base64 Fallback
-            try:
-                missing_padding = len(encoded_url) % 4
-                if missing_padding: encoded_url += '=' * (4 - missing_padding)
-                target_url = base64.b64decode(encoded_url).decode('utf-8')
-            except: pass
+@app.route('/api/sync', methods=['GET', 'POST', 'OPTIONS'])
+def sync_proxy():
+    # 1. Handle CORS (CVD)
+    if request.method == 'OPTIONS':
+        return Response(status=204, headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        })
 
-        if not target_url:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b"Missing topic or url parameter")
-            return
-            
-        # 4. Proxy the Request with Retries (Robustness for v8)
-        for attempt in range(3):
-            try:
-                req = urllib.request.Request(target_url)
-                req.add_header('User-Agent', 'Mozilla/5.0 (Vercel-Sync-Proxy) Chess-App/1.0')
-                req.add_header('Accept', 'application/x-ndjson')
-                
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    content = response.read()
-                    self.send_response(response.status)
-                    self.send_header('Content-Type', 'application/json')
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                    self.end_headers()
-                    self.wfile.write(content)
-                    return # Success
-            except urllib.error.HTTPError as e:
-                self.send_response(e.code)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(e.read())
-                return # NTFY reported an error (429/403/404)
-            except Exception as e:
-                if attempt == 2: # Last try
-                    self.send_response(500)
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.end_headers()
-                    self.wfile.write(f"Proxy error: {str(e)}".encode())
-                else:
-                    time.sleep(0.1 * (attempt + 1)) # Backoff
+    # 2. Extract Params
+    topic = request.args.get('topic')
+    since = request.args.get('since', '2m')
+    encoded_url = request.args.get('url') # Legacy fallback
 
+    # 3. Handshake Test
+    if request.args.get('test') == '1':
+        return Response("SYNC_READY", content_type="text/plain", headers={'Access-Control-Allow-Origin': '*'})
 
-
-    def do_POST(self):
-        # 1. Parse Query Params
-        parsed_url = urllib.parse.urlparse(self.path)
-        query = urllib.parse.parse_qs(parsed_url.query)
-        
-        # 2. Resolve Target URL
-        encoded_url = query.get('url', [None])[0]
-        topic = query.get('topic', [None])[0]
-        
-        target_url = None
-        if topic:
+    # 4. Resolve Target URL
+    target_url = None
+    is_poll = False
+    if topic:
+        if request.method == 'GET':
+            target_url = f"https://ntfy.sh/{topic}/json?poll=1&since={since}"
+            is_poll = True
+        else:
             target_url = f"https://ntfy.sh/{topic}"
-        elif encoded_url:
-            try:
-                missing_padding = len(encoded_url) % 4
-                if missing_padding: encoded_url += '=' * (4 - missing_padding)
-                target_url = base64.b64decode(encoded_url).decode('utf-8')
-            except: pass
+    
+    if not target_url:
+        return Response("Missing topic parameter", status=400, headers={'Access-Control-Allow-Origin': '*'})
 
-        if not target_url:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b"Missing topic or url parameter")
-            return
-            
-        # 3. Read Body
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
+    # 5. Proxy the Request with Industry-Standard Robustness
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Vercel-Flask-Sync) Chess-App/1.0',
+            'Accept': 'application/x-ndjson'
+        }
         
-        # 4. Proxy the POST (urllib)
-        for attempt in range(3):
-            try:
-                req = urllib.request.Request(target_url, data=body, method='POST')
-                req.add_header('Content-Type', 'text/plain')
-                req.add_header('User-Agent', 'Mozilla/5.0 (Vercel-Sync-Proxy) Chess-App/1.0')
-                
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    content = response.read()
-                    self.send_response(response.status)
-                    self.send_header('Content-Type', 'application/json')
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.end_headers()
-                    self.wfile.write(content)
-                    return
-            except urllib.error.HTTPError as e:
-                self.send_response(e.code)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(e.read())
-                return
-            except Exception as e:
-                if attempt == 2:
-                    self.send_response(500)
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.end_headers()
-                    self.wfile.write(f"Proxy error: {str(e)}".encode())
-                else:
-                    time.sleep(0.1 * (attempt + 1))
+        if request.method == 'POST':
+            # Use a shorter timeout for POSTs to prevent UI hangs
+            res = session.post(target_url, data=request.data, headers=headers, timeout=5)
+        else:
+            # Long-polling (GET) can take up to 10s on Vercel
+            res = session.get(target_url, headers=headers, timeout=10)
 
+        # 6. Stream Response back to Client
+        return Response(
+            res.text,
+            status=res.status_code,
+            content_type="application/json",
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'X-Sync-Proxy': 'Flask-Stable'
+            }
+        )
 
+    except requests.exceptions.Timeout:
+        # TIMEOUT IS NOT AN ERROR in long-polling. 
+        # Return 204 No Content to tell the client to just try again.
+        return Response("", status=204, headers={'Access-Control-Allow-Origin': '*', 'X-Sync-Status': 'Timeout-Poll'})
+    except Exception as e:
+        # Return 500 only on real infrastructure crashes
+        return Response(f"Proxy Crash: {str(e)}", status=500, headers={'Access-Control-Allow-Origin': '*'})
+
+# Vercel needs 'app' but sometimes it expects 'handler' for custom runtimes. 
+# For the Python runtime using Flask, 'app' is standard.
+handler = app
