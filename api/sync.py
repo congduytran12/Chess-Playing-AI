@@ -30,21 +30,27 @@ class handler(BaseHTTPRequestHandler):
         # 3. Decode Target URL (Base64)
         encoded_url = query.get('url', [None])[0]
         if not encoded_url:
-            self.send_error(400, "Missing url parameter")
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"Missing url parameter")
             return
             
         try:
+            # Fix potential Base64 padding issues
+            missing_padding = len(encoded_url) % 4
+            if missing_padding:
+                encoded_url += '=' * (4 - missing_padding)
             target_url = base64.b64decode(encoded_url).decode('utf-8')
         except Exception as e:
-            self.send_error(400, f"Encoding error: {str(e)}")
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(f"Encoding error: {str(e)}".encode())
             return
             
         # 4. Proxy the Request (urllib)
         try:
             req = urllib.request.Request(target_url)
-            # Use High-Performance Browser Agent
-            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
-            # Request specific JSON lines for speed
+            req.add_header('User-Agent', 'Mozilla/5.0 (Vercel-Proxy) Chess-App/1.0')
             req.add_header('Accept', 'application/x-ndjson')
             
             with urllib.request.urlopen(req, timeout=10) as response:
@@ -52,13 +58,21 @@ class handler(BaseHTTPRequestHandler):
                 self.send_response(response.status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
-                # Latency-Reduction Headers
-                self.send_header('X-Content-Type-Options', 'nosniff')
                 self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
                 self.end_headers()
                 self.wfile.write(content)
+        except urllib.error.HTTPError as e:
+            # Propagate the actual status from ntfy
+            self.send_response(e.code)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(e.read())
         except Exception as e:
-            self.send_error(500, f"Proxy error: {str(e)}")
+            self.send_response(500)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(f"Proxy error: {str(e)}".encode())
+
 
     def do_POST(self):
         # 1. Parse Query Params
@@ -68,13 +82,21 @@ class handler(BaseHTTPRequestHandler):
         # 2. Decode Target URL (Base64)
         encoded_url = query.get('url', [None])[0]
         if not encoded_url:
-            self.send_error(400, "Missing url parameter")
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"Missing url parameter")
             return
             
         try:
+            # Fix potential Base64 padding issues
+            missing_padding = len(encoded_url) % 4
+            if missing_padding:
+                encoded_url += '=' * (4 - missing_padding)
             target_url = base64.b64decode(encoded_url).decode('utf-8')
         except Exception as e:
-            self.send_error(400, f"Encoding error: {str(e)}")
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(f"Encoding error: {str(e)}".encode())
             return
             
         # 3. Read Body
@@ -85,7 +107,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             req = urllib.request.Request(target_url, data=body, method='POST')
             req.add_header('Content-Type', 'text/plain')
-            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+            req.add_header('User-Agent', 'Mozilla/5.0 (Vercel-Proxy) Chess-App/1.0')
             
             with urllib.request.urlopen(req, timeout=5) as response:
                 content = response.read()
@@ -94,5 +116,15 @@ class handler(BaseHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(content)
+        except urllib.error.HTTPError as e:
+            # Propagate the actual status from ntfy
+            self.send_response(e.code)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(e.read())
         except Exception as e:
-            self.send_error(500, f"Proxy error: {str(e)}")
+            self.send_response(500)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(f"Proxy error: {str(e)}".encode())
+
