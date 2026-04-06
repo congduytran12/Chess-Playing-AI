@@ -51,11 +51,11 @@ class NetworkManager:
         
         # Diagnostics
         self.msg_count = 0      # Total message events processed
-        self.poll_count = 0     # How many successful polls made
-        self.last_status = "IDLE"
-        self.latency = 0        # Speed in ms
         self.poll_in_progress = False
         self.last_since = "2m"
+        self.base_interval = 1.2
+        self.current_interval = self.base_interval
+
 
 
     def set_topic(self, topic):
@@ -89,7 +89,10 @@ class NetworkManager:
             self.poll_in_progress = False
             self.poll_count += 1
             self.last_status = "SYNC HEALTHY"
+            # Reset backoff on success
+            self.current_interval = self.base_interval
             if not text: return
+
             
             for line in str(text).strip().split('\n'):
                 line = line.strip()
@@ -112,22 +115,24 @@ class NetworkManager:
         def on_poll_error(err):
             self.poll_in_progress = False
             self.last_status = "SYNC ERROR"
-            print(f"Network: Poll Error: {err}")
+            # Exponential Backoff on error (Rate Limit fix v10)
+            self.current_interval = min(self.current_interval * 2, 15.0)
+            print(f"Network: Poll Error (Backing off to {self.current_interval:.1f}s): {err}")
 
         success_proxy = create_proxy(on_poll_success)
         error_proxy = create_proxy(on_poll_error)
 
-        print("Network: Starting Isolated Messaging Tunnel...")
+        print("Network: Starting Isolated Messaging Tunnel (Adaptive)...")
 
         while self.running and self.topic:
             if not self.poll_in_progress:
                 self.poll_in_progress = True
-                # Simplified Topic-Based Request (v8)
+                # Topic-Based Request (v8+)
                 proxy_url = f"{api_base}?topic={self.topic}&since={self.last_since}"
-                
                 js.window.js_fetch_text(proxy_url, to_js({}), success_proxy, error_proxy)
             
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self.current_interval)
+
 
             
         success_proxy.destroy()
