@@ -21,7 +21,19 @@ except:
         WASM = False
         js = None
 
+if WASM:
+    # Helper to chain fetch().then(r => r.text()).then(cb) in JS to avoid await PromiseWrapper
+    js.execute('''
+        window.js_fetch_text = function(url, options, cb, eb) {
+            fetch(url, options)
+                .then(r => r.text())
+                .then(t => cb(t))
+                .catch(e => eb(String(e)));
+        }
+    ''')
+
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
+
 
 
 
@@ -41,6 +53,9 @@ class NetworkManager:
         self.poll_count = 0     # How many successful polls made
         self.last_status = "IDLE"
         self.latency = 0        # Speed in ms
+        self.poll_in_progress = False
+        self.last_since = "2m"
+
 
     def set_topic(self, topic):
         """
@@ -64,118 +79,64 @@ class NetworkManager:
 
     async def _wasm_poll_loop(self):
         """
-        Polls ntfy via an internal Binary Tunnel (Base64) to ensure data integrity.
-        Includes a persistent backend handshake retry for reliability.
+        Polls ntfy via callback-based fetch to avoid PromiseWrapper issues.
         """
-        # 0. Boot-Safety check
-        try:
-            is_ready = js.eval("typeof BrowserFS !== 'undefined'")
-            if is_ready: print("Network: Dependencies OK.")
-        except: pass
-
-        # 1. External Origin Awareness
         origin = str(js.window.location.origin)
         api_base = f"{origin}/api/sync"
         
-        # 2. Resilient Handshake Loop
-        handshake_complete = False
-        retry_count = 0
-        while not handshake_complete and self.running and retry_count < 10:
-            self.last_status = "HANDSHAKING"
-            try:
-                start = time.time()
-                handshake_res = await js.fetch(f"{api_base}?test=1")
-                text = str(await handshake_res.text())
-                if "SYNC_READY" in text:
-                    handshake_complete = True
-                    self.latency = int((time.time() - start) * 1000)
-                    self.last_status = "SYNC READY"
-                else:
-                    self.last_status = "RETRYING"
-            except:
-                self.last_status = "GATE DELAY"
+        def on_poll_success(text):
+            self.poll_in_progress = False
+            self.poll_count += 1
+            self.last_status = "SYNC HEALTHY"
+            if not text: return
             
-            if not handshake_complete:
-                retry_count += 1
-                await asyncio.sleep(1)
+            for line in str(text).strip().split('\n'):
+                line = line.strip()
+                if not line: continue
+                try:
+                    msg = json.loads(line)
+                    msg_id = msg.get('id')
+                    if msg_id and msg_id not in self.seen_ids:
+                        self.seen_ids.add(msg_id)
+                        if len(self.seen_ids) > 200:
+                            sorted_ids = sorted(list(self.seen_ids))
+                            self.seen_ids = set(sorted_ids[100:])
+                        self.last_since = msg_id
+                        if msg.get('event') == 'message':
+                            content = json.loads(msg.get('message', '{}'))
+                            self.incoming_messages.append(content)
+                            self.msg_count += 1
+                except: pass
 
-        # 3. Aggressive Poll Loop
-        last_since = "2m"
-        print("Network: Starting Aggressive Messaging Tunnel...")
+        def on_poll_error(err):
+            self.poll_in_progress = False
+            self.last_status = "SYNC ERROR"
+            print(f"Network: Poll Error: {err}")
+
+        success_proxy = create_proxy(on_poll_success)
+        error_proxy = create_proxy(on_poll_error)
+
+        print("Network: Starting Isolated Messaging Tunnel...")
 
         while self.running and self.topic:
-            try:
-                # Target ntfy URL
+            if not self.poll_in_progress:
+                self.poll_in_progress = True
                 ntfy_url = (
                     f"https://{self.server}/{self.topic}/json"
-                    f"?poll=1&since={last_since}&t={time.time()}"
+                    f"?poll=1&since={self.last_since}&t={time.time()}"
                 )
-                
-                # Binary Encoding (Base64)
                 b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
                 proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
                 
-                start_poll = time.time()
-                try:
-                    # Sync Fetch via open_url (WASM-Safe)
-                    if WASM:
-                        # Pyodide's open_url is blocking but doesn't crash the loop
-                        with pyodide.http.open_url(proxy_url) as response:
-                            text = response.read()
-                            self.latency = int((time.time() - start_poll) * 1000)
-                            self.last_status = "SYNC HEALTHY"
-                    else:
-                        print("Network: Non-WASM polling not implemented here.")
-                        self.last_status = "ERR_NO_POLL"
-
-
-
-
-                        await asyncio.sleep(0.5)
-                        continue
-                        
-                except:
-                    self.last_status = "SYNC ERROR"
-                    await asyncio.sleep(1)
-                    continue
-                
-                self.poll_count += 1
-                
-                if not text.strip():
-                    # If empty, minimal wait for next poll (0.2s)
-                    await asyncio.sleep(0.2)
-                    continue
-
-                for line in text.strip().split('\n'):
-                    line = line.strip()
-                    if not line: continue
-                    try:
-                        msg = json.loads(line)
-                        msg_id = msg.get('id')
-                        if msg_id and msg_id not in self.seen_ids:
-                            self.seen_ids.add(msg_id)
-                            if len(self.seen_ids) > 200:
-                                sorted_ids = sorted(list(self.seen_ids))
-                                self.seen_ids = set(sorted_ids[100:])
-                            last_since = msg_id
-                            if msg.get('event') == 'message':
-                                content = json.loads(msg.get('message', '{}'))
-                                print(f"DEBUG: Piece Move Received: {content}")
-                                self.incoming_messages.append(content)
-                                self.msg_count += 1
-                    except Exception: pass
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Network: Tunnel Error: {e}")
-                self.last_status = "ERROR"
-                await asyncio.sleep(2) # Back off after error to prevent crash loops
-
-            # Minimal post-message wait (0.1s) for near-instant response
-            await asyncio.sleep(0.1)
+                js.window.js_fetch_text(proxy_url, to_js({}), success_proxy, error_proxy)
+            
+            await asyncio.sleep(0.5)
+            
+        success_proxy.destroy()
+        error_proxy.destroy()
 
     async def send(self, data):
+
         """
         Sends move data via the tunnel (WASM) or direct (Native).
         """
@@ -189,14 +150,23 @@ class NetworkManager:
             api_base = f"{origin}/api/sync"
             b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
             proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
-            try:
-                # Use urlopen for WASM (Patched by Pyodide to use sync XHR)
-                print("Network: Sending move...")
-                # Synchronous request in WASM doesn't trigger PromiseWrapper errors
-                with urllib.request.urlopen(proxy_url, data=raw.encode('utf-8')) as response:
-                    print("Network: Move Transmitted SUCCESS.")
-            except Exception as e:
-                print(f"Network: Send error: {e}")
+            
+            def on_send_success(text):
+                print("Network: Move Transmitted SUCCESS.")
+            def on_send_error(err):
+                print(f"Network: Send error: {err}")
+            
+            s_proxy = create_proxy(on_send_success)
+            e_proxy = create_proxy(on_send_error)
+            
+            options = to_js({
+                "method": "POST",
+                "body": raw,
+                "headers": {"Content-Type": "text/plain"}
+            })
+            
+            js.window.js_fetch_text(proxy_url, options, s_proxy, e_proxy)
+
 
 
 
