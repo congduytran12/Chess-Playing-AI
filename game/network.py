@@ -6,14 +6,16 @@ import urllib.parse
 import urllib.request
 import threading
 
-try:
+import sys
+
+WASM = (sys.platform == 'emscripten')
+
+if WASM:
     import js
     from pyodide.ffi import to_js, create_proxy
     import pyodide
-    from pyodide.http import pyfetch
-    WASM = True
-except ImportError:
-    WASM = False
+else:
+    js = None
 
 class NetworkManager:
     def __init__(self):
@@ -107,6 +109,7 @@ class NetworkManager:
                 start_poll = time.time()
                 try:
                     # Async Fetch via Proxy
+                    from pyodide.http import pyfetch
                     response = await pyfetch(proxy_url)
                     status = response.status
                     self.latency = int((time.time() - start_poll) * 1000)
@@ -175,6 +178,7 @@ class NetworkManager:
             b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
             proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
             try:
+                from pyodide.http import pyfetch
                 print("Network: Sending move...")
                 response = await pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"})
                 if response.status == 200:
