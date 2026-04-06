@@ -23,7 +23,7 @@ except:
 
 if WASM:
     # Helper to chain fetch().then(r => r.text()).then(cb) in JS to avoid await PromiseWrapper
-    js.execute('''
+    js.eval('''
         window.js_fetch_text = function(url, options, cb, eb) {
             fetch(url, options)
                 .then(r => r.text())
@@ -31,6 +31,7 @@ if WASM:
                 .catch(e => eb(String(e)));
         }
     ''')
+
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
 
