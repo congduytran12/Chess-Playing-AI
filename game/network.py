@@ -6,13 +6,13 @@ import base64
 import urllib.parse
 import sys
 import os
+import urllib.request
 
 WASM = False
 try:
     import js
     import pyodide
     from pyodide.ffi import to_js, create_proxy
-    from pyodide.http import pyfetch
     WASM = True
 except:
     if sys.platform == 'emscripten' or 'pyodide' in sys.modules:
@@ -20,38 +20,8 @@ except:
     else:
         WASM = False
         js = None
-        pyfetch = None
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
-
-async def resolve_promise(promise):
-    """
-    Manually resolves a JS Promise into a Python result using callbacks.
-    This avoids 'AttributeError: PromiseWrapper object has no attribute _loop'.
-    """
-    if not WASM: return await promise
-    
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    
-    def on_success(result):
-        if not future.done():
-            loop.call_soon_threadsafe(future.set_result, result)
-            
-    def on_error(error):
-        if not future.done():
-            loop.call_soon_threadsafe(future.set_exception, Exception(str(error)))
-            
-    success_proxy = create_proxy(on_success)
-    error_proxy = create_proxy(on_error)
-    
-    promise.then(success_proxy).catch(error_proxy)
-    
-    try:
-        return await future
-    finally:
-        success_proxy.destroy()
-        error_proxy.destroy()
 
 
 
@@ -147,22 +117,17 @@ class NetworkManager:
                 
                 start_poll = time.time()
                 try:
-                    # Async Fetch via Proxy
-                    if pyfetch:
-                        await asyncio.sleep(0)
-                        # Resolve manually to avoid PromiseWrapper errors
-                        response = await resolve_promise(pyfetch(proxy_url))
-                        status = response.status
-                        self.latency = int((time.time() - start_poll) * 1000)
-                        
-                        if status == 200:
-                            text = await resolve_promise(response.string())
+                    # Sync Fetch via open_url (WASM-Safe)
+                    if WASM:
+                        # Pyodide's open_url is blocking but doesn't crash the loop
+                        with pyodide.http.open_url(proxy_url) as response:
+                            text = response.read()
+                            self.latency = int((time.time() - start_poll) * 1000)
                             self.last_status = "SYNC HEALTHY"
-                        else:
-                            self.last_status = f"SYNC {status}"
                     else:
-                        print("Network: pyfetch not available")
-                        self.last_status = "ERR_NO_FETCH"
+                        print("Network: Non-WASM polling not implemented here.")
+                        self.last_status = "ERR_NO_POLL"
+
 
 
 
@@ -225,22 +190,15 @@ class NetworkManager:
             b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
             proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
             try:
-                if pyfetch:
-                    print("Network: Sending move...")
-                    # Use pyfetch for WASM with explicit yielding
-                    await asyncio.sleep(0)
-                    # Resolve manually to avoid PromiseWrapper errors
-                    response = await resolve_promise(pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"}))
-                    if response.status == 200:
-
-                        print("Network: Move Transmitted SUCCESS.")
-                    else:
-                        print(f"Network: Send failed ({response.status})")
-
-                else:
-                    print("Network: pyfetch not available for send")
+                # Use urlopen for WASM (Patched by Pyodide to use sync XHR)
+                print("Network: Sending move...")
+                # Synchronous request in WASM doesn't trigger PromiseWrapper errors
+                with urllib.request.urlopen(proxy_url, data=raw.encode('utf-8')) as response:
+                    print("Network: Move Transmitted SUCCESS.")
             except Exception as e:
                 print(f"Network: Send error: {e}")
+
+
 
 
         else:
