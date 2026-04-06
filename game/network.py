@@ -59,7 +59,7 @@ class NetworkManager:
         if WASM:
             if self._poll_task and not self._poll_task.done():
                 self._poll_task.cancel()
-            self._poll_task = asyncio.ensure_future(self._wasm_poll_loop())
+            self._poll_task = asyncio.create_task(self._wasm_poll_loop())
         else:
             if not any(t.name == "NtfyListener" for t in threading.enumerate()):
                 threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True).start()
@@ -121,18 +121,22 @@ class NetworkManager:
                 try:
                     # Async Fetch via Proxy
                     if pyfetch:
+                        await asyncio.sleep(0) # Yield for browser loop
                         response = await pyfetch(proxy_url)
+                        await asyncio.sleep(0) # Yield for promise resolution
                         status = response.status
                         self.latency = int((time.time() - start_poll) * 1000)
                         
                         if status == 200:
-                            text = await response.string()
+                            text_promise = response.string()
+                            text = await text_promise
                             self.last_status = "SYNC HEALTHY"
                         else:
                             self.last_status = f"SYNC {status}"
                     else:
                         print("Network: pyfetch not available")
                         self.last_status = "ERR_NO_FETCH"
+
 
                         await asyncio.sleep(0.5)
                         continue
@@ -195,12 +199,15 @@ class NetworkManager:
             try:
                 if pyfetch:
                     print("Network: Sending move...")
-                    # Use pyfetch for WASM to avoid PromiseWrapper errors
+                    # Use pyfetch for WASM with explicit yielding
+                    await asyncio.sleep(0)
                     response = await pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"})
+                    await asyncio.sleep(0)
                     if response.status == 200:
                         print("Network: Move Transmitted SUCCESS.")
                     else:
                         print(f"Network: Send failed ({response.status})")
+
                 else:
                     print("Network: pyfetch not available for send")
             except Exception as e:
