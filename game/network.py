@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import json
 import time
 import base64
@@ -183,6 +184,7 @@ class NetworkManager:
             try:
                 from pyodide.http import pyfetch
                 print("Network: Sending move...")
+                # Use pyfetch for WASM to avoid PromiseWrapper errors
                 response = await pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"})
                 if response.status == 200:
                     print("Network: Move Transmitted SUCCESS.")
@@ -190,6 +192,7 @@ class NetworkManager:
                     print(f"Network: Send failed ({response.status})")
             except Exception as e:
                 print(f"Network: Send error: {e}")
+
         else:
             def _send():
                 try:
