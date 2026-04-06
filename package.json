@@ -2,6 +2,6 @@
   "name": "chess-ai",
   "version": "1.3.0",
   "scripts": {
-    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game && cd game/build/web && curl -L -O https://pygame-web.github.io/archives/0.9/browserfs.min.js && curl -L -O https://pygame-web.github.io/cdn/0.9.3/pythons.js && curl -L -O https://pygame-web.github.io/cdn/0.9.3/empty.html && cd ../../../ && sed -i 's|https://pygame-web.github.io/cdn/0.9.3/||g' game/build/web/index.html && sed -i 's/vtx,snd,gui/snd,gui/g' game/build/web/index.html && sed -i 's/xtermjs : \"1\"/xtermjs : \"0\"/g' game/build/web/index.html"
+    "build": "pip3 install pygbag==0.9.3 --break-system-packages && python3 -m pygbag --disable-sound-format-error --build game && cd game/build/web && curl -L -O https://pygame-web.github.io/archives/0.9/browserfs.min.js && curl -L -O https://pygame-web.github.io/cdn/0.9.3/pythons.js && curl -L -O https://pygame-web.github.io/cdn/0.9.3/empty.html && cd ../../../ && sed -i 's|src=\"https://pygame-web.github.io/cdn/0.9.3/|src=\"|g' game/build/web/index.html && sed -i 's/vtx,snd,gui/snd,gui/g' game/build/web/index.html && sed -i 's/xtermjs : \"1\"/xtermjs : \"0\"/g' game/build/web/index.html"
   }
 }
