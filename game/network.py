@@ -13,10 +13,13 @@ try:
     import js
     from pyodide.ffi import to_js, create_proxy
     import pyodide
+    from pyodide.http import pyfetch
     WASM = True
 except ImportError:
     WASM = False
     js = None
+    pyfetch = None
+
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}")
 
@@ -113,16 +116,20 @@ class NetworkManager:
                 start_poll = time.time()
                 try:
                     # Async Fetch via Proxy
-                    from pyodide.http import pyfetch
-                    response = await pyfetch(proxy_url)
-                    status = response.status
-                    self.latency = int((time.time() - start_poll) * 1000)
-                    
-                    if status == 200:
-                        text = await response.string()
-                        self.last_status = "SYNC HEALTHY"
+                    if pyfetch:
+                        response = await pyfetch(proxy_url)
+                        status = response.status
+                        self.latency = int((time.time() - start_poll) * 1000)
+                        
+                        if status == 200:
+                            text = await response.string()
+                            self.last_status = "SYNC HEALTHY"
+                        else:
+                            self.last_status = f"SYNC {status}"
                     else:
-                        self.last_status = f"SYNC {status}"
+                        print("Network: pyfetch not available")
+                        self.last_status = "ERR_NO_FETCH"
+
                         await asyncio.sleep(0.5)
                         continue
                         
@@ -182,16 +189,19 @@ class NetworkManager:
             b64_url = base64.b64encode(ntfy_url.encode('utf-8')).decode('utf-8')
             proxy_url = f"{api_base}?url={urllib.parse.quote(b64_url)}"
             try:
-                from pyodide.http import pyfetch
-                print("Network: Sending move...")
-                # Use pyfetch for WASM to avoid PromiseWrapper errors
-                response = await pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"})
-                if response.status == 200:
-                    print("Network: Move Transmitted SUCCESS.")
+                if pyfetch:
+                    print("Network: Sending move...")
+                    # Use pyfetch for WASM to avoid PromiseWrapper errors
+                    response = await pyfetch(proxy_url, method="POST", body=raw, headers={"Content-Type": "text/plain"})
+                    if response.status == 200:
+                        print("Network: Move Transmitted SUCCESS.")
+                    else:
+                        print(f"Network: Send failed ({response.status})")
                 else:
-                    print(f"Network: Send failed ({response.status})")
+                    print("Network: pyfetch not available for send")
             except Exception as e:
                 print(f"Network: Send error: {e}")
+
 
         else:
             def _send():
