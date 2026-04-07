@@ -617,30 +617,28 @@ async def main():
             text = 'Black wins by checkmate' if gs.whiteToMove else 'White wins by checkmate'
             drawEndGameText(screen, text)
 
-        # Draw restart button
+        btn_w = 200
+        btn_h = 40
+        # draw restart button
         restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), restartBtnRect)
-        btnFont = p.font.SysFont("Times New Roman", 24, True, False)
-        textObject = btnFont.render("Restart", True, p.Color('white'))
+        textObject = get_text_surface("Restart", "Times New Roman", 24, "white", True)
         textLocation = restartBtnRect.move(
             restartBtnRect.width / 2 - textObject.get_width() / 2,
             restartBtnRect.height / 2 - textObject.get_height() / 2
         )
         screen.blit(textObject, textLocation)
 
-        # Draw undo button
+        # draw undo button
         undoBtnRect = p.Rect(BOARD_WIDTH + 25, BOARD_HEIGHT - 80, 150, 50)
         p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), undoBtnRect)
-        textObjectUndo = btnFont.render("Undo", True, p.Color('white'))
+        textObjectUndo = get_text_surface("Undo", "Times New Roman", 24, "white", True)
         textLocationUndo = undoBtnRect.move(
             undoBtnRect.width / 2 - textObjectUndo.get_width() / 2,
             undoBtnRect.height / 2 - textObjectUndo.get_height() / 2
         )
         screen.blit(textObjectUndo, textLocationUndo)
 
-        btn_w = 200
-        btn_h = 40
-        diff_font = p.font.SysFont("Times New Roman", 20, True, False)
 
         # Mode Button (always visible)
         modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
@@ -710,19 +708,21 @@ async def main():
                     panel_rect = p.Rect(BOARD_WIDTH + 20, BOARD_HEIGHT - 350, MOVE_LOG_PANEL_WIDTH - 40, 100)
                     p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), panel_rect)
                     p.draw.rect(screen, p.Color("red"), panel_rect, 2)
-                    textObj = diff_font.render("Opponent requested an Undo!", True, p.Color('black'))
+                    textObj = get_text_surface("Opponent requested an Undo!", "Times New Roman", 20, "black", True)
                     screen.blit(textObj, panel_rect.move(10, 10))
+
                     
                     acceptBtn = p.Rect(panel_rect.x, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
                     denyBtn = p.Rect(panel_rect.x + panel_rect.width // 2 + 5, panel_rect.y + 40, panel_rect.width // 2 - 5, 40)
                     
                     p.draw.rect(screen, p.Color("green"), acceptBtn)
-                    tAccept = diff_font.render("Accept", True, p.Color("white"))
+                    tAccept = get_text_surface("Accept", "Times New Roman", 20, "white", True)
                     screen.blit(tAccept, acceptBtn.move(acceptBtn.width/2 - tAccept.get_width()/2, 10))
                     
                     p.draw.rect(screen, p.Color("red"), denyBtn)
-                    tDeny = diff_font.render("Deny", True, p.Color("white"))
+                    tDeny = get_text_surface("Deny", "Times New Roman", 20, "white", True)
                     screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, 10))
+
 
         elif currentModeIndex == 0:
             # Draw Dropdown
@@ -809,13 +809,12 @@ def drawSquare(screen, flip=False):
                 col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
                 
     # Draw rank and file labels
-    font = p.font.SysFont("Times New Roman", 14, True, False)
     for row in range(DIMENSION):
         # Draw rank labels (1 to 8 from bottom, or 8 to 1 when flipped)
         rank_num = (row + 1) if flip else (8 - row)
         rank_text = str(rank_num)
-        text_color = p.Color(DARK_SQUARE_COLOR) if (row % 2) == 0 else p.Color(LIGHT_SQUARE_COLOR)
-        text_obj = font.render(rank_text, True, text_color)
+        text_color = "gray" # Simplified for better caching
+        text_obj = get_text_surface(rank_text, "Times New Roman", 14, text_color, True)
         text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(2, 2)
         screen.blit(text_obj, text_loc)
 
@@ -823,10 +822,11 @@ def drawSquare(screen, flip=False):
         # Draw file labels (a-h left to right, or h-a when flipped)
         file_char = chr(ord('h') - col) if flip else chr(ord('a') + col)
         file_text = file_char
-        text_color = p.Color(DARK_SQUARE_COLOR) if (7 + col) % 2 == 0 else p.Color(LIGHT_SQUARE_COLOR)
-        text_obj = font.render(file_text, True, text_color)
+        text_color = "gray"
+        text_obj = get_text_surface(file_text, "Times New Roman", 14, text_color, True)
         text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 2, SQ_SIZE - text_obj.get_height() - 2)
         screen.blit(text_obj, text_loc)
+
 
 
 def highlightSquares(screen, gs, validMoves, squareSelected, flip=False):
@@ -885,7 +885,7 @@ def drawMoveLog(screen, gs, font):
             if i + j < len(moveTexts):
                 text += moveTexts[i+j]
 
-        textObject = font.render(text, True, p.Color('black'))
+        textObject = get_text_surface(text, "Times New Roman", 18, "black", False)
 
         # Adjust text location based on padding and line spacing
         textLocation = moveLogRect.move(padding, textY)
@@ -893,6 +893,7 @@ def drawMoveLog(screen, gs, font):
 
         # Update Y coordinate for the next line with increased line spacing
         textY += textObject.get_height() + lineSpacing
+
 
 
 # animating a move
@@ -949,35 +950,30 @@ async def animateMove(move, screen, board, clock, flip=False):
 
 
 def drawEndGameText(screen, text):
-    # create font object with type and size of font you want
-    font = p.font.SysFont("Times New Roman", 45, False, False)
-    # use the above font and render text (0 ? antialias)
-    textObject = font.render(text, True, p.Color('black'))
+    # use surface cache for end game text
+    textObject = get_text_surface(text, "Times New Roman", 45, "black", True)
 
-    # Get the width and height of the textObject
     text_width = textObject.get_width()
     text_height = textObject.get_height()
 
-    # Calculate the position to center the text on the screen
     textLocation = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(
         BOARD_WIDTH/2 - text_width/2, BOARD_HEIGHT/2 - text_height/2)
 
-    # Blit the textObject onto the screen at the calculated position
     screen.blit(textObject, textLocation)
+    # Shadow effect
+    shadowObject = get_text_surface(text, "Times New Roman", 45, "gray", True)
+    screen.blit(shadowObject, textLocation.move(1, 1))
 
-    # Create a second rendering of the text with a slight offset for a shadow effect
-    textObject = font.render(text, 0, p.Color('Black'))
-    screen.blit(textObject, textLocation.move(1, 1))
-
-    # Add subtitle "Click anywhere to restart"
-    subFont = p.font.SysFont("Times New Roman", 25, False, False)
-    subTextObject = subFont.render("Click anywhere or wait to restart", True, p.Color('darkgray'))
+    # Add subtitle
+    msg = "Click anywhere or wait to restart"
+    subTextObject = get_text_surface(msg, "Times New Roman", 25, "darkgray", False)
     subLocation = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(
         BOARD_WIDTH/2 - subTextObject.get_width()/2, BOARD_HEIGHT/2 + text_height/2 + 20)
         
     screen.blit(subTextObject, subLocation)
-    subTextObject = subFont.render("Click anywhere or wait to restart", 0, p.Color('Black'))
-    screen.blit(subTextObject, subLocation.move(1, 1))
+    subShadow = get_text_surface(msg, "Times New Roman", 25, "black", False)
+    screen.blit(subShadow, subLocation.move(1, 1))
+
 
 
 # if we import main then main function wont run it will run only while running this file
