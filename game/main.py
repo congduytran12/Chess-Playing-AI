@@ -701,7 +701,7 @@ async def main():
                 
                 # Network Stats
                 display_status = net.last_status
-                stats_text = f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.latency}ms | {display_status}"
+                stats_text = f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.current_interval:.1f}s Wait | {display_status}"
                 statsObj = get_text_surface(stats_text, "Arial", 14, "gray", False)
                 screen.blit(statsObj, (textLoc.x, textLoc.y + 25))
                 

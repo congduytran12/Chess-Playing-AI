@@ -52,9 +52,10 @@ class NetworkManager:
         self.latency = 0        # Speed in ms
         self.poll_in_progress = False
         self.last_since = "2m"
-        self.base_interval = 1.2
+        self.base_interval = 3.0 # Guerilla Polling Base (v12)
         self.current_interval = self.base_interval
         self.last_status = "IDLE"
+
 
 
 
@@ -89,9 +90,10 @@ class NetworkManager:
             self.poll_in_progress = False
             self.poll_count += 1
             self.last_status = "SYNC HEALTHY"
-            # Reset backoff on success
-            self.current_interval = self.base_interval
+            # Persistent Recovery (Guerilla v12): Decrement slowly rather than instant reset
+            self.current_interval = max(self.base_interval, self.current_interval * 0.8)
             if not text: return
+
 
             
             for line in str(text).strip().split('\n'):
@@ -115,9 +117,10 @@ class NetworkManager:
         def on_poll_error(err):
             self.poll_in_progress = False
             self.last_status = "SYNC ERROR"
-            # Exponential Backoff on error (Rate Limit fix v10)
-            self.current_interval = min(self.current_interval * 2, 15.0)
+            # Exponential Backoff on error (v12): Max backoff 30.0s
+            self.current_interval = min(self.current_interval * 2, 30.0)
             print(f"Network: Poll Error (Backing off to {self.current_interval:.1f}s): {err}")
+
 
         success_proxy = create_proxy(on_poll_success)
         error_proxy = create_proxy(on_poll_error)
@@ -131,7 +134,11 @@ class NetworkManager:
                 proxy_url = f"{api_base}?topic={self.topic}&since={self.last_since}"
                 js.window.js_fetch_text(proxy_url, to_js({}), success_proxy, error_proxy)
             
-            await asyncio.sleep(self.current_interval)
+            # Guerilla v12: Add Jitter (0-500ms) to prevent alignment
+            import random as py_random
+            jitter = py_random.uniform(0.0, 0.5)
+            await asyncio.sleep(self.current_interval + jitter)
+
 
 
             
