@@ -51,10 +51,13 @@ class NetworkManager:
         
         # Diagnostics
         self.msg_count = 0      # Total message events processed
+        self.poll_count = 0     # How many successful polls made
+        self.latency = 0        # Speed in ms
         self.poll_in_progress = False
         self.last_since = "2m"
         self.base_interval = 1.2
         self.current_interval = self.base_interval
+        self.last_status = "IDLE"
 
 
 
