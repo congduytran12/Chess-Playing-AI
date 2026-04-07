@@ -81,10 +81,11 @@ class NetworkManager:
 
     async def _wasm_poll_loop(self):
         """
-        Polls ntfy via callback-based fetch to avoid PromiseWrapper issues.
+        Polls ntfy DIRECTLY via callback-based fetch to distribute IP load (Front-to-Front v13).
+        Bypasses the Vercel Proxy bottleneck.
         """
-        origin = str(js.window.location.origin)
-        api_base = f"{origin}/api/sync"
+        ntfy_base = f"https://{self.server}/{self.topic}/json"
+
         
         def on_poll_success(text):
             self.poll_in_progress = False
@@ -130,11 +131,12 @@ class NetworkManager:
         while self.running and self.topic:
             if not self.poll_in_progress:
                 self.poll_in_progress = True
-                # Topic-Based Request (v8+)
-                proxy_url = f"{api_base}?topic={self.topic}&since={self.last_since}"
-                js.window.js_fetch_text(proxy_url, to_js({}), success_proxy, error_proxy)
+                # Direct ntfy hit (v13) - Uses individual user IP quota
+                poll_url = f"{ntfy_base}?poll=1&since={self.last_since}"
+                js.window.js_fetch_text(poll_url, to_js({}), success_proxy, error_proxy)
             
             # Guerilla v12: Add Jitter (0-500ms) to prevent alignment
+
             import random as py_random
             jitter = py_random.uniform(0.0, 0.5)
             await asyncio.sleep(self.current_interval + jitter)
@@ -156,14 +158,10 @@ class NetworkManager:
         raw = json.dumps(data)
         
         if WASM:
-            origin = str(js.window.location.origin)
-            api_base = f"{origin}/api/sync"
-            proxy_url = f"{api_base}?topic={self.topic}"
-            
             def on_send_success(text):
-                print("Network: Move Transmitted SUCCESS.")
+                print("Network: Move Transmitted SUCCESS (Direct).")
             def on_send_error(err):
-                print(f"Network: Send error: {err}")
+                print(f"Network: Send error (Direct): {err}")
             
             s_proxy = create_proxy(on_send_success)
             e_proxy = create_proxy(on_send_error)
@@ -171,10 +169,11 @@ class NetworkManager:
             options = to_js({
                 "method": "POST",
                 "body": raw,
-                "headers": {"Content-Type": "text/plain"}
+                "headers": {"Content-Type": "text/plain"} # No pre-flight CORS
             })
             
-            js.window.js_fetch_text(proxy_url, options, s_proxy, e_proxy)
+            js.window.js_fetch_text(ntfy_url, options, s_proxy, e_proxy)
+
 
 
 
