@@ -175,11 +175,12 @@ moveBlackLog = []
 
 
 async def main():
-    global click_pos
     # initialize py game
     p.init()
+    print("Main: v11.1 Loaded (UI Cached)")
     screen = p.display.set_mode(
         (BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH, BOARD_HEIGHT))
+
     clock = p.time.Clock()
     screen.fill(p.Color(LIGHT_SQUARE_COLOR))
     moveLogFont = p.font.SysFont("Times New Roman", 18, False, False)

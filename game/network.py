@@ -34,10 +34,7 @@ if WASM:
 
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
-
-
-
-
+print("Network: v11.1 Loaded (Latency Fixed)")
 
 class NetworkManager:
     def __init__(self):
