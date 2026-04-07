@@ -158,10 +158,14 @@ class NetworkManager:
         raw = json.dumps(data)
         
         if WASM:
+            origin = str(js.window.location.origin)
+            api_base = f"{origin}/api/sync"
+            proxy_url = f"{api_base}?topic={self.topic}"
+            
             def on_send_success(text):
-                print("Network: Move Transmitted SUCCESS (Direct).")
+                print("Network: Move Transmitted SUCCESS (Proxy).")
             def on_send_error(err):
-                print(f"Network: Send error (Direct): {err}")
+                print(f"Network: Send error (Proxy): {err}")
             
             s_proxy = create_proxy(on_send_success)
             e_proxy = create_proxy(on_send_error)
@@ -169,10 +173,11 @@ class NetworkManager:
             options = to_js({
                 "method": "POST",
                 "body": raw,
-                "headers": {"Content-Type": "text/plain"} # No pre-flight CORS
+                "headers": {"Content-Type": "text/plain"} 
             })
             
-            js.window.js_fetch_text(ntfy_url, options, s_proxy, e_proxy)
+            js.window.js_fetch_text(proxy_url, options, s_proxy, e_proxy)
+
 
 
 
