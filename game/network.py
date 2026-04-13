@@ -75,7 +75,7 @@ class NetworkManager:
         self.incoming_messages.clear()
         self.msg_count = 0
         self.poll_count = 0
-        self.last_since = "2m"  # catch last 2min of moves on fresh join
+        self.last_since = "30m"  # wide window so late-joining clients catch all moves
         self.last_status = "INITIALIZING"
         print(f"Network: Connecting to room {self.topic}...")
 
