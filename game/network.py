@@ -142,16 +142,22 @@ class NetworkManager:
 
         print("Network: Starting Proxy-Unified Polling Tunnel...")
 
+        # Fire the very first poll immediately (before any sleep)
+        self.poll_in_progress = True
+        poll_url = f"{proxy_base}?topic={self.topic}&since={self.last_since}"
+        print(f"Network: First poll: {poll_url}")
+        js.window.js_fetch_text(poll_url, to_js({}), success_proxy, error_proxy)
+        await asyncio.sleep(0)  # let the fetch start
+
         while self.running and self.topic:
+            import random as py_random
+            jitter = py_random.uniform(0.0, 0.5)
+            await asyncio.sleep(self.current_interval + jitter)
             if not self.poll_in_progress:
                 self.poll_in_progress = True
                 poll_url = f"{proxy_base}?topic={self.topic}&since={self.last_since}"
                 print(f"Network: Polling {poll_url}")
                 js.window.js_fetch_text(poll_url, to_js({}), success_proxy, error_proxy)
-
-            import random as py_random
-            jitter = py_random.uniform(0.0, 0.5)
-            await asyncio.sleep(self.current_interval + jitter)
 
         success_proxy.destroy()
         error_proxy.destroy()

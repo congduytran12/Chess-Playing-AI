@@ -365,18 +365,20 @@ async def main():
                             if not roomCode:
                                 roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                             multiplayerRole = 'host'
-                            net.set_topic(roomCode)  # instant: starts background poll task
+                            net.set_topic(roomCode)
                             print(f"DEBUG: I am HOST. Full Network Topic: [{net.topic}]")
                             networkConnected = True
+                            await asyncio.sleep(0)  # yield so poll task can start
                             continue
                         
                         if joinBtn.collidepoint(location):
                             print("DEBUG: Join button clicked.")
                             if roomCode:
                                 multiplayerRole = 'client'
-                                net.set_topic(roomCode)  # instant: starts background poll task
+                                net.set_topic(roomCode)
                                 print(f"DEBUG: I am CLIENT. Full Network Topic: [{net.topic}]")
                                 networkConnected = True
+                                await asyncio.sleep(0)  # yield so poll task can start
                                 continue
                             
                         if inputRect.collidepoint(location):
