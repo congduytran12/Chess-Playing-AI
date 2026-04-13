@@ -51,8 +51,10 @@ def sync_proxy():
             # Use a shorter timeout for POSTs to prevent UI hangs
             res = session.post(target_url, data=request.data, headers=headers, timeout=5)
         else:
-            # Long-polling (GET) can take up to 10s on Vercel
-            res = session.get(target_url, headers=headers, timeout=10)
+            # Stay under Vercel's 10s function limit
+            res = session.get(target_url, headers=headers, timeout=8)
+
+        print(f"[sync] {request.method} {target_url} → {res.status_code}, {len(res.text)} bytes")
 
         # 6. Stream Response back to Client
         return Response(
