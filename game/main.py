@@ -331,8 +331,14 @@ async def main():
                         playerBlackHuman = True
                     elif currentModeIndex == 2: # Online Multiplayer
                         multiplayerMode = True
-                        inputBoxActive = False # Reset input box on mode change
-                    
+                        inputBoxActive = False
+
+                    # Reset multiplayer state on every mode change
+                    net.running = False
+                    roomCode = ""
+                    networkConnected = False
+                    multiplayerRole = None
+
                     # Reset game on mode change
                     gs = GameState()
                     if gs.playerWantsToPlayAsBlack:
@@ -406,7 +412,30 @@ async def main():
 
                 # Check for restart button click or click after game over
                 restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
-                if restartBtnRect.collidepoint(location) or gameOver:
+                if restartBtnRect.collidepoint(location):
+                    # In multiplayer, reset network state so a fresh game can be hosted
+                    if multiplayerMode:
+                        net.running = False
+                        roomCode = ""
+                        networkConnected = False
+                        multiplayerRole = None
+                    gs = GameState()
+                    if gs.playerWantsToPlayAsBlack:
+                        gs.board = gs.board1
+                    validMoves = gs.getValidMoves()
+                    squareSelected = ()
+                    playerClicks = []
+                    moveMade = False
+                    animate = False
+                    gameOver = False
+                    moveUndone = True
+                    positionHistory = ""
+                    previousPos = ""
+                    countMovesForDraw = 0
+                    COUNT_DRAW = 0
+                    AIThinking = False
+                    continue
+                if gameOver:
                     gs = GameState()
                     if gs.playerWantsToPlayAsBlack:
                         gs.board = gs.board1
