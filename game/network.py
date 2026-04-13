@@ -31,6 +31,27 @@ if WASM:
                 .then(t => cb(t))
                 .catch(e => eb(String(e)));
         }
+
+        window.start_ntfy_sse = function(topic, since, cb, eb) {
+            if (window.__ntfy_es) {
+                window.__ntfy_es.close();
+            }
+            const url = `https://ntfy.sh/${topic}/sse?since=${since}`;
+            window.__ntfy_es = new EventSource(url);
+            window.__ntfy_es.onmessage = (e) => {
+                cb(e.data);
+            };
+            window.__ntfy_es.onerror = (e) => {
+                eb("SSE Error or Reconnecting");
+            };
+        }
+
+        window.stop_ntfy_sse = function() {
+            if (window.__ntfy_es) {
+                window.__ntfy_es.close();
+                window.__ntfy_es = null;
+            }
+        }
     ''')
 
 
@@ -42,7 +63,8 @@ class NetworkManager:
         self.topic = None
         self.incoming_messages = []
         self.running = False
-        self._poll_task = None  # asyncio background task (WASM only)
+        self._sse_cb = None
+        self._sse_eb = None
         self._listener_thread = None  # native background thread
         self.seen_ids = set()   # Track processed message IDs to avoid duplicates
         
@@ -80,87 +102,42 @@ class NetworkManager:
         print(f"Network: Connecting to room {self.topic}...")
 
         if WASM:
-            if self._poll_task and not self._poll_task.done():
-                self._poll_task.cancel()
-            self._poll_task = asyncio.create_task(self._wasm_poll_loop())
+            js.window.stop_ntfy_sse()
+            if self._sse_cb: self._sse_cb.destroy()
+            if self._sse_eb: self._sse_eb.destroy()
+            
+            def on_sse_msg(data):
+                if not self.running: return
+                self.msg_count += 1
+                try:
+                    msg = json.loads(data)
+                    msg_id = msg.get('id')
+                    if msg_id and msg_id not in self.seen_ids:
+                        self.seen_ids.add(msg_id)
+                        if len(self.seen_ids) > 200:
+                            self.seen_ids = set(sorted(list(self.seen_ids))[100:])
+                        if msg.get('event') == 'message':
+                            content = json.loads(msg.get('message', '{}'))
+                            self.incoming_messages.append(content)
+                            print(f"Network: WASM received msg #{self.msg_count} id={msg_id}")
+                except Exception as e:
+                    print(f"Network: SSE Parse error - {e}")
+                    
+            def on_sse_err(err):
+                if not self.running: return
+                self.last_status = "SYNC RECONNECTING"
+                
+            self._sse_cb = create_proxy(on_sse_msg)
+            self._sse_eb = create_proxy(on_sse_err)
+            
+            print("Network: Starting Direct SSE Connection...")
+            self.last_status = "SYNC HEALTHY"
+            js.window.start_ntfy_sse(self.topic, self.last_since, self._sse_cb, self._sse_eb)
         else:
             # Always start a fresh thread; old one will exit because self.running was set to False
             t = threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True)
             self._listener_thread = t
             t.start()
-
-    async def _wasm_poll_loop(self):
-        """
-        Polls ntfy via the Vercel /api/sync proxy (reliable, same path as sends).
-        Routing polls through the proxy avoids direct-browser rate limits on ntfy.sh.
-        """
-        origin = str(js.window.location.origin)
-        proxy_base = f"{origin}/api/sync"
-        print(f"Network: WASM proxy base: {proxy_base}")
-
-        def on_poll_success(text):
-            self.poll_in_progress = False
-            self.poll_count += 1
-            self.last_status = "SYNC HEALTHY"
-            self.current_interval = max(self.base_interval, self.current_interval * 0.8)
-            if not text or not text.strip():
-                return
-
-            print(f"Network: Poll got {len(text)} bytes")
-            for line in str(text).strip().split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                    msg_id = msg.get('id')
-                    if msg_id and msg_id not in self.seen_ids:
-                        self.seen_ids.add(msg_id)
-                        if len(self.seen_ids) > 200:
-                            sorted_ids = sorted(list(self.seen_ids))
-                            self.seen_ids = set(sorted_ids[100:])
-                        self.last_since = msg_id
-                        if msg.get('event') == 'message':
-                            try:
-                                content = json.loads(msg.get('message', '{}'))
-                                self.incoming_messages.append(content)
-                                self.msg_count += 1
-                                print(f"Network: WASM received msg #{self.msg_count} id={msg_id}")
-                            except Exception as pe:
-                                print(f"Network: Body parse error: {pe}")
-                except Exception as le:
-                    print(f"Network: Line parse error: {le} | {line[:80]}")
-
-        def on_poll_error(err):
-            self.poll_in_progress = False
-            self.last_status = "SYNC ERROR"
-            self.current_interval = min(self.current_interval * 2, 30.0)
-            print(f"Network: Poll Error (backoff {self.current_interval:.1f}s): {err}")
-
-        success_proxy = create_proxy(on_poll_success)
-        error_proxy = create_proxy(on_poll_error)
-
-        print("Network: Starting Proxy-Unified Polling Tunnel...")
-
-        # Fire the very first poll immediately (before any sleep)
-        self.poll_in_progress = True
-        poll_url = f"{proxy_base}?topic={self.topic}&since={self.last_since}"
-        print(f"Network: First poll: {poll_url}")
-        js.window.js_fetch_text(poll_url, to_js({}), success_proxy, error_proxy)
-        await asyncio.sleep(0)  # let the fetch start
-
-        while self.running and self.topic:
-            import random as py_random
-            jitter = py_random.uniform(0.0, 0.5)
-            await asyncio.sleep(self.current_interval + jitter)
-            if not self.poll_in_progress:
-                self.poll_in_progress = True
-                poll_url = f"{proxy_base}?topic={self.topic}&since={self.last_since}"
-                print(f"Network: Polling {poll_url}")
-                js.window.js_fetch_text(poll_url, to_js({}), success_proxy, error_proxy)
-
-        success_proxy.destroy()
-        error_proxy.destroy()
 
     async def send(self, data):
 
@@ -173,14 +150,10 @@ class NetworkManager:
         raw = json.dumps(data)
         
         if WASM:
-            origin = str(js.window.location.origin)
-            api_base = f"{origin}/api/sync"
-            proxy_url = f"{api_base}?topic={self.topic}"
-            
             def on_send_success(text):
-                print("Network: Move Transmitted SUCCESS (Proxy).")
+                print("Network: Move Transmitted SUCCESS (Direct WASM).")
             def on_send_error(err):
-                print(f"Network: Send error (Proxy): {err}")
+                print(f"Network: Send error (Direct WASM): {err}")
             
             s_proxy = create_proxy(on_send_success)
             e_proxy = create_proxy(on_send_error)
@@ -191,15 +164,7 @@ class NetworkManager:
                 "headers": {"Content-Type": "text/plain"} 
             })
             
-            js.window.js_fetch_text(proxy_url, options, s_proxy, e_proxy)
-
-
-
-
-
-
-
-
+            js.window.js_fetch_text(ntfy_url, options, s_proxy, e_proxy)
         else:
             def _send():
                 try:
