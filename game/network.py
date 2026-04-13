@@ -35,7 +35,7 @@ if WASM:
 
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
-print("Network: v12.0 Loaded (Native Listener Hardened)")
+print("Network: v13.0 Loaded (Proxy-Unified)")
 
 class NetworkManager:
     def __init__(self):
@@ -75,7 +75,7 @@ class NetworkManager:
         self.incoming_messages.clear()
         self.msg_count = 0
         self.poll_count = 0
-        self.last_since = "all"  # fetch recent history on fresh connect
+        self.last_since = "2m"  # catch last 2min of moves on fresh join
         self.last_status = "INITIALIZING"
         print(f"Network: Connecting to room {self.topic}...")
 
@@ -91,25 +91,26 @@ class NetworkManager:
 
     async def _wasm_poll_loop(self):
         """
-        Polls ntfy DIRECTLY via callback-based fetch to distribute IP load (Front-to-Front v13).
-        Bypasses the Vercel Proxy bottleneck.
+        Polls ntfy via the Vercel /api/sync proxy (reliable, same path as sends).
+        Routing polls through the proxy avoids direct-browser rate limits on ntfy.sh.
         """
-        ntfy_base = f"https://{self.server}/{self.topic}/json"
+        origin = str(js.window.location.origin)
+        proxy_base = f"{origin}/api/sync"
+        print(f"Network: WASM proxy base: {proxy_base}")
 
-        
         def on_poll_success(text):
             self.poll_in_progress = False
             self.poll_count += 1
             self.last_status = "SYNC HEALTHY"
-            # Persistent Recovery (Guerilla v12): Decrement slowly rather than instant reset
             self.current_interval = max(self.base_interval, self.current_interval * 0.8)
-            if not text: return
+            if not text or not text.strip():
+                return
 
-
-            
+            print(f"Network: Poll got {len(text)} bytes")
             for line in str(text).strip().split('\n'):
                 line = line.strip()
-                if not line: continue
+                if not line:
+                    continue
                 try:
                     msg = json.loads(line)
                     msg_id = msg.get('id')
@@ -120,40 +121,38 @@ class NetworkManager:
                             self.seen_ids = set(sorted_ids[100:])
                         self.last_since = msg_id
                         if msg.get('event') == 'message':
-                            content = json.loads(msg.get('message', '{}'))
-                            self.incoming_messages.append(content)
-                            self.msg_count += 1
-                except: pass
+                            try:
+                                content = json.loads(msg.get('message', '{}'))
+                                self.incoming_messages.append(content)
+                                self.msg_count += 1
+                                print(f"Network: WASM received msg #{self.msg_count} id={msg_id}")
+                            except Exception as pe:
+                                print(f"Network: Body parse error: {pe}")
+                except Exception as le:
+                    print(f"Network: Line parse error: {le} | {line[:80]}")
 
         def on_poll_error(err):
             self.poll_in_progress = False
             self.last_status = "SYNC ERROR"
-            # Exponential Backoff on error (v12): Max backoff 30.0s
             self.current_interval = min(self.current_interval * 2, 30.0)
-            print(f"Network: Poll Error (Backing off to {self.current_interval:.1f}s): {err}")
-
+            print(f"Network: Poll Error (backoff {self.current_interval:.1f}s): {err}")
 
         success_proxy = create_proxy(on_poll_success)
         error_proxy = create_proxy(on_poll_error)
 
-        print("Network: Starting Isolated Messaging Tunnel (Adaptive)...")
+        print("Network: Starting Proxy-Unified Polling Tunnel...")
 
         while self.running and self.topic:
             if not self.poll_in_progress:
                 self.poll_in_progress = True
-                # Direct ntfy hit (v13) - Uses individual user IP quota
-                poll_url = f"{ntfy_base}?poll=1&since={self.last_since}"
+                poll_url = f"{proxy_base}?topic={self.topic}&since={self.last_since}"
+                print(f"Network: Polling {poll_url}")
                 js.window.js_fetch_text(poll_url, to_js({}), success_proxy, error_proxy)
-            
-            # Guerilla v12: Add Jitter (0-500ms) to prevent alignment
 
             import random as py_random
             jitter = py_random.uniform(0.0, 0.5)
             await asyncio.sleep(self.current_interval + jitter)
 
-
-
-            
         success_proxy.destroy()
         error_proxy.destroy()
 
