@@ -3,6 +3,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": "game/build/web",
   "framework": null,
+  "functions": {
+    "api/sync.py": {
+      "maxDuration": 15
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
@@ -14,6 +19,14 @@
       "source": "/(.*)\\.js",
       "headers": [
         { "key": "Content-Type", "value": "application/javascript" }
+      ]
+    },
+    {
+      "source": "/api/sync",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Surrogate-Control", "value": "no-store" }
       ]
     }
   ],
