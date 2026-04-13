@@ -7,6 +7,7 @@ import urllib.parse
 import sys
 import os
 import urllib.request
+import threading
 
 WASM = False
 try:
@@ -34,7 +35,7 @@ if WASM:
 
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
-print("Network: v11.1 Loaded (Latency Fixed)")
+print("Network: v12.0 Loaded (Native Listener Hardened)")
 
 class NetworkManager:
     def __init__(self):
@@ -42,6 +43,7 @@ class NetworkManager:
         self.incoming_messages = []
         self.running = False
         self._poll_task = None  # asyncio background task (WASM only)
+        self._listener_thread = None  # native background thread
         self.seen_ids = set()   # Track processed message IDs to avoid duplicates
         
         self.server = "ntfy.sh"
@@ -51,7 +53,7 @@ class NetworkManager:
         self.poll_count = 0     # How many successful polls made
         self.latency = 0        # Speed in ms
         self.poll_in_progress = False
-        self.last_since = "2m"
+        self.last_since = "all" # 'all' fetches full history on first connect
         self.base_interval = 3.0 # Guerilla Polling Base (v12)
         self.current_interval = self.base_interval
         self.last_status = "IDLE"
@@ -62,12 +64,18 @@ class NetworkManager:
     def set_topic(self, topic):
         """
         Set the ntfy topic and start listening.
+        Safely tears down any existing listener before starting a new one.
         """
+        # Stop any running listener first
+        self.running = False
+        
         self.topic = "chess_app_multiplayer_" + str(topic).strip().upper()
         self.running = True
         self.seen_ids.clear()
+        self.incoming_messages.clear()
         self.msg_count = 0
         self.poll_count = 0
+        self.last_since = "all"  # fetch recent history on fresh connect
         self.last_status = "INITIALIZING"
         print(f"Network: Connecting to room {self.topic}...")
 
@@ -76,8 +84,10 @@ class NetworkManager:
                 self._poll_task.cancel()
             self._poll_task = asyncio.create_task(self._wasm_poll_loop())
         else:
-            if not any(t.name == "NtfyListener" for t in threading.enumerate()):
-                threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True).start()
+            # Always start a fresh thread; old one will exit because self.running was set to False
+            t = threading.Thread(target=self._listen_loop, name="NtfyListener", daemon=True)
+            self._listener_thread = t
+            t.start()
 
     async def _wasm_poll_loop(self):
         """
@@ -196,26 +206,57 @@ class NetworkManager:
             threading.Thread(target=_send, daemon=True).start()
 
     def _listen_loop(self):
-        while self.running:
-            if not self.topic:
-                time.sleep(1)
-                continue
-            url = f"https://{self.server}/{self.topic}/json"
+        """
+        Native Python streaming listener for ntfy.sh.
+        Uses ?since= to avoid replaying old messages after reconnects.
+        Implements seen_ids deduplication so duplicate deliveries are ignored.
+        """
+        print("Network: Native listener thread started.")
+        topic_snapshot = self.topic  # capture topic at thread start
+        while self.running and self.topic == topic_snapshot:
+            since = self.last_since
+            url = f"https://{self.server}/{topic_snapshot}/json?since={since}"
+            self.last_status = "CONNECTING"
+            print(f"Network: Opening stream connection (since={since})...")
             try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=60) as response:
-                    for line in response:
-                        if not self.running: break
-                        if line.strip():
-                            try:
-                                msg = json.loads(line.decode('utf-8'))
-                                if msg.get('event') == 'message':
+                req = urllib.request.Request(url, headers={"Accept": "application/x-ndjson"})
+                with urllib.request.urlopen(req, timeout=90) as response:
+                    self.last_status = "SYNC HEALTHY"
+                    self.poll_count += 1
+                    for raw_line in response:
+                        if not self.running or self.topic != topic_snapshot:
+                            break
+                        raw_line = raw_line.strip()
+                        if not raw_line:
+                            continue
+                        try:
+                            msg = json.loads(raw_line.decode('utf-8'))
+                            msg_id = msg.get('id')
+                            # Advance 'since' cursor so reconnects don't replay
+                            if msg_id:
+                                self.last_since = msg_id
+                                if msg_id in self.seen_ids:
+                                    continue
+                                self.seen_ids.add(msg_id)
+                                # Keep seen_ids bounded
+                                if len(self.seen_ids) > 200:
+                                    sorted_ids = sorted(self.seen_ids)
+                                    self.seen_ids = set(sorted_ids[100:])
+                            if msg.get('event') == 'message':
+                                try:
                                     content = json.loads(msg.get('message', '{}'))
                                     self.incoming_messages.append(content)
                                     self.msg_count += 1
-                                    print(f"Network: Local Received msg")
-                            except Exception: pass
-            except Exception: time.sleep(2)
+                                    print(f"Network: Received msg #{self.msg_count} (id={msg_id})")
+                                except Exception as parse_err:
+                                    print(f"Network: Failed to parse message body: {parse_err}")
+                        except Exception as line_err:
+                            print(f"Network: Failed to parse line: {line_err}")
+            except Exception as conn_err:
+                self.last_status = "RETRYING"
+                print(f"Network: Stream error ({conn_err}), retrying in 3s...")
+                time.sleep(3)
+        print("Network: Native listener thread exited.")
 
     def get_messages(self):
         res = list(self.incoming_messages)

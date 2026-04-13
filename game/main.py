@@ -177,7 +177,7 @@ moveBlackLog = []
 async def main():
     # initialize py game
     p.init()
-    print("Main: v11.1 Loaded (UI Cached)")
+    print("Main: v12.0 Loaded (Multiplayer Hardened)")
     screen = p.display.set_mode(
         (BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH, BOARD_HEIGHT))
 
@@ -232,6 +232,8 @@ async def main():
                 if msg.get('sender') == myPlayerId:
                     continue
                 mtype = msg.get('type')
+                sender = msg.get('sender', '???')
+                print(f"Main: Received message type='{mtype}' from sender={sender}")
                 if mtype == 'join' and multiplayerRole == 'host':
                     pass
                 elif mtype == 'move':
