@@ -62,8 +62,8 @@ In chess, pawn promotion occurs when a pawn reaches the eighth rank. The pawn ca
 
 1. Clone the repository to your local machine:
    ```bash
-   git clone https://github.com/anuragjain-git/chess-bot.git
-   cd chess
+   git clone https://github.com/congduytran12/Chess-Playing-AI.git
+   cd Chess-Playing-AI/game
    ```
    
 2. Install the required dependencies:
@@ -73,7 +73,7 @@ In chess, pawn promotion occurs when a pawn reaches the eighth rank. The pawn ca
 
 3. Run the `main.py` script to start the game:
    ```bash
-   python game/main.py
+   python main.py
    ```
 
 ## Controls
