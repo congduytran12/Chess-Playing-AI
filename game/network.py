@@ -23,13 +23,13 @@ except:
         js = None
 
 if WASM:
-    # Helper to chain fetch().then(r => r.text()).then(cb) in JS to avoid await PromiseWrapper
     js.eval('''
-        window.js_fetch_text = function(url, options, cb, eb) {
-            fetch(url, options)
-                .then(r => r.text())
-                .then(t => cb(t))
-                .catch(e => eb(String(e)));
+        window.js_send_msg = function(url, raw, cb, eb) {
+            fetch(url, {
+                method: "POST",
+                body: raw,
+                mode: "no-cors"
+            }).then(r => cb("Ok")).catch(e => eb(String(e)));
         }
 
         window.start_ntfy_sse = function(topic, since, cb, eb) {
@@ -158,13 +158,7 @@ class NetworkManager:
             s_proxy = create_proxy(on_send_success)
             e_proxy = create_proxy(on_send_error)
             
-            options = to_js({
-                "method": "POST",
-                "body": raw,
-                "headers": {"Content-Type": "text/plain"} 
-            })
-            
-            js.window.js_fetch_text(ntfy_url, options, s_proxy, e_proxy)
+            js.window.js_send_msg(ntfy_url, raw, s_proxy, e_proxy)
         else:
             def _send():
                 try:
