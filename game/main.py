@@ -25,6 +25,10 @@ import asyncio
 from network import net
 import random
 import string
+import time
+
+# Explicitly seed random to fix deterministic room codes in WASM environments (Vercel)
+random.seed(int(time.time() * 1000))
 
 # Initialize the mixer
 p.mixer.init()
