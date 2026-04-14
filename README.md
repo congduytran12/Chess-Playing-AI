@@ -14,7 +14,7 @@ This is a modern implementation of a chess game with an interactive graphical us
   - A user-friendly, high-DPI graphical interface developed using the Pygame library with dynamic move highlights and selection indicators.
 
 - **Game Modes (Toggleable In-Game):**
-  - **Local vs AI:** Challenge the built-in computer opponent. Set the AI difficulty dynamically using the in-game dropdown (Easy, Normal, Hard, Very Hard).
+  - **Local vs AI:** Challenge the built-in computer opponent. Set the AI difficulty dynamically using the in-game dropdown (Easy, Normal, Hard, Very Hard, Impossible).
   - **Local 2-Player:** Play a "hotseat" match against another human on the same screen.
   - **Online Multiplayer:** Host or Join networked games through proxy-unified connections (cross-platform / WASM WebAssembly compatible). Uses server-sent events for responsive, real-time board synchronization with peer-to-peer undo requests.
 
