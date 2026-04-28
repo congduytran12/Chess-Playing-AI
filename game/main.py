@@ -206,6 +206,7 @@ async def main():
     playerBlackHuman = not SET_BLACK_AS_BOT
     AIThinking = False  # True if ai is thinking
     dropdown_open = False
+    mode_dropdown_open = False
 
     currentModeIndex = 0 # 0: Local vs AI, 1: Local 2-Player, 2: Online Multiplayer
     multiplayerMode = False
@@ -284,7 +285,7 @@ async def main():
                 
                 # Dropdown logic (Only for Local vs AI)
                 if currentModeIndex == 0:
-                    btn_w = 200
+                    btn_w = 250
                     btn_h = 40
                     dropdownMainRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 130, btn_w, btn_h)
                     
@@ -299,6 +300,7 @@ async def main():
                     
                     if dropdownMainRect.collidepoint(location):
                         dropdown_open = True
+                        mode_dropdown_open = False
                         continue
                 
                 # Check for undo button click
@@ -320,45 +322,56 @@ async def main():
                     continue
 
                 # Check for mode button click
-                btn_w = 200
+                btn_w = 250
                 btn_h = 40
                 modeBtnRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180, btn_w, btn_h)
+                
+                if mode_dropdown_open:
+                    mode_dropdown_open = False
+                    for i in range(3):
+                        optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180 - (3 - i) * btn_h, btn_w, btn_h)
+                        if optRect.collidepoint(location):
+                            if currentModeIndex != i:
+                                currentModeIndex = i
+                                if currentModeIndex == 0: # Local vs AI
+                                    multiplayerMode = False
+                                    playerWhiteHuman = True
+                                    playerBlackHuman = False
+                                elif currentModeIndex == 1: # Local 2-Player
+                                    multiplayerMode = False
+                                    playerWhiteHuman = True
+                                    playerBlackHuman = True
+                                elif currentModeIndex == 2: # Online Multiplayer
+                                    multiplayerMode = True
+                                    inputBoxActive = False
+
+                                # Reset multiplayer state on every mode change
+                                net.running = False
+                                roomCode = ""
+                                networkConnected = False
+                                multiplayerRole = None
+
+                                # Reset game on mode change
+                                gs = GameState()
+                                if gs.playerWantsToPlayAsBlack:
+                                    gs.board = gs.board1
+                                validMoves = gs.getValidMoves()
+                                squareSelected = ()
+                                playerClicks = []
+                                moveMade = False
+                                animate = False
+                                gameOver = False
+                                moveUndone = True
+                                positionHistory = ""
+                                previousPos = ""
+                                countMovesForDraw = 0
+                                COUNT_DRAW = 0
+                                AIThinking = False
+                    continue
+
                 if modeBtnRect.collidepoint(location):
-                    currentModeIndex = (currentModeIndex + 1) % 3
-                    if currentModeIndex == 0: # Local vs AI
-                        multiplayerMode = False
-                        playerWhiteHuman = True
-                        playerBlackHuman = False
-                    elif currentModeIndex == 1: # Local 2-Player
-                        multiplayerMode = False
-                        playerWhiteHuman = True
-                        playerBlackHuman = True
-                    elif currentModeIndex == 2: # Online Multiplayer
-                        multiplayerMode = True
-                        inputBoxActive = False
-
-                    # Reset multiplayer state on every mode change
-                    net.running = False
-                    roomCode = ""
-                    networkConnected = False
-                    multiplayerRole = None
-
-                    # Reset game on mode change
-                    gs = GameState()
-                    if gs.playerWantsToPlayAsBlack:
-                        gs.board = gs.board1
-                    validMoves = gs.getValidMoves()
-                    squareSelected = ()
-                    playerClicks = []
-                    moveMade = False
-                    animate = False
-                    gameOver = False
-                    moveUndone = True
-                    positionHistory = ""
-                    previousPos = ""
-                    countMovesForDraw = 0
-                    COUNT_DRAW = 0
-                    AIThinking = False
+                    mode_dropdown_open = True
+                    dropdown_open = False
                     continue
 
                 # Online Multiplayer Click Handlers
@@ -655,7 +668,7 @@ async def main():
             text = 'Black wins by checkmate' if gs.whiteToMove else 'White wins by checkmate'
             drawEndGameText(screen, text)
 
-        btn_w = 200
+        btn_w = 250
         btn_h = 40
         # draw restart button
         restartBtnRect = p.Rect(BOARD_WIDTH + 200, BOARD_HEIGHT - 80, 150, 50)
@@ -685,8 +698,8 @@ async def main():
         p.draw.rect(screen, color, modeBtnRect)
         p.draw.rect(screen, p.Color('black'), modeBtnRect, 1)
         
-        mode_texts = ["Mode: Local vs AI", "Mode: Local 2-Player", "Mode: Online Multiplayer"]
-        mode_text = mode_texts[currentModeIndex]
+        mode_texts = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
+        mode_text = f"Mode: {mode_texts[currentModeIndex]} \u25B2" if mode_dropdown_open else f"Mode: {mode_texts[currentModeIndex]} \u25BC"
         textObj = get_text_surface(mode_text, "Times New Roman", 20, "white", True)
         textLoc = modeBtnRect.move(
             modeBtnRect.width / 2 - textObj.get_width() / 2,
@@ -794,6 +807,21 @@ async def main():
                         optRect.height / 2 - optTextObj.get_height() / 2
                     )
                     screen.blit(optTextObj, optTextLoc)
+
+        if mode_dropdown_open:
+            for i in range(3):
+                optRect = p.Rect(BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH // 2 - btn_w // 2, BOARD_HEIGHT - 180 - (3 - i) * btn_h, btn_w, btn_h)
+                mouse_pos = p.mouse.get_pos()
+                color = p.Color(MOVE_HIGHLIGHT_COLOR) if optRect.collidepoint(mouse_pos) else p.Color(DARK_SQUARE_COLOR)
+                p.draw.rect(screen, color, optRect)
+                p.draw.rect(screen, p.Color('black'), optRect, 1)
+                
+                optTextObj = get_text_surface(mode_texts[i], "Times New Roman", 20, "white", True)
+                optTextLoc = optRect.move(
+                    optRect.width / 2 - optTextObj.get_width() / 2,
+                    optRect.height / 2 - optTextObj.get_height() / 2
+                )
+                screen.blit(optTextObj, optTextLoc)
 
         if gameOver and p.time.get_ticks() - gameOverTime > 4000:
             gs = GameState()
