@@ -700,7 +700,7 @@ async def main():
         
         mode_texts = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
         mode_text = f"Mode: {mode_texts[currentModeIndex]}"
-        textObj = get_text_surface(mode_text, "Times New Roman", 20, "white", True)
+        textObj = get_text_surface(mode_text, "Times New Roman", 24, "white", True)
         textLoc = modeBtnRect.move(
             modeBtnRect.width / 2 - textObj.get_width() / 2,
             modeBtnRect.height / 2 - textObj.get_height() / 2
@@ -792,7 +792,7 @@ async def main():
             titles = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
             
             main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]}"
-            textObj = get_text_surface(main_text, "Arial", 20, "white", True)
+            textObj = get_text_surface(main_text, "Times New Roman", 24, "white", True)
             textLoc = dropdownMainRect.move(
                 dropdownMainRect.width / 2 - textObj.get_width() / 2,
                 dropdownMainRect.height / 2 - textObj.get_height() / 2
@@ -815,7 +815,7 @@ async def main():
                     p.draw.rect(screen, color, optRect)
                     p.draw.rect(screen, p.Color('black'), optRect, 1)
 
-                    optTextObj = get_text_surface(titles[i], "Arial", 20, "white", True)
+                    optTextObj = get_text_surface(titles[i], "Times New Roman", 24, "white", True)
                     optTextLoc = optRect.move(
                         optRect.width / 2 - optTextObj.get_width() / 2,
                         optRect.height / 2 - optTextObj.get_height() / 2
@@ -830,7 +830,7 @@ async def main():
                 p.draw.rect(screen, color, optRect)
                 p.draw.rect(screen, p.Color('black'), optRect, 1)
                 
-                optTextObj = get_text_surface(mode_texts[i], "Times New Roman", 20, "white", True)
+                optTextObj = get_text_surface(mode_texts[i], "Times New Roman", 24, "white", True)
                 optTextLoc = optRect.move(
                     optRect.width / 2 - optTextObj.get_width() / 2,
                     optRect.height / 2 - optTextObj.get_height() / 2
