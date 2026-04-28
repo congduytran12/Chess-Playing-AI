@@ -699,13 +699,20 @@ async def main():
         p.draw.rect(screen, p.Color('black'), modeBtnRect, 1)
         
         mode_texts = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
-        mode_text = f"Mode: {mode_texts[currentModeIndex]} \u25B2" if mode_dropdown_open else f"Mode: {mode_texts[currentModeIndex]} \u25BC"
-        textObj = get_text_surface(mode_text, "segoeui", 20, "white", True)
+        mode_text = f"Mode: {mode_texts[currentModeIndex]}"
+        textObj = get_text_surface(mode_text, "Times New Roman", 20, "white", True)
         textLoc = modeBtnRect.move(
             modeBtnRect.width / 2 - textObj.get_width() / 2,
             modeBtnRect.height / 2 - textObj.get_height() / 2
         )
         screen.blit(textObj, textLoc)
+
+        center_x = modeBtnRect.right - 20
+        center_y = modeBtnRect.centery
+        if mode_dropdown_open:
+            p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y + 4), (center_x + 6, center_y + 4), (center_x, center_y - 4)])
+        else:
+            p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y - 4), (center_x + 6, center_y - 4), (center_x, center_y + 4)])
 
 
         if multiplayerMode:
@@ -784,13 +791,20 @@ async def main():
             diff_font = p.font.SysFont("Arial", 20, True, False)
             titles = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
             
-            main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25B2" if dropdown_open else f"Difficulty: {titles[chessAi.DEPTH - 1]} \u25BC"
-            textObj = get_text_surface(main_text, "segoeui", 20, "white", True)
+            main_text = f"Difficulty: {titles[chessAi.DEPTH - 1]}"
+            textObj = get_text_surface(main_text, "Arial", 20, "white", True)
             textLoc = dropdownMainRect.move(
                 dropdownMainRect.width / 2 - textObj.get_width() / 2,
                 dropdownMainRect.height / 2 - textObj.get_height() / 2
             )
             screen.blit(textObj, textLoc)
+
+            center_x = dropdownMainRect.right - 20
+            center_y = dropdownMainRect.centery
+            if dropdown_open:
+                p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y + 4), (center_x + 6, center_y + 4), (center_x, center_y - 4)])
+            else:
+                p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y - 4), (center_x + 6, center_y - 4), (center_x, center_y + 4)])
 
             if dropdown_open:
                 for i in range(5):
