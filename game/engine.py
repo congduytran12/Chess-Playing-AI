@@ -680,6 +680,40 @@ class GameState():
                 boardString += square
         return boardString
 
+    # board + side to move + castling rights + en passant square, used for repetition detection
+    def getPositionKey(self):
+        return (self.getBoardString(), self.whiteToMove,
+                self.whiteCastleKingside, self.whiteCastleQueenside,
+                self.blackCastleKingside, self.blackCastleQueenside,
+                self.enpasantPossible)
+
+    # 50 moves by each side (100 plies) without a capture or a pawn move
+    def fiftyMoveRuleReached(self):
+        plies = 0
+        for move in reversed(self.moveLog):
+            if move.pieceMoved[1] == 'p' or move.pieceCaptured != '--':
+                return False
+            plies += 1
+            if plies >= 100:
+                return True
+        return False
+
+    # K vs K, K+B vs K, K+N vs K, or only bishops left and all on the same square color
+    def insufficientMaterial(self):
+        pieces = []
+        for row in range(8):
+            for col in range(8):
+                square = self.board[row][col]
+                if square != '--' and square[1] != 'K':
+                    pieces.append((square[1], (row + col) % 2))
+        if len(pieces) == 0:
+            return True
+        if len(pieces) == 1 and pieces[0][0] in ('B', 'N'):
+            return True
+        if all(piece == 'B' for piece, _ in pieces) and len(set(color for _, color in pieces)) == 1:
+            return True
+        return False
+
 
 class castleRights():
     def __init__(self, wks, wqs, bks, bqs):

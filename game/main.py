@@ -43,6 +43,7 @@ MOVE_LOG_PANEL_HEIGHT = BOARD_HEIGHT
 DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 30
+MOVE_LOG_BOTTOM = BOARD_HEIGHT - 360  # move log stays above the panel controls (highest is the online undo prompt)
 IMAGES = {}
 UI_CACHE = {}
 
@@ -219,10 +220,8 @@ async def main():
 
     moveUndone = False
     pieceCaptured = False
-    positionHistory = ""
-    previousPos = ""
-    countMovesForDraw = 0
-    COUNT_DRAW = 0
+    positionHistory = [gs.getPositionKey()]  # one position key per ply, for threefold repetition
+    moveLogScroll = 0  # move log lines scrolled back from the latest
     gameOverTime = 0
     
     # Pre-initialize UI fonts
@@ -242,24 +241,39 @@ async def main():
                 if mtype == 'join' and multiplayerRole == 'host':
                     pass
                 elif mtype == 'move':
-                    moveStr = msg.get('move')
-                    startPoint = (moveStr[0][0], moveStr[0][1])
-                    endPoint = (moveStr[1][0], moveStr[1][1])
-                    remoteMove = Move(startPoint, endPoint, gs.board)
-                    if remoteMove.pieceMoved == '--':
-                        print(f"Main: Ignoring invalid move from {startPoint} to {endPoint} (empty square)")
+                    try:
+                        moveStr = msg.get('move')
+                        startPoint = (int(moveStr[0][0]), int(moveStr[0][1]))
+                        endPoint = (int(moveStr[1][0]), int(moveStr[1][1]))
+                    except (TypeError, IndexError, ValueError):
+                        print(f"Main: Ignoring malformed move message {msg}")
                         continue
-                        
+                    # Match against our own legal moves so castling / en passant flags are set,
+                    # and reject illegal moves or moves of our own pieces
+                    opponentColor = 'b' if multiplayerRole == 'host' else 'w'
+                    remoteMove = None
+                    for m in validMoves:
+                        if (m.startRow, m.startCol) == startPoint and (m.endRow, m.endCol) == endPoint:
+                            remoteMove = m
+                            break
+                    if remoteMove is None or remoteMove.pieceMoved[0] != opponentColor:
+                        print(f"Main: Ignoring illegal move from {startPoint} to {endPoint}")
+                        continue
+
                     print(f"Main: Received move {remoteMove.getChessNotation()}")
-                    if msg.get('promo'):
-                        remoteMove.isPawnPromotion = True
                     gs.makeMove(remoteMove)
                     if remoteMove.isPawnPromotion:
-                        gs.board[remoteMove.endRow][remoteMove.endCol] = remoteMove.pieceMoved[0] + msg.get('promoPiece')
-                    
-                    if remoteMove.pieceCaptured != '--' or remoteMove.isEnpassantMove: capture_sound.play()
+                        promoPiece = msg.get('promoPiece')
+                        if promoPiece not in ('Q', 'R', 'B', 'N'):
+                            promoPiece = 'Q'
+                        gs.board[remoteMove.endRow][remoteMove.endCol] = remoteMove.pieceMoved[0] + promoPiece
+                        promote_sound.play()
+                    elif remoteMove.isCapture: capture_sound.play()
                     else: move_sound.play()
-                    
+
+                    # several moves can arrive in one frame (e.g. replay on join), so refresh state per move
+                    validMoves = gs.getValidMoves()
+                    updatePositionHistory(gs, positionHistory)
                     moveMade = True
                     animate = True
                     squareSelected = ()
@@ -270,6 +284,8 @@ async def main():
                     if msg.get('accepted'):
                         gs.undoMove()
                         gs.undoMove()
+                        validMoves = gs.getValidMoves()
+                        updatePositionHistory(gs, positionHistory)
                         moveMade = True
 
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
@@ -280,7 +296,12 @@ async def main():
             if e.type == p.QUIT:
                 running = False
             # Mouse Handler
+            elif e.type == p.MOUSEWHEEL:
+                if p.mouse.get_pos()[0] >= BOARD_WIDTH:
+                    moveLogScroll += e.y  # wheel up scrolls back through older moves
             elif e.type == p.MOUSEBUTTONDOWN:
+                if e.button in (4, 5):  # wheel also fires button events; handled by MOUSEWHEEL
+                    continue
                 location = p.mouse.get_pos()
                 
                 # Dropdown logic (Only for Local vs AI)
@@ -312,6 +333,7 @@ async def main():
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
                         gs.undoMove()
+                    updatePositionHistory(gs, positionHistory)
                     moveMade = True
                     animate = False
                     gameOver = False
@@ -362,10 +384,7 @@ async def main():
                                 animate = False
                                 gameOver = False
                                 moveUndone = True
-                                positionHistory = ""
-                                previousPos = ""
-                                countMovesForDraw = 0
-                                COUNT_DRAW = 0
+                                positionHistory = [gs.getPositionKey()]
                                 AIThinking = False
                     continue
 
@@ -419,6 +438,7 @@ async def main():
                                 asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': True, 'sender': myPlayerId}))
                                 gs.undoMove()
                                 gs.undoMove()
+                                updatePositionHistory(gs, positionHistory)
                                 opponentRequestedUndo = False
                                 moveMade = True
                                 continue
@@ -446,10 +466,7 @@ async def main():
                     animate = False
                     gameOver = False
                     moveUndone = True
-                    positionHistory = ""
-                    previousPos = ""
-                    countMovesForDraw = 0
-                    COUNT_DRAW = 0
+                    positionHistory = [gs.getPositionKey()]
                     AIThinking = False
                     continue
                 if gameOver:
@@ -463,10 +480,7 @@ async def main():
                     animate = False
                     gameOver = False
                     moveUndone = True
-                    positionHistory = ""
-                    previousPos = ""
-                    countMovesForDraw = 0
-                    COUNT_DRAW = 0
+                    positionHistory = [gs.getPositionKey()]
                     AIThinking = False
                     continue
 
@@ -560,6 +574,7 @@ async def main():
                     gs.undoMove()
                     if playerWhiteHuman != playerBlackHuman: # playing against AI
                         gs.undoMove()
+                    updatePositionHistory(gs, positionHistory)
                     moveMade = True
                     animate = False
                     gameOver = False
@@ -578,10 +593,7 @@ async def main():
                     animate = False
                     gameOver = False
                     moveUndone = True
-                    positionHistory = ""
-                    previousPos = ""
-                    countMovesForDraw = 0
-                    COUNT_DRAW = 0
+                    positionHistory = [gs.getPositionKey()]
                     AIThinking = False
 
         # AI move finder
@@ -599,11 +611,7 @@ async def main():
                 gs.makeMove(AIMove)
 
                 if AIMove.isPawnPromotion:
-                    # Show pawn promotion popup and get the selected piece
-                    promotion_choice = pawnPromotionPopup(screen, gs)
-                    # Set the promoted piece on the board
-                    gs.board[AIMove.endRow][AIMove.endCol] = AIMove.pieceMoved[0] + \
-                        promotion_choice
+                    # makeMove already promoted to a queen, which is what the AI always picks
                     promote_sound.play()
                     pieceCaptured = False
 
@@ -623,22 +631,11 @@ async def main():
                 squareSelected = ()
                 playerClicks = []
 
-        if moveMade:
-            if countMovesForDraw == 0 or countMovesForDraw == 1 or countMovesForDraw == 2 or countMovesForDraw == 3:
-                countMovesForDraw += 1
-            if countMovesForDraw == 4:
-                positionHistory += gs.getBoardString()
-                if previousPos == positionHistory:
-                    COUNT_DRAW += 1
-                    positionHistory = ""
-                    countMovesForDraw = 0
-                else:
-                    previousPos = positionHistory
-                    positionHistory = ""
-                    countMovesForDraw = 0
-                    COUNT_DRAW = 0
+        flip_board = multiplayerMode and networkConnected and multiplayerRole == 'client'
         # genetare new set of valid move if valid move is made
         if moveMade:
+            updatePositionHistory(gs, positionHistory)
+            moveLogScroll = 0  # jump back to the latest moves
             if animate:
                 await animateMove(gs.moveLog[-1], screen, gs.board, clock, flip_board)
             validMoves = gs.getValidMoves()
@@ -646,27 +643,20 @@ async def main():
             animate = False
             moveUndone = False
 
-        flip_board = multiplayerMode and networkConnected and multiplayerRole == 'client'
-        drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip_board)
+        moveLogScroll = drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip_board, moveLogScroll)
 
-        if COUNT_DRAW == 1:
-            if not gameOver:
-                gameOverTime = p.time.get_ticks()
-            gameOver = True
-            text = 'Draw due to repetition'
-            drawEndGameText(screen, text)
+        # checkmate takes precedence over draws
+        if gs.checkmate:
+            endText = 'Black wins by checkmate' if gs.whiteToMove else 'White wins by checkmate'
         elif gs.stalemate:
+            endText = 'Stalemate'
+        else:
+            endText = getDrawReason(gs, positionHistory)
+        if endText:
             if not gameOver:
                 gameOverTime = p.time.get_ticks()
             gameOver = True
-            text = 'Stalemate'
-            drawEndGameText(screen, text)
-        elif gs.checkmate:
-            if not gameOver:
-                gameOverTime = p.time.get_ticks()
-            gameOver = True
-            text = 'Black wins by checkmate' if gs.whiteToMove else 'White wins by checkmate'
-            drawEndGameText(screen, text)
+            drawEndGameText(screen, endText)
 
         btn_w = 250
         btn_h = 40
@@ -848,10 +838,7 @@ async def main():
             animate = False
             gameOver = False
             moveUndone = True
-            positionHistory = ""
-            previousPos = ""
-            countMovesForDraw = 0
-            COUNT_DRAW = 0
+            positionHistory = [gs.getPositionKey()]
             AIThinking = False
             gameOverTime = 0
             p.display.flip()
@@ -861,7 +848,7 @@ async def main():
         await asyncio.sleep(0)
 
 
-def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip=False):
+def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip=False, moveLogScroll=0):
     drawSquare(screen, flip)  # draw square on board
     highlightSquares(screen, gs, validMoves, squareSelected, flip)
     
@@ -876,7 +863,7 @@ def drawGameState(screen, gs, validMoves, squareSelected, moveLogFont, flip=Fals
         screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
         
     drawPieces(screen, gs.board, flip)
-    drawMoveLog(screen, gs, moveLogFont)
+    return drawMoveLog(screen, gs, moveLogFont, moveLogScroll)
 
 
 def drawSquare(screen, flip=False):
@@ -940,7 +927,8 @@ def drawPieces(screen, board, flip=False):
                     draw_col * SQ_SIZE, draw_row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
 
-def drawMoveLog(screen, gs, font):
+# returns the scroll offset clamped to the available lines
+def drawMoveLog(screen, gs, font, scroll=0):
     # rectangle
     moveLogRect = p.Rect(
         BOARD_WIDTH, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT)
@@ -959,12 +947,20 @@ def drawMoveLog(screen, gs, font):
     lineSpacing = 5  # Increase line spacing for better separation
     textY = padding
 
+    lines = []
     for i in range(0, len(moveTexts), movesPerRow):
         text = ""
         for j in range(movesPerRow):
             if i + j < len(moveTexts):
                 text += moveTexts[i+j]
+        lines.append(text)
 
+    # only show the lines that fit above the panel buttons, newest at the bottom
+    visibleLines = max(1, (MOVE_LOG_BOTTOM - padding) // (font.get_height() + lineSpacing))
+    scroll = min(max(scroll, 0), max(0, len(lines) - visibleLines))
+    start = max(0, len(lines) - visibleLines - scroll)
+
+    for text in lines[start:start + visibleLines]:
         textObject = get_text_surface(text, "Times New Roman", 18, "black", False)
 
         # Adjust text location based on padding and line spacing
@@ -973,6 +969,8 @@ def drawMoveLog(screen, gs, font):
 
         # Update Y coordinate for the next line with increased line spacing
         textY += textObject.get_height() + lineSpacing
+
+    return scroll
 
 
 
@@ -1053,6 +1051,23 @@ def drawEndGameText(screen, text):
     screen.blit(subTextObject, subLocation)
     subShadow = get_text_surface(msg, "Times New Roman", 25, "black", False)
     screen.blit(subShadow, subLocation.move(1, 1))
+
+
+# keep one position key per ply plus the start position, so an undo just truncates the list
+def updatePositionHistory(gs, positionHistory):
+    del positionHistory[len(gs.moveLog) + 1:]
+    if len(positionHistory) < len(gs.moveLog) + 1:
+        positionHistory.append(gs.getPositionKey())
+
+
+def getDrawReason(gs, positionHistory):
+    if positionHistory and positionHistory.count(positionHistory[-1]) >= 3:
+        return 'Draw by threefold repetition'
+    if gs.fiftyMoveRuleReached():
+        return 'Draw by 50-move rule'
+    if gs.insufficientMaterial():
+        return 'Draw by insufficient material'
+    return None
 
 
 

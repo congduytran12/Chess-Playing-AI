@@ -129,8 +129,15 @@ async def findMoveNegaMaxAlphaBeta(gs, validMoves, depth, alpha, beta, turnMulti
     if nodes_visited % 500 == 0:
         await asyncio.sleep(0)
         
-    if depth == 0:
-        return turnMultiplier * scoreBoard(gs)
+    # leaf node, or no legal moves: scoreBoard uses the checkmate/stalemate flags set by getValidMoves,
+    # so a stalemate scores 0 instead of falling through the loop below as -CHECKMATE
+    if depth == 0 or len(validMoves) == 0:
+        score = turnMultiplier * scoreBoard(gs)
+        if score == -CHECKMATE:
+            # being mated later is less bad, so the winning side goes for the quickest mate
+            # instead of postponing it (which could now end in a repetition draw)
+            score += DEPTH - depth
+        return score
 
     # (will add later) move ordering - like evaluate all the move first that results in check or evaluate all the move first that results in capturing opponent's queen
 
