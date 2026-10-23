@@ -207,7 +207,10 @@ class GameState():
                     # as the king is not moved it should block the check if not then remove the move from moves
                     if moves[i].pieceMoved[1] != 'K':
                         # if not in validSquares then it do not block check or capture the piece making check
-                        if not (moves[i].endRow, moves[i].endCol) in validSquares:
+                        # en passant lands behind the checking pawn but still captures it
+                        capturesChecker = moves[i].isEnpassantMove and (
+                            moves[i].startRow, moves[i].endCol) == (checkRow, checkCol)
+                        if not (moves[i].endRow, moves[i].endCol) in validSquares and not capturesChecker:
                             moves.remove(moves[i])  # remove the moves
                     '''
                         till know we will be able to find check and can move piece to block check but we are doing nothing about the pin so it will allow us to moved the pin pieced 
@@ -278,6 +281,15 @@ class GameState():
                             break
                 else:  # off board
                     break
+        # knight attacks
+        knightMoves = ((-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                       (1, -2), (1, 2), (2, -1), (2, 1))
+        for m in knightMoves:
+            endRow = row + m[0]
+            endCol = col + m[1]
+            if 0 <= endRow < 8 and 0 <= endCol < 8 and self.board[endRow][endCol] == enemyColor + 'N':
+                return True
+        return False
 
     def getAllPossibleMoves(self):
         moves = []
@@ -363,12 +375,15 @@ class GameState():
                             # other piece blocking check
                             if self.board[row][i] != "--":
                                 blockingPiece = True
+                        # only the first piece past the pawns matters
                         for i in outsideRange:
                             square = self.board[row][i]
                             if square[0] == enemyColor and (square[1] == "R" or square[1] == "Q"):
                                 attackingPiece = True
+                                break
                             elif square != "--":
                                 blockingPiece = True
+                                break
                     if not attackingPiece or blockingPiece:
                         moves.append(Move((row, col), (row+moveAmount, col-1),
                                           self.board, isEnpassantMove=True))
@@ -394,12 +409,15 @@ class GameState():
                             # other piece blocking check
                             if self.board[row][i] != "--":
                                 blockingPiece = True
+                        # only the first piece past the pawns matters
                         for i in outsideRange:
                             square = self.board[row][i]
                             if square[0] == enemyColor and (square[1] == "R" or square[1] == "Q"):
                                 attackingPiece = True
+                                break
                             elif square != "--":
                                 blockingPiece = True
+                                break
                     if not attackingPiece or blockingPiece:
                         moves.append(Move((row, col), (row+moveAmount, col+1),
                                           self.board, isEnpassantMove=True))
@@ -661,6 +679,18 @@ class GameState():
         elif move.pieceMoved == 'bK':
             self.blackCastleKingside = False
             self.blackCastleQueenside = False
+
+        # rook moved from its starting square
+        if move.pieceMoved == 'wR' and move.startRow == 7:
+            if move.startCol == 0:
+                self.whiteCastleQueenside = False
+            elif move.startCol == 7:
+                self.whiteCastleKingside = False
+        elif move.pieceMoved == 'bR' and move.startRow == 0:
+            if move.startCol == 0:
+                self.blackCastleQueenside = False
+            elif move.startCol == 7:
+                self.blackCastleKingside = False
 
         # rook captured
         if move.pieceCaptured == 'wR' and move.endRow == 7 and move.endCol == 0:
