@@ -770,12 +770,8 @@ class GameState():
         return None
 
     def getBoardString(self):
-        # Convert the board state to a string
-        boardString = ""
-        for row in self.board:
-            for square in row:
-                boardString += square
-        return boardString
+        # Convert the board state to a string (built for every node of the AI search, so kept fast)
+        return "".join(["".join(row) for row in self.board])
 
     # board + side to move + castling rights + en passant square, used for repetition detection
     def getPositionKey(self):

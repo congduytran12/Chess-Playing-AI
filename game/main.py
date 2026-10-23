@@ -64,12 +64,17 @@ ROW_GAP = 8
 STRIP_HEIGHT = 52
 
 MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
-LEVEL_OPTIONS = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
+LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
 SIDE_OPTIONS = ["White", "Black", "Random"]
 # (label, (starting seconds, increment seconds per move)), None for no clock
 CLOCK_OPTIONS = [("Off", None), ("1+0", (60, 0)), ("3+2", (180, 2)), ("5+0", (300, 0)),
                  ("10+5", (600, 5)), ("15+10", (900, 10))]
-HINT_DEPTH = 3  # search depth used for hints, independent of the AI difficulty
+HINT_SECONDS = 1.0  # thinking time for hints, independent of the AI difficulty
+ANALYSIS_SECONDS = 0.8  # thinking time per position when analyzing a finished game
+# a move that loses at least this much (in pawns, against the best move) is marked in the move log
+MOVE_MARKS = [(3.0, "??"), (1.5, "?"), (0.8, "?!")]  # blunder, mistake, inaccuracy
+MARK_COLORS = {"??": (200, 30, 30), "?": (225, 110, 0), "?!": (185, 150, 0)}
+EVAL_CAP = 10  # evaluations are capped at +-10 pawns before comparing, so won positions don't flag everything
 # the AI accepts a draw offer only when its evaluation is below this (it is losing)
 AI_DRAW_ACCEPT_SCORE = -1
 PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
@@ -207,7 +212,7 @@ async def pawnPromotionPopup(screen, color):
 
 
 # rects of the panel controls, by name; which controls exist depends on the mode
-def panelLayout(modeIndex, connected, canRejoin=False):
+def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
     if modeIndex == 0:  # Local vs AI
         rows = [['mode'], ['level', 'side'], ['clock', 'hint']]
     elif modeIndex == 1:  # Local 2-Player
@@ -218,17 +223,23 @@ def panelLayout(modeIndex, connected, canRejoin=False):
             rows.append(['rejoin'])
     else:  # Online, in a room
         rows = [['mode'], ['roomInfo']]
-    rows += [['save', 'load'], ['resign', 'draw'], ['undo', 'restart']]
+    rows.append(['save', 'load'])
+    if reviewing:  # after the game: analysis and stepping through the moves
+        rows += [['analyze'], ['first', 'prev', 'next', 'last']]
+    else:
+        rows.append(['resign', 'draw'])
+    rows.append(['undo', 'restart'])
 
     rects = {}
     y = BOARD_HEIGHT - PANEL_PADDING - len(rows) * ROW_HEIGHT - (len(rows) - 1) * ROW_GAP
     for row in rows:
-        if len(row) == 1:
-            rects[row[0]] = p.Rect(PANEL_X + PANEL_PADDING, y, CONTROL_WIDTH, ROW_HEIGHT)
-        else:
-            rects[row[0]] = p.Rect(PANEL_X + PANEL_PADDING, y, HALF_WIDTH, ROW_HEIGHT)
-            rects[row[1]] = p.Rect(PANEL_X + MOVE_LOG_PANEL_WIDTH - PANEL_PADDING - HALF_WIDTH, y,
-                                   HALF_WIDTH, ROW_HEIGHT)
+        # controls share the row width, 10px apart
+        width = (CONTROL_WIDTH - 10 * (len(row) - 1)) // len(row)
+        for i, name in enumerate(row):
+            x = PANEL_X + PANEL_PADDING + i * (width + 10)
+            if i == len(row) - 1:
+                width = PANEL_X + MOVE_LOG_PANEL_WIDTH - PANEL_PADDING - x  # last one absorbs rounding
+            rects[name] = p.Rect(x, y, width, ROW_HEIGHT)
         y += ROW_HEIGHT + ROW_GAP
     return rects
 
@@ -318,6 +329,12 @@ async def main():
     hintState = None  # 'requested' -> 'searching' -> None
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
+    # after the game: stepping through the moves, and the AI's analysis of them
+    reviewPly = None  # number of moves shown on the board, None for the final position
+    reviewGs = None  # the position at reviewPly
+    reviewScroll = False  # scroll the move log to the shown move on the next draw
+    analysis = None  # {'evals', 'best', 'bestSan', 'done', 'task'}, filled in while the analysis runs
+    moveRects = []  # (rect, ply) of the moves in the log, for clicking
 
     timeControl = None  # (starting seconds, increment seconds) of the current game, None for no clock
     clocks = {'w': 0, 'b': 0}  # milliseconds left
@@ -329,10 +346,64 @@ async def main():
         statusText = text
         statusUntil = p.time.get_ticks() + duration
 
+    # leaves the review of a finished game and stops its analysis; the game is about to change
+    def clearReview():
+        nonlocal reviewPly, reviewGs, analysis
+        if analysis is not None and analysis['task'] is not None:
+            analysis['task'].cancel()
+        reviewPly = None
+        reviewGs = None
+        analysis = None
+
+    # shows the position after the first ply moves (the final position leaves the review)
+    def reviewTo(ply):
+        nonlocal reviewPly, reviewGs, reviewScroll
+        ply = max(0, min(ply, len(gs.moveLog)))
+        reviewScroll = True
+        if ply == len(gs.moveLog):
+            reviewPly = None
+            reviewGs = None
+            return
+        reviewPly = ply
+        reviewGs = GameState()
+        if reviewGs.playerWantsToPlayAsBlack:
+            reviewGs.board = reviewGs.board1
+        for move in gs.moveLog[:ply]:
+            reviewGs.makeMove(move)
+        reviewGs.getValidMoves()  # sets the check flag for the red king square
+
+    # searches every position of the finished game in the background; result fills in as it goes
+    async def analyzeGame(result):
+        try:
+            log = list(gs.moveLog)
+            board = GameState()
+            if board.playerWantsToPlayAsBlack:
+                board.board = board.board1
+            moves = board.getValidMoves()
+            history = [board.getPositionKey()]
+            for i in range(len(log) + 1):
+                if moves:
+                    score, best, _ = await chessAi.searchPosition(board, moves, ANALYSIS_SECONDS, history=history)
+                    result['best'].append(best.getCode())
+                    result['bestSan'].append(board.getSan(best, moves))
+                else:
+                    score = -chessAi.CHECKMATE if board.inCheck else chessAi.STALEMATE
+                    result['best'].append(None)
+                    result['bestSan'].append(None)
+                result['evals'].append(score if board.whiteToMove else -score)  # from White's point of view
+                if i < len(log):
+                    board.makeMove(board.findMoveByCode(log[i].getCode(), moves))
+                    moves = board.getValidMoves()
+                    history.append(board.getPositionKey())
+        except Exception as e:
+            print("Main: analysis failed:", e)
+        result['done'] = True
+
     def resetGame():
         nonlocal gs, validMoves, squareSelected, playerClicks, moveMade, animate, gameOver, moveUndone
         nonlocal positionHistory, AIThinking, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
+        clearReview()
         gs = GameState()
         if gs.playerWantsToPlayAsBlack:
             gs.board = gs.board1
@@ -378,6 +449,7 @@ async def main():
     # every move of the game (player, AI, opponent or loaded) goes through here
     def playMove(move, sound=True):
         nonlocal validMoves, hintMove, moveLogScroll
+        clearReview()
         chargeClock()
         mover = move.pieceMoved[0]
         validMoves = gs.makeMoveWithSan(move, validMoves)
@@ -400,6 +472,7 @@ async def main():
     def takeBack(plies):
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
         nonlocal gameResult, hintMove, hintState, clocks, lastClockTick
+        clearReview()
         for _ in range(plies):
             gs.undoMove()
         updatePositionHistory(gs, positionHistory)
@@ -546,7 +619,7 @@ async def main():
         if currentModeIndex == 0:
             if (color == 'w') == playerWhiteHuman:
                 return "Player" if forPgn else "You"
-            return "Computer (" + LEVEL_OPTIONS[chessAi.DEPTH - 1] + ")"
+            return "Computer (" + LEVEL_OPTIONS[chessAi.LEVEL] + ")"
         if currentModeIndex == 2 and networkConnected:
             if forPgn:
                 return "Host" if color == 'w' else "Guest"
@@ -564,7 +637,15 @@ async def main():
             'save': len(gs.moveLog) > 0,
             'load': not online,
             'join': bool(roomCode),
+            'analyze': analysis is None and len(gs.moveLog) > 0,
+            'first': shownPly() > 0,
+            'prev': shownPly() > 0,
+            'next': shownPly() < len(gs.moveLog),
+            'last': shownPly() < len(gs.moveLog),
         }
+
+    def shownPly():  # number of moves of the position on the board
+        return len(gs.moveLog) if reviewPly is None else reviewPly
 
     def savePgnFile():
         outcome = getOutcome(gs, positionHistory, gameResult)
@@ -578,7 +659,7 @@ async def main():
         showStatus(pgn.savePgn(text, time.strftime("chess-%Y%m%d-%H%M%S.pgn")))
 
     def loadPgnText(text):
-        nonlocal moveMade, moveUndone, clocks, clockHistory
+        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult
         headers, sans = pgn.parsePgn(text)
         if headers.get('SetUp') == '1' or 'FEN' in headers:
             showStatus("Games from a custom start position aren't supported")
@@ -595,6 +676,11 @@ async def main():
             showStatus("Stopped at move %d: can't play %s" % (loaded // 2 + 1, sans[loaded]), 5000)
         else:
             showStatus("Loaded %d moves" % loaded)
+            # a game that ended by resignation or agreement is over too, so it can be reviewed (Undo resumes it)
+            result = headers.get('Result')
+            names = {'1-0': "White won", '0-1': "Black won", '1/2-1/2': "Draw"}
+            if result in names and getOutcome(gs, positionHistory, None) is None:
+                gameResult = (names[result] + " (PGN result)", result)
         # clocks start fresh from the loaded position
         clocks = dict(clockHistory[0])
         clockHistory = [dict(clocks) for _ in range(len(gs.moveLog) + 1)]
@@ -687,7 +773,7 @@ async def main():
                 if e.button in (4, 5):  # wheel also fires button events; handled by MOUSEWHEEL
                     continue
                 location = p.mouse.get_pos()
-                layout = panelLayout(currentModeIndex, networkConnected, canRejoin)
+                layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
 
                 # an open dropdown takes the click: choose an option or close it
                 if openDropdown:
@@ -702,7 +788,7 @@ async def main():
                     if chosen is None:
                         continue
                     if name == 'level':
-                        chessAi.DEPTH = chosen + 1
+                        chessAi.LEVEL = chosen
                     elif name == 'side':
                         if chosen != sideIndex or SIDE_OPTIONS[chosen] == "Random":
                             sideIndex = chosen
@@ -818,8 +904,27 @@ async def main():
                     showStatus("Rejoining room " + roomCode)
                     await asyncio.sleep(0)  # yield so poll task can start
 
+                elif clicked == 'analyze':
+                    analysis = {'evals': [], 'best': [], 'bestSan': [], 'done': False, 'task': None}
+                    analysis['task'] = asyncio.ensure_future(analyzeGame(analysis))
+                elif clicked == 'first':
+                    reviewTo(0)
+                elif clicked == 'prev':
+                    reviewTo(shownPly() - 1)
+                elif clicked == 'next':
+                    reviewTo(shownPly() + 1)
+                elif clicked == 'last':
+                    reviewTo(len(gs.moveLog))
+                elif clicked is None and gameOver and location[0] >= BOARD_WIDTH:
+                    # clicking a move in the log shows the position after it
+                    for rect, ply in moveRects:
+                        if rect.collidepoint(location):
+                            reviewTo(ply + 1)
+
                 elif clicked is None and location[0] < BOARD_WIDTH:  # board click
                     if gameOver:
+                        if reviewPly is not None:
+                            continue  # stepping through the moves; the board isn't playable
                         # clicking the board after the game starts a new one
                         if multiplayerMode and networkConnected:
                             startOnlineGame()
@@ -879,6 +984,18 @@ async def main():
                             roomCode += e.unicode.upper()
                     continue
 
+                # after the game, the arrow keys step through the moves
+                if gameOver and e.key in (p.K_LEFT, p.K_RIGHT, p.K_HOME, p.K_END, p.K_UP, p.K_DOWN):
+                    if e.key in (p.K_LEFT, p.K_UP):
+                        reviewTo(shownPly() - 1)
+                    elif e.key in (p.K_RIGHT, p.K_DOWN):
+                        reviewTo(shownPly() + 1)
+                    elif e.key == p.K_HOME:
+                        reviewTo(0)
+                    else:
+                        reviewTo(len(gs.moveLog))
+                    continue
+
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
                         sendOnline({'type': 'undo_request'})
@@ -908,7 +1025,7 @@ async def main():
             if not AIThinking:
                 AIThinking = True
                 await asyncio.sleep(0.1)
-                AIMove = await findBestMove(gs, validMoves)
+                AIMove = await findBestMove(gs, validMoves, history=positionHistory)
                 if AIMove is None:
                     AIMove = findRandomMoves(validMoves)
                 playMove(AIMove)  # promotes to a queen, which is what the AI always picks
@@ -924,16 +1041,9 @@ async def main():
         elif hintState == 'searching':
             hintState = None
             if humanTurn and not gameOver and gameResult is None and validMoves:
-                savedDepth = chessAi.DEPTH
-                chessAi.DEPTH = HINT_DEPTH
-                try:
-                    suggestion = await findBestMove(gs, list(validMoves))
-                finally:
-                    chessAi.DEPTH = savedDepth
+                _, suggestion, _ = await chessAi.searchPosition(gs, validMoves, HINT_SECONDS, history=positionHistory)
                 if suggestion is None:
                     suggestion = findRandomMoves(validMoves)
-                # the search leaves check and pin flags from deeper positions behind
-                validMoves = gs.getValidMoves()
                 hintMove = suggestion
                 showStatus("Hint: " + gs.getSan(suggestion, validMoves), 4000)
 
@@ -952,27 +1062,44 @@ async def main():
         if gameOver and pendingPrompt and pendingPrompt['kind'] != 'undo':
             pendingPrompt = None
 
-        drawGameState(screen, gs, validMoves, squareSelected, flip_board, hintMove)
+        if not gameOver and reviewPly is not None:
+            clearReview()  # the game went on (e.g. an undo from the opponent)
+        # the board shows the reviewed position while stepping through a finished game
+        shownGs = reviewGs if reviewGs is not None else gs
+        if reviewGs is not None:
+            drawGameState(screen, reviewGs, [], (), flip_board)
+        else:
+            drawGameState(screen, gs, validMoves, squareSelected, flip_board, hintMove)
 
         # side panel
-        layout = panelLayout(currentModeIndex, networkConnected, canRejoin)
+        layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
         stripY = min(rect.y for rect in layout.values()) - ROW_GAP - STRIP_HEIGHT
         p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), p.Rect(PANEL_X, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT))
-        moveLogScroll = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, stripY)
-        taken = capturedPieces(gs)
-        balance = materialBalance(gs.board)
-        sideToMove = 'w' if gs.whiteToMove else 'b'
+        marks = moveMarks(analysis, gs.moveLog) if analysis else {}
+        if gameOver:
+            # below the moves: the shown position, its evaluation and the analysis
+            infoRect = p.Rect(PANEL_X + 10, stripY - 60, MOVE_LOG_PANEL_WIDTH - 20, 54)
+            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, infoRect.y - 4,
+                                                   shownPly() - 1, marks, reviewScroll)
+            drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate)
+        else:
+            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, stripY)
+        reviewScroll = False
+        taken = capturedPieces(shownGs)
+        balance = materialBalance(shownGs.board)
+        sideToMove = 'w' if shownGs.whiteToMove else 'b'
+        shownClocks = clockHistory[reviewPly] if reviewPly is not None and reviewPly < len(clockHistory) else clocks
         for color, y in ((('w' if flip_board else 'b'), 0), (('b' if flip_board else 'w'), stripY)):
             drawPlayerStrip(screen, y, color, playerName(color), taken[color],
                             balance if color == 'w' else -balance,
-                            clocks[color] if timeControl else None,
+                            shownClocks[color] if timeControl else None,
                             clockRunning() and sideToMove == color)
 
         mouse_pos = p.mouse.get_pos()
         states = controlStates()
         labels = {
             'mode': "Mode: " + MODE_OPTIONS[currentModeIndex],
-            'level': "AI: " + LEVEL_OPTIONS[chessAi.DEPTH - 1],
+            'level': "AI: " + LEVEL_OPTIONS[chessAi.LEVEL],
             'side': "Play as: " + SIDE_OPTIONS[sideIndex],
             'clock': "Clock: " + CLOCK_OPTIONS[clockIndex][0],
             'hint': "Hint",
@@ -984,7 +1111,14 @@ async def main():
             'draw': "Offer Draw",
             'undo': "Undo",
             'restart': "Restart",
+            'first': "", 'prev': "", 'next': "", 'last': "",  # drawn as arrow icons
         }
+        if analysis is None:
+            labels['analyze'] = "Analyze game"
+        elif not analysis['done']:
+            labels['analyze'] = "Analyzing... %d/%d" % (len(analysis['evals']), len(gs.moveLog) + 1)
+        else:
+            labels['analyze'] = "Analysis done"
         if savedSession:
             labels['rejoin'] = "Rejoin %s as %s" % (savedSession['room'], "White" if savedSession['role'] == 'host' else "Black")
         for name, rect in layout.items():
@@ -1014,8 +1148,10 @@ async def main():
                 if name in ('mode', 'level', 'side', 'clock'):
                     arrow = 'up' if openDropdown == name else 'down'
                 drawButton(screen, rect, labels[name], states.get(name, True), mouse_pos, arrow)
+                if name in ('first', 'prev', 'next', 'last'):
+                    drawNavIcon(screen, rect, name)
 
-        if gameOver:
+        if gameOver and reviewPly is None:
             drawEndGameText(screen, outcome[0])
 
         # overlays: open dropdown options and the Accept / Decline prompt
@@ -1056,7 +1192,7 @@ def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None)
 
     # leave room on the right for the dropdown arrow
     textArea = rect.width - (36 if arrow else 12)
-    textObj = get_fitting_text(text, textArea, 24 if rect.width > HALF_WIDTH else 20, "white")
+    textObj = get_fitting_text(text, textArea, 24 if rect.width > CONTROL_WIDTH // 2 + 5 else 20, "white")
     textX = rect.x + (rect.width - (24 if arrow else 0)) / 2 - textObj.get_width() / 2
     screen.blit(textObj, (textX, rect.centery - textObj.get_height() / 2))
 
@@ -1238,35 +1374,123 @@ def drawPieces(screen, board, flip=False):
 
 
 # draws the moves between top and bottom, two moves (white and black) per pair and two pairs per line
-# returns the scroll offset clamped to the available lines
-def drawMoveLog(screen, gs, scroll, top, bottom):
+# currentPly: index of the move to highlight; marks: ply -> (mark, loss) from the analysis
+# follow: scroll so the highlighted move is visible
+# returns the scroll offset clamped to the available lines, and (rect, ply) of each move drawn
+def drawMoveLog(screen, gs, scroll, top, bottom, currentPly=None, marks=None, follow=False):
     moveLog = gs.moveLog
-    pairs = []
-    for i in range(0, len(moveLog), 2):
-        whiteMove = moveLog[i].san or str(moveLog[i])
-        blackMove = (moveLog[i + 1].san or str(moveLog[i + 1])) if i + 1 < len(moveLog) else ""
-        pairs.append((str(i // 2 + 1) + ".", whiteMove, blackMove))
-    lines = [pairs[i:i + 2] for i in range(0, len(pairs), 2)]
-
+    marks = marks or {}
+    lineCount = (len(moveLog) + 3) // 4
     padding = 8
     lineHeight = 24
     # only show the lines that fit, newest at the bottom
     visibleLines = max(1, (bottom - top - 2 * padding) // lineHeight)
-    scroll = min(max(scroll, 0), max(0, len(lines) - visibleLines))
-    start = max(0, len(lines) - visibleLines - scroll)
+    if follow and currentPly is not None:
+        line = max(currentPly, 0) // 4
+        start = max(0, lineCount - visibleLines - scroll)
+        if line < start:
+            scroll = lineCount - visibleLines - line
+        elif line >= start + visibleLines:
+            scroll = lineCount - 1 - line
+    scroll = min(max(scroll, 0), max(0, lineCount - visibleLines))
+    start = max(0, lineCount - visibleLines - scroll)
 
-    textY = top + padding
-    for line in lines[start:start + visibleLines]:
-        for k, (number, whiteMove, blackMove) in enumerate(line):
-            x = PANEL_X + 10 + k * 180
-            numberObj = get_text_surface(number, 18, "dimgray", False)
-            screen.blit(numberObj, (x + 30 - numberObj.get_width(), textY))  # right-aligned
-            screen.blit(get_text_surface(whiteMove, 18, "black", False), (x + 36, textY))
-            if blackMove:
-                screen.blit(get_text_surface(blackMove, 18, "black", False), (x + 106, textY))
-        textY += lineHeight
+    rects = []
+    for i in range(start * 4, min(len(moveLog), (start + visibleLines) * 4)):
+        y = top + padding + (i // 4 - start) * lineHeight
+        x = PANEL_X + 10 + ((i % 4) // 2) * 180
+        if i % 2 == 0:
+            numberObj = get_text_surface(str(i // 2 + 1) + ".", 18, "dimgray", False)
+            screen.blit(numberObj, (x + 30 - numberObj.get_width(), y))  # right-aligned
+        moveX = x + (36 if i % 2 == 0 else 106)
+        rect = p.Rect(moveX - 3, y - 1, 68, lineHeight - 2)
+        if i == currentPly:
+            p.draw.rect(screen, p.Color(LAST_MOVE_COLOR), rect)
+        textObj = get_text_surface(moveLog[i].san or str(moveLog[i]), 18, "black", False)
+        screen.blit(textObj, (moveX, y))
+        if i in marks:
+            mark = marks[i][0]
+            markObj = get_text_surface(mark, 16, MARK_COLORS[mark], True)
+            screen.blit(markObj, (moveX + textObj.get_width() + 1, y + 1))
+        rects.append((rect, i))
 
-    return scroll
+    return scroll, rects
+
+
+# the shown position, its evaluation and what the analysis says about the move that led to it
+def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate):
+    p.draw.rect(screen, p.Color(STRIP_COLOR), rect)
+    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), rect, 1)
+    if ply == 0:
+        first = "Start position"
+    else:
+        i = ply - 1
+        first = "After %d.%s %s" % (i // 2 + 1, "" if i % 2 == 0 else "..", moveLog[i].san or str(moveLog[i]))
+    evals = analysis['evals'] if analysis else []
+    if isCheckmate:
+        first += "   Checkmate"
+    elif ply < len(evals):
+        first += "   Eval " + formatEval(evals[ply])
+
+    if ply > 0 and ply - 1 in marks:
+        mark, loss = marks[ply - 1]
+        kind = {"??": "Blunder", "?": "Mistake", "?!": "Inaccuracy"}[mark]
+        second = "%s: loses %.1f. Best was %s" % (kind, loss, analysis['bestSan'][ply - 1])
+    elif analysis and not analysis['done']:
+        second = "Analyzing the game..."
+    elif analysis:
+        counts = {(color, mark): 0 for color in "wb" for mark, _ in MARK_COLORS.items()}
+        for i, (mark, _) in marks.items():
+            counts[('w' if i % 2 == 0 else 'b', mark)] += 1
+        second = "   ".join("%s ??%d ?%d ?!%d" % (name, counts[(c, "??")], counts[(c, "?")], counts[(c, "?!")])
+                             for c, name in (('w', "White"), ('b', "Black")))
+    else:
+        second = "Step through the moves with the arrow keys"
+    screen.blit(get_fitting_text(first, rect.width - 16, 17, "black", True), (rect.x + 8, rect.y + 5))
+    screen.blit(get_fitting_text(second, rect.width - 16, 16, "dimgray", False), (rect.x + 8, rect.y + 29))
+
+
+def drawNavIcon(screen, rect, name):
+    cx, cy = rect.center
+    white = p.Color('white')
+    if name in ('first', 'prev'):
+        tip = cx - 5 if name == 'prev' else cx - 3
+        p.draw.polygon(screen, white, [(tip, cy), (tip + 11, cy - 8), (tip + 11, cy + 8)])
+        if name == 'first':
+            p.draw.rect(screen, white, p.Rect(tip - 5, cy - 8, 3, 17))
+    else:
+        tip = cx + 5 if name == 'next' else cx + 3
+        p.draw.polygon(screen, white, [(tip, cy), (tip - 11, cy - 8), (tip - 11, cy + 8)])
+        if name == 'last':
+            p.draw.rect(screen, white, p.Rect(tip + 3, cy - 8, 3, 17))
+
+
+# ply -> (mark, pawns lost) for the analysed moves that lost enough against the best move
+def moveMarks(analysis, moveLog):
+    marks = {}
+    evals = analysis['evals']
+    for i in range(min(len(moveLog), len(evals) - 1)):
+        if analysis['best'][i] == moveLog[i].getCode():
+            continue  # the best move can't be a mistake, whatever deeper searches say
+        sign = 1 if i % 2 == 0 else -1  # White moves on even plies
+        loss = sign * (capEval(evals[i]) - capEval(evals[i + 1]))
+        for threshold, mark in MOVE_MARKS:
+            if loss >= threshold:
+                marks[i] = (mark, loss)
+                break
+    return marks
+
+
+def capEval(score):
+    return max(-EVAL_CAP, min(EVAL_CAP, score))
+
+
+# evaluation from White's point of view: "+1.3", or "#3" / "-#3" for a forced mate
+def formatEval(score):
+    if abs(score) > chessAi.MATE_THRESHOLD:
+        moves = max(1, (chessAi.CHECKMATE - abs(score) + 1) // 2)
+        return ("#" if score > 0 else "-#") + str(moves)
+    return "%+.1f" % score
 
 
 
