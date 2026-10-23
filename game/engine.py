@@ -79,7 +79,7 @@ class GameState():
 
         # pawn promotion
         if move.isPawnPromotion:
-            self.board[move.endRow][move.endCol] = move.pieceMoved[0] + 'Q'
+            self.board[move.endRow][move.endCol] = move.pieceMoved[0] + move.promotionChoice
 
         # enpassant move
         if move.isEnpassantMove:
@@ -702,6 +702,63 @@ class GameState():
         if move.pieceCaptured == 'bR' and move.endRow == 0 and move.endCol == 7:
             self.blackCastleKingside = False
 
+    # standard algebraic notation for a move in the current position, without the check suffix
+    # validMoves are the legal moves of this position, used to disambiguate identical pieces
+    def getSan(self, move, validMoves):
+        if move.castle:
+            return "O-O" if move.endCol > move.startCol else "O-O-O"
+        endSquare = move.getRankFile(move.endRow, move.endCol)
+        if move.pieceMoved[1] == 'p':
+            san = (move.colsToFiles[move.startCol] + 'x' if move.isCapture else '') + endSquare
+            if move.isPawnPromotion:
+                san += '=' + move.promotionChoice
+            return san
+        san = move.pieceMoved[1]
+        # other pieces of the same kind that can reach the same square
+        others = [m for m in validMoves if m.pieceMoved == move.pieceMoved and
+                  (m.endRow, m.endCol) == (move.endRow, move.endCol) and
+                  (m.startRow, m.startCol) != (move.startRow, move.startCol)]
+        if others:
+            if all(m.startCol != move.startCol for m in others):
+                san += move.colsToFiles[move.startCol]
+            elif all(m.startRow != move.startRow for m in others):
+                san += move.rowsToRanks[move.startRow]
+            else:
+                san += move.getRankFile(move.startRow, move.startCol)
+        if move.isCapture:
+            san += 'x'
+        return san + endSquare
+
+    # makes a move played in the game (not the AI search), records its notation in move.san
+    # and returns the legal moves of the new position
+    def makeMoveWithSan(self, move, validMoves):
+        move.san = self.getSan(move, validMoves)
+        self.makeMove(move)
+        nextMoves = self.getValidMoves()
+        if self.checkmate:
+            move.san += '#'
+        elif self.inCheck:
+            move.san += '+'
+        return nextMoves
+
+    # finds the legal move written as text in algebraic notation (e.g. "Nf3", "exd5", "e8=Q+", "O-O")
+    def findMoveBySan(self, text, validMoves):
+        text = text.rstrip('+#!?').replace('0-0-0', 'O-O-O').replace('0-0', 'O-O')
+        promotion = None
+        if '=' in text:
+            text, promotion = text.split('=', 1)
+        elif len(text) > 2 and text[0] in Move.filesToCols and text[-1] in 'QRBN':
+            text, promotion = text[:-1], text[-1]  # pawn promotion written without '=' (e8Q)
+        # second pass ignores 'x', which some sources leave out or add
+        for loose in (False, True):
+            for move in validMoves:
+                san = self.getSan(move, validMoves).split('=')[0]
+                if san == text or (loose and san.replace('x', '') == text.replace('x', '')):
+                    if move.isPawnPromotion:
+                        move.promotionChoice = promotion if promotion in ('Q', 'R', 'B', 'N') else 'Q'
+                    return move
+        return None
+
     def getBoardString(self):
         # Convert the board state to a string
         boardString = ""
@@ -808,6 +865,10 @@ class Move():
         '''
         # en passant
         self.isEnpassantMove = isEnpassantMove
+        # piece a promoting pawn becomes ('Q', 'R', 'B' or 'N'), chosen before the move is made
+        self.promotionChoice = 'Q'
+        # algebraic notation, filled in by GameState.makeMoveWithSan
+        self.san = ''
 
     # overriding the equals method (tell python if two moves are equal)
     # no two pieces should be on the same square
