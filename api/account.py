@@ -1,0 +1,286 @@
+# Player accounts for the game: registration, sign-in, stats, saved games, ratings and the leaderboard.
+# Backed by Supabase (see supabase/schema.sql). The game only talks to this endpoint, which uses the service
+# role key, so the database tables stay closed to the public.
+#
+# Vercel environment variables: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#
+# Every request is a POST with a JSON body {"action": ..., ...}; signed-in actions also carry "token",
+# the access token returned by "login". Errors come back as {"error": message} with a 4xx/5xx status.
+
+import os
+import re
+import hashlib
+import datetime
+import requests
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+# Use a global session for connection pooling
+session = requests.Session()
+
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
+SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
+
+USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_]{3,20}$')
+EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+MIN_PASSWORD_LENGTH = 8
+MAX_PGN_LENGTH = 20000
+RESULTS = ('1-0', '0-1', '1/2-1/2')
+MIN_RATED_PLIES = 4  # shorter online games don't change ratings
+CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Cache-Control': 'no-store',
+}
+
+
+class ApiError(Exception):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def supabase(method, path, token=None, **kwargs):
+    headers = {
+        'apikey': SERVICE_KEY,
+        'Authorization': 'Bearer ' + (token or SERVICE_KEY),
+        'Content-Type': 'application/json',
+    }
+    headers.update(kwargs.pop('headers', {}))
+    try:
+        return session.request(method, SUPABASE_URL + path, headers=headers, timeout=8, **kwargs)
+    except requests.exceptions.RequestException as e:
+        raise ApiError("Can't reach the account service: %s" % e, 502)
+
+
+# database access through PostgREST, with the service role
+def rest(method, path, **kwargs):
+    res = supabase(method, '/rest/v1/' + path, **kwargs)
+    if res.status_code >= 400:
+        print(f"[account] {method} {path} -> {res.status_code} {res.text[:300]}")
+        raise ApiError('Database error', 502)
+    return res.json() if res.text else None
+
+
+def authErrorMessage(res):
+    try:
+        body = res.json()
+    except ValueError:
+        body = {}
+    return body.get('msg') or body.get('error_description') or body.get('message') or 'Sign-in failed'
+
+
+def text(data, key, limit=200):
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise ApiError('Missing ' + key)
+    return value.strip()[:limit]
+
+
+# the signed-in player's id, from the access token sent with the request
+def currentUser(data):
+    token = data.get('token')
+    if not isinstance(token, str) or not token:
+        raise ApiError('Not signed in', 401)
+    res = supabase('GET', '/auth/v1/user', token=token)
+    if res.status_code != 200:
+        raise ApiError('Your session expired, please sign in again', 401)
+    return res.json()['id']
+
+
+def getProfile(userId):
+    rows = rest('GET', 'profiles', params={'id': 'eq.' + userId, 'select': 'id,username,rating,rated_games'})
+    if not rows:
+        raise ApiError('This account has no profile', 404)
+    return rows[0]
+
+
+def signedIn(session):
+    return {'token': session['access_token'], 'refresh': session['refresh_token'],
+            'profile': getProfile(session['user']['id'])}
+
+
+def register(data):
+    email = text(data, 'email')
+    password = text(data, 'password')
+    username = text(data, 'username')
+    if not EMAIL_PATTERN.match(email):
+        raise ApiError("That doesn't look like an email address")
+    if not USERNAME_PATTERN.match(username):
+        raise ApiError('Usernames are 3-20 letters, digits or _')
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ApiError('Passwords need at least %d characters' % MIN_PASSWORD_LENGTH)
+    # ilike ignores case like the unique index does; _ is a wildcard in patterns, so it's escaped
+    if rest('GET', 'profiles', params={'username': 'ilike.' + username.replace('_', '\\_'), 'select': 'id'}):
+        raise ApiError('That username is taken')
+    res = supabase('POST', '/auth/v1/signup', json={'email': email, 'password': password, 'data': {'username': username}})
+    if res.status_code >= 400:
+        raise ApiError(authErrorMessage(res))
+    body = res.json()
+    if body.get('access_token'):
+        return signedIn(body)
+    return {'confirm': True}  # email confirmation is on: the player signs in after clicking the link
+
+
+def login(data):
+    res = supabase('POST', '/auth/v1/token?grant_type=password',
+                   json={'email': text(data, 'email'), 'password': text(data, 'password')})
+    if res.status_code != 200:
+        raise ApiError(authErrorMessage(res), 401)
+    return signedIn(res.json())
+
+
+def refresh(data):
+    res = supabase('POST', '/auth/v1/token?grant_type=refresh_token', json={'refresh_token': text(data, 'refresh', 1000)})
+    if res.status_code != 200:
+        raise ApiError('Please sign in again', 401)
+    return signedIn(res.json())
+
+
+# wins / losses / draws against each AI level and online
+def me(data):
+    userId = currentUser(data)
+    rows = rest('GET', 'games', params={'user_id': 'eq.' + userId, 'select': 'mode,ai_level,color,result',
+                                        'mode': 'neq.local', 'limit': '2000'})
+    stats = {}
+    for row in rows:
+        if row['result'] not in RESULTS or row['color'] not in ('w', 'b'):
+            continue
+        key = 'ai%d' % (row['ai_level'] or 0) if row['mode'] == 'ai' else 'online'
+        record = stats.setdefault(key, {'won': 0, 'lost': 0, 'drawn': 0})
+        if row['result'] == '1/2-1/2':
+            record['drawn'] += 1
+        elif (row['result'] == '1-0') == (row['color'] == 'w'):
+            record['won'] += 1
+        else:
+            record['lost'] += 1
+    return {'profile': getProfile(userId), 'stats': stats}
+
+
+# saves a finished game; with "id" it updates that game instead (the player undid moves and finished again)
+def saveGame(data):
+    userId = currentUser(data)
+    game = data.get('game')
+    if not isinstance(game, dict):
+        raise ApiError('Missing game')
+    mode = game.get('mode')
+    if mode not in ('ai', 'local', 'online'):
+        raise ApiError('Unknown game mode')
+    result = game.get('result')
+    if result not in RESULTS + ('*',):
+        raise ApiError('Unknown result')
+    pgn = game.get('pgn')
+    if not isinstance(pgn, str) or not pgn or len(pgn) > MAX_PGN_LENGTH:
+        raise ApiError('The game record is missing or too long')
+    level = game.get('ai_level')
+    row = {
+        'user_id': userId,
+        'mode': mode,
+        'ai_level': level if mode == 'ai' and isinstance(level, int) else None,
+        'color': game.get('color') if game.get('color') in ('w', 'b') else None,
+        'opponent': str(game.get('opponent') or '')[:60],
+        'result': result,
+        'pgn': pgn,
+    }
+    gameId = game.get('id')
+    if isinstance(gameId, int):
+        rows = rest('PATCH', 'games', params={'id': 'eq.%d' % gameId, 'user_id': 'eq.' + userId},
+                    json=row, headers={'Prefer': 'return=representation'})
+        if rows:
+            return {'id': gameId}
+    rows = rest('POST', 'games', json=row, headers={'Prefer': 'return=representation'})
+    return {'id': rows[0]['id']}
+
+
+def listGames(data):
+    userId = currentUser(data)
+    rows = rest('GET', 'games', params={'user_id': 'eq.' + userId, 'order': 'played_at.desc', 'limit': '20',
+                                        'select': 'id,mode,ai_level,color,opponent,result,played_at'})
+    return {'games': rows}
+
+
+def getGame(data):
+    userId = currentUser(data)
+    gameId = data.get('id')
+    if not isinstance(gameId, int):
+        raise ApiError('Missing game id')
+    rows = rest('GET', 'games', params={'id': 'eq.%d' % gameId, 'user_id': 'eq.' + userId, 'select': 'id,pgn'})
+    if not rows:
+        raise ApiError('Game not found', 404)
+    return rows[0]
+
+
+# Online games have no server watching them, so a result only changes ratings when it can be trusted:
+# both players reported the same result, or a player reported their own loss (e.g. a resignation)
+def reportOnline(data):
+    userId = currentUser(data)
+    white = text(data, 'white_id', 64)
+    black = text(data, 'black_id', 64)
+    moves = text(data, 'moves', 8000)
+    result = data.get('result')
+    if userId not in (white, black) or white == black:
+        raise ApiError("You didn't play in this game")
+    if result not in RESULTS:
+        raise ApiError('Unknown result')
+    if len(moves.split()) < MIN_RATED_PLIES:
+        return {'rated': False, 'reason': 'too short', 'profile': getProfile(userId)}
+
+    gameHash = hashlib.sha256(('%s|%s|%s' % (white, black, moves)).encode()).hexdigest()
+    since = (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).isoformat()
+    reports = rest('GET', 'online_reports', params={'game_hash': 'eq.' + gameHash, 'created_at': 'gte.' + since,
+                                                    'select': 'reporter,result,applied'})
+    if any(report['applied'] for report in reports):
+        return {'rated': True, 'profile': getProfile(userId)}  # already counted
+    if not any(report['reporter'] == userId for report in reports):
+        rest('POST', 'online_reports', json={'game_hash': gameHash, 'reporter': userId, 'white_id': white,
+                                              'black_id': black, 'result': result})
+
+    concedes = result == ('0-1' if userId == white else '1-0')
+    agreed = any(report['reporter'] != userId and report['result'] == result for report in reports)
+    if not (concedes or agreed):
+        return {'rated': False, 'pending': True, 'profile': getProfile(userId)}
+    score = {'1-0': 1, '0-1': 0, '1/2-1/2': 0.5}[result]
+    rest('POST', 'rpc/apply_rated_game', json={'p_hash': gameHash, 'p_white': white, 'p_black': black,
+                                                'p_white_score': score})
+    return {'rated': True, 'profile': getProfile(userId)}
+
+
+def leaderboard(data):
+    rows = rest('GET', 'profiles', params={'rated_games': 'gt.0', 'order': 'rating.desc', 'limit': '10',
+                                           'select': 'username,rating,rated_games'})
+    return {'players': rows}
+
+
+ACTIONS = {
+    'register': register,
+    'login': login,
+    'refresh': refresh,
+    'me': me,
+    'save_game': saveGame,
+    'games': listGames,
+    'game': getGame,
+    'report_online': reportOnline,
+    'leaderboard': leaderboard,
+}
+
+
+@app.route('/api/account', methods=['POST', 'OPTIONS'])
+def account():
+    if request.method == 'OPTIONS':
+        return '', 204, CORS_HEADERS
+    if not SUPABASE_URL or not SERVICE_KEY:
+        return jsonify({'error': 'Accounts are not set up on this server'}), 503, CORS_HEADERS
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or data.get('action') not in ACTIONS:
+        return jsonify({'error': 'Unknown action'}), 400, CORS_HEADERS
+    try:
+        return jsonify(ACTIONS[data['action']](data)), 200, CORS_HEADERS
+    except ApiError as e:
+        return jsonify({'error': e.message}), e.status, CORS_HEADERS
+
+
+# Vercel's Python runtime serves the Flask 'app'
+handler = app

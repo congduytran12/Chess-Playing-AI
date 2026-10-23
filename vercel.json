@@ -6,6 +6,9 @@
   "functions": {
     "api/sync.py": {
       "maxDuration": 15
+    },
+    "api/account.py": {
+      "maxDuration": 15
     }
   },
   "headers": [
@@ -34,6 +37,10 @@
     {
       "source": "/api/sync",
       "destination": "/api/sync.py"
+    },
+    {
+      "source": "/api/account",
+      "destination": "/api/account.py"
     }
   ]
 }

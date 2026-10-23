@@ -24,6 +24,7 @@ from chessAi import findRandomMoves, findBestMove
 import asyncio
 from network import net
 import pgn
+from account import account, AccountError
 import random
 import string
 import time
@@ -228,7 +229,7 @@ def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
         rows += [['analyze'], ['first', 'prev', 'next', 'last']]
     else:
         rows.append(['resign', 'draw'])
-    rows.append(['undo', 'restart'])
+    rows.append(['undo', 'restart', 'account'])
 
     rects = {}
     y = BOARD_HEIGHT - PANEL_PADDING - len(rows) * ROW_HEIGHT - (len(rows) - 1) * ROW_GAP
@@ -320,6 +321,20 @@ async def main():
     lastStateHeard = 0  # ticks when we last heard a state matching ours
     lastSyncReply = 0  # ticks when we last answered a player who is behind
     savedSession = net.load_session()  # last room and role, offered as Rejoin
+    opponentInfo = None  # {'uid', 'name', 'rating'} of a signed-in online opponent
+
+    # player account (see account.py): the account window, and saving finished games to the account
+    accountView = None  # 'signin' | 'register' | 'profile' | 'games' | 'leaderboard' while the window is open
+    accountFields = {'username': "", 'email': "", 'password': ""}
+    accountFocus = 'email'  # the form field being typed into
+    accountMessage = ""  # error or notice shown in the account window
+    accountList = []  # saved games or leaderboard rows shown in the window
+    accountRequests = []  # running requests: (task, onDone, onError, shownInWindow)
+    gameSaved = False  # the finished game was sent to the account
+    savedGameId = None  # its id there, so finishing again after an undo updates it
+    gameLoaded = False  # loaded from a file or the account, so not saved again
+    ratingReported = False
+    asyncio.ensure_future(account.restore())  # stays signed in from last time
 
     moveUndone = False
     positionHistory = [gs.getPositionKey()]  # one position key per ply, for threefold repetition
@@ -403,7 +418,12 @@ async def main():
         nonlocal gs, validMoves, squareSelected, playerClicks, moveMade, animate, gameOver, moveUndone
         nonlocal positionHistory, AIThinking, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
+        nonlocal gameSaved, savedGameId, gameLoaded, ratingReported
         clearReview()
+        gameSaved = False
+        savedGameId = None
+        gameLoaded = False
+        ratingReported = False
         gs = GameState()
         if gs.playerWantsToPlayAsBlack:
             gs.board = gs.board1
@@ -471,8 +491,9 @@ async def main():
     # undo plies and restore everything tied to them
     def takeBack(plies):
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
-        nonlocal gameResult, hintMove, hintState, clocks, lastClockTick
+        nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved
         clearReview()
+        gameSaved = False  # if the game is finished again, its saved copy is updated
         for _ in range(plies):
             gs.undoMove()
         updatePositionHistory(gs, positionHistory)
@@ -510,6 +531,9 @@ async def main():
 
     def sendOnline(message):
         message.update({'game': onlineGame, 'version': onlineVersion, 'role': multiplayerRole, 'sender': myPlayerId})
+        if account.signedIn:  # lets the opponent show our name and report the result for ratings
+            message['player'] = {'uid': account.profile['id'], 'name': account.username,
+                                 'rating': account.profile['rating']}
         asyncio.ensure_future(net.send(message))
 
     # the whole game, so a player who missed messages or rejoined can rebuild it
@@ -545,7 +569,9 @@ async def main():
 
     def connectOnline(role):
         nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, savedSession, lastStateHeard
+        nonlocal opponentInfo
         multiplayerRole = role
+        opponentInfo = None
         net.set_topic(roomCode)
         print(f"DEBUG: I am {role.upper()}. Full Network Topic: [{net.topic}]")
         networkConnected = True
@@ -618,9 +644,18 @@ async def main():
     def playerName(color, forPgn=False):
         if currentModeIndex == 0:
             if (color == 'w') == playerWhiteHuman:
+                if account.signedIn:
+                    return account.username
                 return "Player" if forPgn else "You"
             return "Computer (" + LEVEL_OPTIONS[chessAi.LEVEL] + ")"
         if currentModeIndex == 2 and networkConnected:
+            # signed-in players are shown by name and rating
+            if color == myColor():
+                info = {'name': account.username, 'rating': account.profile['rating']} if account.signedIn else None
+            else:
+                info = opponentInfo
+            if info:
+                return info['name'] if forPgn else "%s (%d)" % (info['name'], info['rating'])
             if forPgn:
                 return "Host" if color == 'w' else "Guest"
             return "You" if color == myColor() else "Opponent"
@@ -647,7 +682,7 @@ async def main():
     def shownPly():  # number of moves of the position on the board
         return len(gs.moveLog) if reviewPly is None else reviewPly
 
-    def savePgnFile():
+    def buildPgnText():  # returns (PGN text, result)
         outcome = getOutcome(gs, positionHistory, gameResult)
         result = outcome[1] if outcome else '*'
         headers = [("Event", "Casual game"), ("Site", "Chess-Playing-AI"), ("Date", time.strftime("%Y.%m.%d")),
@@ -655,11 +690,14 @@ async def main():
                    ("Result", result)]
         if timeControl:
             headers.append(("TimeControl", "%d+%d" % timeControl))
-        text = pgn.buildPgn(gs.moveLog, headers, result)
+        return pgn.buildPgn(gs.moveLog, headers, result), result
+
+    def savePgnFile():
+        text, _ = buildPgnText()
         showStatus(pgn.savePgn(text, time.strftime("chess-%Y%m%d-%H%M%S.pgn")))
 
     def loadPgnText(text):
-        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult
+        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult, gameLoaded
         headers, sans = pgn.parsePgn(text)
         if headers.get('SetUp') == '1' or 'FEN' in headers:
             showStatus("Games from a custom start position aren't supported")
@@ -686,6 +724,153 @@ async def main():
         clockHistory = [dict(clocks) for _ in range(len(gs.moveLog) + 1)]
         moveMade = True
         moveUndone = True  # let the position show before the AI replies
+        gameLoaded = True
+
+    # --- account
+
+    def startRequest(coroutine, onDone=None, onError=None, inWindow=True):
+        nonlocal accountMessage
+        accountRequests.append((asyncio.ensure_future(coroutine), onDone, onError, inWindow))
+        if inWindow:
+            accountMessage = "Please wait..."
+
+    def accountBusy():
+        return any(entry[3] for entry in accountRequests)
+
+    def openAccountView(view):
+        nonlocal accountView, accountMessage, accountFocus, accountList
+        accountView = view
+        accountMessage = ""
+        accountList = []
+        if view in ('signin', 'register'):
+            accountFocus = 'username' if view == 'register' else 'email'
+        elif view == 'profile':
+            startRequest(account.loadStats())
+        elif view == 'games':
+            startRequest(account.listGames(), onDone=showAccountList)
+        elif view == 'leaderboard':
+            startRequest(account.leaderboard(), onDone=showAccountList)
+
+    def showAccountList(rows):
+        nonlocal accountList
+        accountList = rows
+
+    def submitAccountForm():
+        email = accountFields['email'].strip()
+        password = accountFields['password']
+        if accountView == 'signin':
+            startRequest(account.signIn(email, password), onDone=lambda _: signedIn())
+        else:
+            startRequest(account.register(email, password, accountFields['username'].strip()), onDone=registered)
+
+    def signedIn():
+        accountFields['password'] = ""
+        openAccountView('profile')
+        showStatus("Signed in as " + account.username)
+
+    def registered(isSignedIn):
+        nonlocal accountMessage
+        accountFields['password'] = ""
+        if isSignedIn:
+            openAccountView('profile')
+            showStatus("Welcome, " + account.username)
+        else:
+            openAccountView('signin')
+            accountMessage = "Check your email to confirm the account, then sign in"
+
+    def openSavedGame(row):
+        nonlocal accountMessage, accountView
+        if currentModeIndex == 2:
+            accountMessage = "Leave online play to open a saved game"
+            return
+
+        def opened(text):
+            nonlocal accountView
+            accountView = None
+            loadPgnText(text)
+        startRequest(account.loadGame(row['id']), onDone=opened)
+
+    def handleAccountClick(location):
+        nonlocal accountView, accountFocus
+        rects = accountLayout(accountView, len(accountList))
+        clicked = None
+        for name, rect in rects.items():
+            if name != 'box' and rect.collidepoint(location):
+                clicked = name
+        if clicked is None or (accountBusy() and clicked != 'close'):
+            return
+        if clicked.startswith('field:'):
+            accountFocus = clicked[len('field:'):]
+        elif clicked.startswith('row:'):
+            if accountView == 'games':
+                openSavedGame(accountList[int(clicked[len('row:'):])])
+        elif clicked == 'submit':
+            submitAccountForm()
+        elif clicked == 'switch':
+            openAccountView('register' if accountView == 'signin' else 'signin')
+        elif clicked in ('games', 'leaderboard'):
+            openAccountView(clicked)
+        elif clicked == 'back':
+            openAccountView('profile')
+        elif clicked == 'signOut':
+            account.signOut()
+            openAccountView('signin')
+            showStatus("Signed out")
+        elif clicked == 'close':
+            accountView = None
+
+    def handleAccountKey(e):
+        nonlocal accountView, accountFocus
+        if e.key == p.K_ESCAPE:
+            accountView = None
+            return
+        if accountView not in ('signin', 'register') or accountBusy():
+            return
+        fields = accountFieldNames(accountView)
+        if e.key == p.K_TAB:
+            accountFocus = fields[(fields.index(accountFocus) + 1) % len(fields)]
+        elif e.key in (p.K_RETURN, p.K_KP_ENTER):
+            submitAccountForm()
+        elif e.key == p.K_BACKSPACE:
+            accountFields[accountFocus] = accountFields[accountFocus][:-1]
+        elif e.unicode and e.unicode.isprintable() and len(accountFields[accountFocus]) < 100:
+            accountFields[accountFocus] += e.unicode
+
+    # a finished game goes to the account; an online game's result is also reported for ratings
+    def saveFinishedGame():
+        nonlocal ratingReported
+        text, result = buildPgnText()
+        mode = ['ai', 'local', 'online'][currentModeIndex]
+        color = None if mode == 'local' else myColor()
+        game = {'mode': mode, 'result': result, 'pgn': text, 'color': color,
+                'ai_level': chessAi.LEVEL if mode == 'ai' else None,
+                'opponent': playerName('b' if color == 'w' else 'w', True) if color else ""}
+        if savedGameId is not None:
+            game['id'] = savedGameId
+
+        def saved(gameId):
+            nonlocal savedGameId
+            savedGameId = gameId
+            showStatus("Game saved to your account")
+        startRequest(account.saveGame(game), onDone=saved, inWindow=False,
+                     onError=lambda message: showStatus("Couldn't save the game: " + message))
+
+        if mode == 'online' and opponentInfo and result != '*' and not ratingReported:
+            ratingReported = True
+            mine, theirs = account.profile['id'], opponentInfo['uid']
+            white, black = (mine, theirs) if color == 'w' else (theirs, mine)
+            ratingBefore = account.profile['rating']
+
+            def reported(outcome):
+                rated, pending = outcome
+                if rated:
+                    rating = account.profile['rating']
+                    showStatus("Your rating: %d (%+d)" % (rating, rating - ratingBefore), 5000)
+                elif pending:
+                    showStatus("Result sent; ratings change when your opponent confirms it", 5000)
+            startRequest(account.reportOnline(white, black, " ".join(m.getCode() for m in gs.moveLog), result),
+                         onDone=reported, inWindow=False,
+                         onError=lambda message: showStatus("Couldn't report the result: " + message))
 
     while running:
 
@@ -695,6 +880,13 @@ async def main():
             messages = [msg for msg in net.get_messages() if msg.get('sender') != myPlayerId]
             for msg in messages:
                 print(f"Main: Received message type='{msg.get('type')}' from {msg.get('role')} sender={msg.get('sender', '???')}")
+                player = msg.get('player')
+                if msg.get('role') == opponentRole and isinstance(player, dict) and player.get('uid'):
+                    try:
+                        opponentInfo = {'uid': str(player['uid'])[:64], 'name': str(player.get('name') or "?")[:20],
+                                        'rating': int(player.get('rating') or 0)}
+                    except (TypeError, ValueError):
+                        pass
 
             # game states: a replay after joining can deliver many, so only the newest one is used
             newest = None
@@ -773,6 +965,9 @@ async def main():
                 if e.button in (4, 5):  # wheel also fires button events; handled by MOUSEWHEEL
                     continue
                 location = p.mouse.get_pos()
+                if accountView:  # the account window takes every click while it's open
+                    handleAccountClick(location)
+                    continue
                 layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
 
                 # an open dropdown takes the click: choose an option or close it
@@ -881,6 +1076,8 @@ async def main():
                     else:
                         sendOnline({'type': 'draw_offer'})
                         showStatus("Draw offer sent")
+                elif clicked == 'account':
+                    openAccountView('profile' if account.signedIn else 'signin')
                 elif clicked == 'save':
                     savePgnFile()
                 elif clicked == 'load':
@@ -974,6 +1171,9 @@ async def main():
 
             # Key Handler
             elif e.type == p.KEYDOWN:
+                if accountView:
+                    handleAccountKey(e)
+                    continue
                 if inputBoxActive:
                     if e.key == p.K_BACKSPACE:
                         roomCode = roomCode[:-1]
@@ -1062,6 +1262,31 @@ async def main():
         if gameOver and pendingPrompt and pendingPrompt['kind'] != 'undo':
             pendingPrompt = None
 
+        # account requests that finished since the last frame
+        for entry in [entry for entry in accountRequests if entry[0].done()]:
+            accountRequests.remove(entry)
+            task, onDone, onError, inWindow = entry
+            try:
+                result = task.result()
+            except Exception as e:
+                message = str(e) if isinstance(e, AccountError) else "Something went wrong: %s" % e
+                if onError:
+                    onError(message)
+                elif inWindow:
+                    accountMessage = message
+                else:
+                    showStatus(message)
+                continue
+            if inWindow:
+                accountMessage = ""
+            if onDone:
+                onDone(result)
+
+        # a game finished while signed in is saved to the account
+        if gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog:
+            gameSaved = True
+            saveFinishedGame()
+
         if not gameOver and reviewPly is not None:
             clearReview()  # the game went on (e.g. an undo from the opponent)
         # the board shows the reviewed position while stepping through a finished game
@@ -1111,6 +1336,7 @@ async def main():
             'draw': "Offer Draw",
             'undo': "Undo",
             'restart': "Restart",
+            'account': account.username or "Sign in",
             'first': "", 'prev': "", 'next': "", 'last': "",  # drawn as arrow icons
         }
         if analysis is None:
@@ -1171,6 +1397,9 @@ async def main():
             p.draw.rect(screen, p.Color("red"), denyBtn)
             tDeny = get_text_surface("Decline", 20, "white", True)
             screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, denyBtn.height/2 - tDeny.get_height()/2))
+        if accountView:
+            drawAccountWindow(screen, accountView, accountFields, accountFocus, accountMessage, accountBusy(),
+                              account, accountList, mouse_pos)
         if statusText and p.time.get_ticks() < statusUntil:
             drawStatus(screen, statusText)
 
@@ -1276,6 +1505,158 @@ def drawStatus(screen, text):
     s.fill(p.Color(40, 40, 40))
     screen.blit(s, rect.topleft)
     screen.blit(textObj, (rect.x + 15, rect.y + 7))
+
+
+# --- account window, drawn over the board
+
+ACCOUNT_BOX = p.Rect(124, 84, 520, 600)
+ACCOUNT_LIST_ROWS = 14
+ACCOUNT_TITLES = {'signin': "Sign in", 'register': "Create an account", 'games': "My games",
+                  'leaderboard': "Leaderboard"}
+ACCOUNT_BUTTONS = {'close': "Close", 'back': "Back", 'games': "My games", 'leaderboard': "Leaderboard",
+                   'signOut': "Sign out"}
+
+
+def accountFieldNames(view):
+    return ['username', 'email', 'password'] if view == 'register' else ['email', 'password']
+
+
+# rects of the account window's parts, by name; count is the number of list rows (saved games, leaderboard)
+def accountLayout(view, count=0):
+    box = ACCOUNT_BOX
+    x, width = box.x + 40, box.width - 80
+    rects = {'box': box}
+    y = box.y + 80
+    if view in ('signin', 'register'):
+        for name in accountFieldNames(view):
+            rects['field:' + name] = p.Rect(x, y + 24, width, 40)
+            y += 78
+        y += 40  # room for the error message
+        rects['submit'] = p.Rect(x, y, width, ROW_HEIGHT)
+        rects['switch'] = p.Rect(x, y + ROW_HEIGHT + ROW_GAP, width, ROW_HEIGHT)
+        bottom = [['close']]
+    elif view == 'profile':
+        bottom = [['games', 'leaderboard'], ['signOut', 'close']]
+    else:
+        for i in range(min(count, ACCOUNT_LIST_ROWS)):
+            rects['row:%d' % i] = p.Rect(x, y + 10 + i * 30, width, 28)
+        bottom = [['back', 'close']]
+    y = box.bottom - 24 - len(bottom) * ROW_HEIGHT - (len(bottom) - 1) * ROW_GAP
+    for row in bottom:
+        rowWidth = (width - 10 * (len(row) - 1)) // len(row)
+        for i, name in enumerate(row):
+            rects[name] = p.Rect(x + i * (rowWidth + 10), y, rowWidth, ROW_HEIGHT)
+        y += ROW_HEIGHT + ROW_GAP
+    return rects
+
+
+def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows, mouse_pos):
+    shade = p.Surface(screen.get_size())
+    shade.set_alpha(150)
+    shade.fill(p.Color(0, 0, 0))
+    screen.blit(shade, (0, 0))
+    rects = accountLayout(view, len(rows))
+    box = rects['box']
+    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), box)
+    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), box, 3)
+    x, width = box.x + 40, box.width - 80
+    title = ACCOUNT_TITLES.get(view) or account.username or "Account"
+    titleObj = get_fitting_text(title, width, 32, "black")
+    screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
+
+    if view in ('signin', 'register'):
+        labels = {'username': "Username (3-20 letters, digits or _)", 'email': "Email",
+                  'password': "Password (at least 8 characters)" if view == 'register' else "Password"}
+        for name in accountFieldNames(view):
+            rect = rects['field:' + name]
+            screen.blit(get_text_surface(labels[name], 17, "dimgray", False), (rect.x, rect.y - 22))
+            p.draw.rect(screen, p.Color('white') if focus == name else p.Color(225, 225, 225), rect)
+            p.draw.rect(screen, p.Color(MOVE_HIGHLIGHT_COLOR) if focus == name else p.Color('gray'), rect, 2)
+            value = "*" * len(fields[name]) if name == 'password' else fields[name]
+            if focus == name and (p.time.get_ticks() // 500) % 2 == 0:
+                value += "|"  # blinking cursor
+            font = get_font(20, False)
+            while value and font.size(value)[0] > rect.width - 16:
+                value = value[1:]  # long input scrolls: show its end
+            textObj = font.render(value, True, p.Color('black'))
+            screen.blit(textObj, (rect.x + 8, rect.centery - textObj.get_height() / 2))
+        messageY = rects['submit'].y - 32
+        buttons = {'submit': "Sign in" if view == 'signin' else "Create account",
+                   'switch': "No account yet? Create one" if view == 'signin' else "Already registered? Sign in"}
+    elif view == 'profile':
+        profile = account.profile or {}
+        lines = []
+        if profile:
+            rated = profile.get('rated_games', 0)
+            lines.append(("Rating %d" % profile.get('rating', 0), True))
+            lines.append((countGames(rated) + " rated online" if rated else "Play online games to get rated", False))
+            lines.append(("", False))
+            stats = account.stats or {}
+            levelKeys = sorted(key for key in stats if key.startswith('ai'))
+            if levelKeys:
+                lines.append(("Against the computer", True))
+                for key in levelKeys:
+                    level = int(key[2:])
+                    name = LEVEL_OPTIONS[level] if 0 <= level < len(LEVEL_OPTIONS) else key
+                    lines.append(("%s: %s" % (name, formatRecord(stats[key])), False))
+            if 'online' in stats:
+                lines.append(("Online: " + formatRecord(stats['online']), True))
+            if not stats:
+                lines.append(("Games you finish while signed in are saved here", False))
+        y = box.y + 84
+        for text, bold in lines:
+            if text:
+                screen.blit(get_fitting_text(text, width, 20, "black" if bold else "dimgray", bold), (x, y))
+            y += 28
+        messageY = rects['games'].y - 40
+        buttons = {}
+    else:
+        for i, row in enumerate(rows[:ACCOUNT_LIST_ROWS]):
+            rect = rects['row:%d' % i]
+            if view == 'games':
+                if rect.collidepoint(mouse_pos):
+                    p.draw.rect(screen, p.Color(LAST_MOVE_COLOR), rect)
+                left = "%s   %s" % (str(row.get('played_at', ''))[:10], gameRowResult(row))
+                right = row.get('opponent') or "Local game"
+            else:
+                left = "%d. %s" % (i + 1, row['username'])
+                right = "%d  (%s)" % (row["rating"], countGames(row["rated_games"]))
+            screen.blit(get_fitting_text(left, width // 2, 18, "black", False), (rect.x + 6, rect.y + 3))
+            rightObj = get_fitting_text(right, width // 2 - 10, 18, "dimgray", False)
+            screen.blit(rightObj, (rect.right - 6 - rightObj.get_width(), rect.y + 3))
+        if not rows and not busy:
+            empty = "No saved games yet" if view == 'games' else "Nobody is rated yet"
+            screen.blit(get_text_surface(empty, 20, "dimgray", False), (x, box.y + 90))
+        messageY = rects['back'].y - 40
+        buttons = {}
+
+    if message:
+        color = "dimgray" if busy else "firebrick"
+        screen.blit(get_fitting_text(message, width, 18, color, True), (x, messageY))
+    buttons.update(ACCOUNT_BUTTONS)
+    for name, rect in rects.items():
+        if name in buttons:
+            drawButton(screen, rect, buttons[name], not busy or name == 'close', mouse_pos)
+
+
+def countGames(count):
+    return "%d game%s" % (count, "" if count == 1 else "s")
+
+
+def formatRecord(record):
+    return "%d won, %d lost, %d drawn" % (record['won'], record['lost'], record['drawn'])
+
+
+# a saved game's result from the player's side
+def gameRowResult(row):
+    result, color = row.get('result'), row.get('color')
+    if result == '1/2-1/2':
+        return "Draw"
+    if result not in ('1-0', '0-1'):
+        return "Unfinished"
+    if color not in ('w', 'b'):
+        return "White won" if result == '1-0' else "Black won"
+    return "Won" if (result == '1-0') == (color == 'w') else "Lost"
 
 
 def drawGameState(screen, gs, validMoves, squareSelected, flip=False, hintMove=None):

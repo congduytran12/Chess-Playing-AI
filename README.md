@@ -49,6 +49,15 @@ When a game ends, you can go back through it:
 
 Online games can recover from dropped messages and page refreshes. Every move sends the whole game, and a player who falls behind is caught up automatically. After a refresh or restart, the **Rejoin** button puts you back in your last room as the same color.
 
+### Accounts
+
+Click **Sign in** (bottom right of the panel) to create an account with a username, email, and password, or to sign in. You stay signed in until you sign out. With an account:
+
+- **Your games are saved.** Every game you finish while signed in is saved to your account. Open **My games** to load one back for review or analysis, on any device.
+- **Stats:** see your wins, losses, and draws against each AI level and online.
+- **Names online:** your opponent sees your username and rating instead of "Opponent".
+- **Rating and leaderboard:** online games between two signed-in players change both ratings (Elo, starting at 1200), and the leaderboard shows the top 10. A result counts once both players report the same result, or when the losing side reports it, for example by resigning. If the loser just closes the game, the result isn't rated.
+
 ### Rules
 
 The game enforces all the rules of chess:
@@ -116,6 +125,21 @@ npm run build
 
 The output goes to `game/build/web`.
 
+### Setting up accounts
+
+Accounts use [Supabase](https://supabase.com/) for sign-in and storage. The game talks only to the `/api/account` function on Vercel ([api/account.py](api/account.py)), which holds the Supabase key. One-time setup:
+
+1. Create a Supabase project.
+2. In the Supabase dashboard, open **SQL Editor**, paste in [supabase/schema.sql](supabase/schema.sql), and run it. This creates the tables and the rating function.
+3. In **Authentication > Sign In / Providers**, keep **Email** enabled. With **Confirm email** on, new players must click the link in their email before they can sign in. In that case, set **Authentication > URL Configuration > Site URL** to your game's address so the link opens the game.
+4. In Vercel, open the project's **Settings > Environment Variables** and add these two (from Supabase's **Project Settings > API**), then redeploy:
+   - `SUPABASE_URL`: the project URL.
+   - `SUPABASE_SERVICE_ROLE_KEY`: the service role key. It's secret: keep it out of the code and the repository.
+
+The desktop game uses the deployed site at `https://chess-playing-ai.vercel.app`. To use another deployment, set the `CHESS_API_URL` environment variable.
+
+All sign-ins reach Supabase from Vercel's servers, so they share Supabase's sign-in rate limits. If many players sign in at once, raise the limits in **Authentication > Rate Limits**.
+
 ## Controls
 
 - **Move a piece:** click a piece to select it. Its legal moves are highlighted; click one to move there. When a pawn promotes, choose the new piece from the popup.
@@ -135,6 +159,7 @@ The output goes to `game/build/web`.
 - [Pygame](https://www.pygame.org/) for graphics, input, and sound.
 - [pygbag](https://github.com/pygame-web/pygbag) for running the game in the browser.
 - Online games are relayed through [ntfy.sh](https://ntfy.sh/).
+- Accounts are stored with [Supabase](https://supabase.com/).
 - The game's text uses the [Liberation Serif](https://github.com/liberationfonts/liberation-fonts) font (SIL Open Font License, see `game/fonts/`).
 
 ## Contributing
