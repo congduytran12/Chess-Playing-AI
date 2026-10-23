@@ -256,6 +256,14 @@ async def main():
     print("Main: v13.0 Loaded (Clocks, Hints, PGN)")
     screen = p.display.set_mode(
         (BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH, BOARD_HEIGHT))
+    if sys.platform == 'emscripten':
+        # the page fits the canvas to the window using the canvas's aspect ratio, and may have done so
+        # while the canvas was still its 1x1 placeholder (stretching the game into a square)
+        try:
+            import platform
+            platform.window.window_resize()
+        except Exception as e:
+            print("Main: could not refit canvas:", e)
 
     clock = p.time.Clock()
     screen.fill(p.Color(LIGHT_SQUARE_COLOR))
