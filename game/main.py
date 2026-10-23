@@ -49,6 +49,9 @@ SMALL_IMAGES = {}  # piece icons for the captured pieces row
 SMALL_PIECE_SIZE = 22
 UI_CACHE = {}
 FONT_CACHE = {}
+# Liberation Serif, metric-compatible with Times New Roman (SIL Open Font License, see fonts/)
+FONT_REGULAR = "fonts/LiberationSerif-Regular.ttf"
+FONT_BOLD = "fonts/LiberationSerif-Bold.ttf"
 
 # side panel: a player strip at the top and one above the controls, the move log in between,
 # and rows of controls anchored to the bottom
@@ -64,7 +67,7 @@ MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
 LEVEL_OPTIONS = ["Easy", "Normal", "Hard", "Very Hard", "Impossible"]
 SIDE_OPTIONS = ["White", "Black", "Random"]
 # (label, (starting seconds, increment seconds per move)), None for no clock
-CLOCK_OPTIONS = [("No clock", None), ("1+0", (60, 0)), ("3+2", (180, 2)), ("5+0", (300, 0)),
+CLOCK_OPTIONS = [("Off", None), ("1+0", (60, 0)), ("3+2", (180, 2)), ("5+0", (300, 0)),
                  ("10+5", (600, 5)), ("15+10", (900, 10))]
 HINT_DEPTH = 3  # search depth used for hints, independent of the AI difficulty
 # the AI accepts a draw offer only when its evaluation is below this (it is losing)
@@ -72,31 +75,33 @@ AI_DRAW_ACCEPT_SCORE = -1
 PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
 
 
-def get_text_surface(text, font_name, size, color, bold=True):
+def get_text_surface(text, size, color, bold=True):
     """
     Returns a cached text surface or renders a new one if not found.
     Reduces the number of font.render calls to once per dynamic change.
     """
-    key = (text, font_name, size, color, bold)
+    key = (text, size, color, bold)
     if key not in UI_CACHE:
-        UI_CACHE[key] = get_font(font_name, size, bold).render(text, True, p.Color(color))
+        UI_CACHE[key] = get_font(size, bold).render(text, True, p.Color(color))
     return UI_CACHE[key]
 
 
-# for text that changes every frame (clocks), which would otherwise fill the surface cache
-def get_font(font_name, size, bold=True):
-    key = (font_name, size, bold)
+# the font ships with the game: browsers have no system fonts, and SysFont there falls back
+# to an already-bold sans font that turns smudgy when bolded again
+# also used directly for text that changes every frame (clocks), which would otherwise fill the surface cache
+def get_font(size, bold=True):
+    key = (size, bold)
     if key not in FONT_CACHE:
-        FONT_CACHE[key] = p.font.SysFont(font_name, size, bold, False)
+        FONT_CACHE[key] = p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size)
     return FONT_CACHE[key]
 
 
 # largest text surface (up to size) that fits in maxWidth
 def get_fitting_text(text, maxWidth, size, color, bold=True):
-    surface = get_text_surface(text, "Times New Roman", size, color, bold)
+    surface = get_text_surface(text, size, color, bold)
     while surface.get_width() > maxWidth and size > 12:
         size -= 2
-        surface = get_text_surface(text, "Times New Roman", size, color, bold)
+        surface = get_text_surface(text, size, color, bold)
     return surface
 
 
@@ -160,7 +165,7 @@ def loadImages():
 
 # color is the side promoting ('w' or 'b'); returns 'Q', 'R', 'B' or 'N'
 async def pawnPromotionPopup(screen, color):
-    font = p.font.SysFont("Times New Roman", 45, False, False)
+    font = get_font(45, False)
     text = font.render("Choose promotion:", True, p.Color("black"))
 
     # Create buttons for promotion choices with images
@@ -883,7 +888,7 @@ async def main():
                 textObj = get_fitting_text(roomCode if roomCode else "Type Room ID", rect.width - 12, 20, "black")
                 screen.blit(textObj, rect.move(rect.width / 2 - textObj.get_width() / 2, rect.height / 2 - textObj.get_height() / 2))
             elif name == 'roomInfo':
-                textObj = get_text_surface(f"Room: {roomCode}", "Times New Roman", 20, "black", True)
+                textObj = get_text_surface(f"Room: {roomCode}", 20, "black", True)
                 textLoc = rect.move(rect.width / 2 - textObj.get_width() / 2, 0)
                 screen.blit(textObj, textLoc)
                 # Connection Indicator (Traffic Light System)
@@ -896,7 +901,7 @@ async def main():
                 p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 # Network Stats
                 stats_text = f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.current_interval:.1f}s Wait | {net.last_status}"
-                statsObj = get_text_surface(stats_text, "Arial", 14, "gray", False)
+                statsObj = get_text_surface(stats_text, 14, "gray", False)
                 screen.blit(statsObj, (rect.centerx - statsObj.get_width() / 2, rect.y + 24))
             else:
                 arrow = None
@@ -919,10 +924,10 @@ async def main():
             textObj = get_fitting_text(pendingPrompt['text'], panel_rect.width - 20, 20, "black")
             screen.blit(textObj, (panel_rect.centerx - textObj.get_width() / 2, panel_rect.y + 12))
             p.draw.rect(screen, p.Color("green"), acceptBtn)
-            tAccept = get_text_surface("Accept", "Times New Roman", 20, "white", True)
+            tAccept = get_text_surface("Accept", 20, "white", True)
             screen.blit(tAccept, acceptBtn.move(acceptBtn.width/2 - tAccept.get_width()/2, acceptBtn.height/2 - tAccept.get_height()/2))
             p.draw.rect(screen, p.Color("red"), denyBtn)
-            tDeny = get_text_surface("Decline", "Times New Roman", 20, "white", True)
+            tDeny = get_text_surface("Decline", 20, "white", True)
             screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, denyBtn.height/2 - tDeny.get_height()/2))
         if statusText and p.time.get_ticks() < statusUntil:
             drawStatus(screen, statusText)
@@ -967,7 +972,7 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
     # side marker and name
     p.draw.circle(screen, p.Color('white' if color == 'w' else 'black'), (rect.x + 18, rect.y + 15), 7)
     p.draw.circle(screen, p.Color('black'), (rect.x + 18, rect.y + 15), 7, 1)
-    nameObj = get_text_surface(name, "Times New Roman", 18, "black", True)
+    nameObj = get_text_surface(name, 18, "black", True)
     screen.blit(nameObj, (rect.x + 32, rect.y + 15 - nameObj.get_height() / 2))
 
     # captured pieces, grouped by type, then the material lead
@@ -979,7 +984,7 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
         screen.blit(SMALL_IMAGES[piece], (x, rect.y + 27))
         previous = piece
     if advantage > 0:
-        leadObj = get_text_surface("+" + str(advantage), "Times New Roman", 16, "dimgray", True)
+        leadObj = get_text_surface("+" + str(advantage), 16, "dimgray", True)
         screen.blit(leadObj, (x + (SMALL_PIECE_SIZE + 4 if captured else 0), rect.y + 38 - leadObj.get_height() / 2))
 
     if clockMs is not None:
@@ -987,7 +992,7 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
         p.draw.rect(screen, p.Color('white') if clockActive else p.Color(200, 200, 200), clockRect)
         p.draw.rect(screen, p.Color('black'), clockRect, 1)
         textColor = p.Color('red') if clockActive and clockMs < 20000 else p.Color('black')
-        textObj = get_font("Times New Roman", 24, True).render(formatClock(clockMs), True, textColor)
+        textObj = get_font(24, True).render(formatClock(clockMs), True, textColor)
         screen.blit(textObj, (clockRect.centerx - textObj.get_width() / 2, clockRect.centery - textObj.get_height() / 2))
 
 
@@ -1080,7 +1085,7 @@ def drawSquare(screen, flip=False):
         rank_num = (row + 1) if flip else (8 - row)
         rank_text = str(rank_num)
         text_color = "gray" # Simplified for better caching
-        text_obj = get_text_surface(rank_text, "Times New Roman", 14, text_color, True)
+        text_obj = get_text_surface(rank_text, 14, text_color, True)
         text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(2, 2)
         screen.blit(text_obj, text_loc)
 
@@ -1089,7 +1094,7 @@ def drawSquare(screen, flip=False):
         file_char = chr(ord('h') - col) if flip else chr(ord('a') + col)
         file_text = file_char
         text_color = "gray"
-        text_obj = get_text_surface(file_text, "Times New Roman", 14, text_color, True)
+        text_obj = get_text_surface(file_text, 14, text_color, True)
         text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 2, SQ_SIZE - text_obj.get_height() - 2)
         screen.blit(text_obj, text_loc)
 
@@ -1148,11 +1153,11 @@ def drawMoveLog(screen, gs, scroll, top, bottom):
     for line in lines[start:start + visibleLines]:
         for k, (number, whiteMove, blackMove) in enumerate(line):
             x = PANEL_X + 10 + k * 180
-            numberObj = get_text_surface(number, "Times New Roman", 18, "dimgray", False)
+            numberObj = get_text_surface(number, 18, "dimgray", False)
             screen.blit(numberObj, (x + 30 - numberObj.get_width(), textY))  # right-aligned
-            screen.blit(get_text_surface(whiteMove, "Times New Roman", 18, "black", False), (x + 36, textY))
+            screen.blit(get_text_surface(whiteMove, 18, "black", False), (x + 36, textY))
             if blackMove:
-                screen.blit(get_text_surface(blackMove, "Times New Roman", 18, "black", False), (x + 106, textY))
+                screen.blit(get_text_surface(blackMove, 18, "black", False), (x + 106, textY))
         textY += lineHeight
 
     return scroll
@@ -1229,12 +1234,12 @@ def drawEndGameText(screen, text):
 
     # Add subtitle
     msg = "Click the board to play again"
-    subTextObject = get_text_surface(msg, "Times New Roman", 25, "darkgray", False)
+    subTextObject = get_text_surface(msg, 25, "darkgray", False)
     subLocation = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(
         BOARD_WIDTH/2 - subTextObject.get_width()/2, BOARD_HEIGHT/2 + text_height/2 + 20)
 
     screen.blit(subTextObject, subLocation)
-    subShadow = get_text_surface(msg, "Times New Roman", 25, "black", False)
+    subShadow = get_text_surface(msg, 25, "black", False)
     screen.blit(subShadow, subLocation.move(1, 1))
 
 
