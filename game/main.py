@@ -73,6 +73,10 @@ HINT_DEPTH = 3  # search depth used for hints, independent of the AI difficulty
 # the AI accepts a draw offer only when its evaluation is below this (it is losing)
 AI_DRAW_ACCEPT_SCORE = -1
 PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
+# online: the player waiting for the opponent re-sends the game state this often (ms), so a dropped
+# message is noticed and the side that is behind catches up; ntfy.sh allows about one message per 5s
+HEARTBEAT_MS = 15000
+SYNC_REPLY_MS = 2000  # at most one state reply to a player who is behind per this many ms
 
 
 def get_text_surface(text, size, color, bold=True):
@@ -203,13 +207,15 @@ async def pawnPromotionPopup(screen, color):
 
 
 # rects of the panel controls, by name; which controls exist depends on the mode
-def panelLayout(modeIndex, connected):
+def panelLayout(modeIndex, connected, canRejoin=False):
     if modeIndex == 0:  # Local vs AI
         rows = [['mode'], ['level', 'side'], ['clock', 'hint']]
     elif modeIndex == 1:  # Local 2-Player
         rows = [['mode'], ['clock', 'hint']]
     elif not connected:  # Online, choosing a room
         rows = [['mode'], ['room', 'clock'], ['host', 'join']]
+        if canRejoin:
+            rows.append(['rejoin'])
     else:  # Online, in a room
         rows = [['mode'], ['roomInfo']]
     rows += [['save', 'load'], ['resign', 'draw'], ['undo', 'restart']]
@@ -296,6 +302,13 @@ async def main():
     myPlayerId = "".join(random.choices(string.ascii_letters + string.digits, k=10))
     networkConnected = False
     pendingPrompt = None  # {'kind': 'undo' | 'draw' | 'localDraw', 'text': ...} waiting for Accept / Decline
+    # online games are synced by sending the whole game state; the newer (game, version) wins
+    onlineGame = 0  # game number in the room, bumped by every new game
+    onlineVersion = 0  # bumped by every change to the game: move, undo, resignation, draw
+    lastStateSent = 0  # ticks when we last sent our state
+    lastStateHeard = 0  # ticks when we last heard a state matching ours
+    lastSyncReply = 0  # ticks when we last answered a player who is behind
+    savedSession = net.load_session()  # last room and role, offered as Rejoin
 
     moveUndone = False
     positionHistory = [gs.getPositionKey()]  # one position key per ply, for threefold repetition
@@ -403,19 +416,124 @@ async def main():
         hintMove = None
         hintState = None
 
+    # takes back the last move of color, and the reply after it, so it's color's turn again
+    # returns False when color hasn't moved yet
+    def takeBackMoveOf(color):
+        plies = 0
+        for move in reversed(gs.moveLog):
+            plies += 1
+            if move.pieceMoved[0] == color:
+                takeBack(plies)
+                return True
+        return False
+
     # Undo button / z key outside online play
     def playerUndo():
         if currentModeIndex == 0:
             # take back the AI's reply too, so it's the player's turn again
-            humanColor = 'w' if playerWhiteHuman else 'b'
-            plies = 0
-            for move in reversed(gs.moveLog):
-                plies += 1
-                if move.pieceMoved[0] == humanColor:
-                    takeBack(plies)
-                    return
+            takeBackMoveOf('w' if playerWhiteHuman else 'b')
         elif gs.moveLog:
             takeBack(1)
+
+    def sendOnline(message):
+        message.update({'game': onlineGame, 'version': onlineVersion, 'role': multiplayerRole, 'sender': myPlayerId})
+        asyncio.ensure_future(net.send(message))
+
+    # the whole game, so a player who missed messages or rejoined can rebuild it
+    def sendState(reason):
+        nonlocal lastStateSent
+        sendOnline({
+            'type': 'state',
+            'reason': reason,
+            'moves': " ".join(move.getCode() for move in gs.moveLog),
+            'tc': list(timeControl) if timeControl else None,
+            'clocks': dict(clocks) if timeControl else None,
+            'result': list(gameResult) if gameResult else None,
+        })
+        lastStateSent = p.time.get_ticks()
+
+    # after every local change to an online game
+    def publishChange(reason):
+        nonlocal onlineVersion
+        onlineVersion += 1
+        sendState(reason)
+
+    def startOnlineGame():  # a new game in the same room, keeping the time control
+        nonlocal onlineGame, onlineVersion, timeControl, clocks, clockHistory
+        keptTimeControl = timeControl
+        resetGame()
+        onlineGame += 1
+        onlineVersion = 0
+        timeControl = keptTimeControl
+        startMs = timeControl[0] * 1000 if timeControl else 0
+        clocks = {'w': startMs, 'b': startMs}
+        clockHistory = [dict(clocks)]
+        sendState('new_game')
+
+    def connectOnline(role):
+        nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, savedSession, lastStateHeard
+        multiplayerRole = role
+        net.set_topic(roomCode)
+        print(f"DEBUG: I am {role.upper()}. Full Network Topic: [{net.topic}]")
+        networkConnected = True
+        resetGame()
+        onlineGame = 0
+        onlineVersion = 0
+        lastStateHeard = p.time.get_ticks()
+        net.save_session(roomCode, role)
+        savedSession = {'room': roomCode, 'role': role}
+        # the opponent answers with the current game, so a rejoining player catches up
+        sendOnline({'type': 'sync_request'})
+
+    # rebuilds the game from a newer state: undo back to the common moves, then play the rest
+    def adoptState(state):
+        nonlocal onlineGame, onlineVersion, timeControl, clocks, gameResult, moveMade, animate
+        nonlocal lastClockTick, pendingPrompt, squareSelected, playerClicks
+        codes = str(state.get('moves') or "").split()
+        newGame = state['game'] != onlineGame
+        if newGame:
+            resetGame()
+        mine = [move.getCode() for move in gs.moveLog]
+        common = 0
+        while common < min(len(mine), len(codes)) and mine[common] == codes[common]:
+            common += 1
+        undone = len(mine) - common
+        if undone:
+            takeBack(undone)
+
+        tc = state.get('tc')
+        timeControl = (int(tc[0]), int(tc[1])) if isinstance(tc, list) and len(tc) == 2 else None
+        added = 0
+        for code in codes[common:]:
+            move = gs.findMoveByCode(code, validMoves)
+            if move is None:
+                print(f"Main: State has an illegal move {code}, stopping there")
+                break
+            playMove(move, sound=(common + added == len(codes) - 1))  # one sound, for the last move
+            added += 1
+
+        stateClocks = state.get('clocks')
+        if timeControl is not None and isinstance(stateClocks, dict):
+            clocks = {'w': int(stateClocks.get('w', 0)), 'b': int(stateClocks.get('b', 0))}
+            clockHistory[-1] = dict(clocks)
+        lastClockTick = p.time.get_ticks()
+        result = state.get('result')
+        gameResult = (str(result[0]), str(result[1])) if isinstance(result, list) and len(result) == 2 else None
+        onlineGame = state['game']
+        onlineVersion = state['version']
+
+        moveMade = True
+        animate = added == 1 and undone == 0 and not newGame  # the usual case: the opponent's move
+        squareSelected = ()
+        playerClicks = []
+        if undone or newGame:
+            pendingPrompt = None
+        if newGame and not codes:
+            showStatus("New game started")
+        elif state.get('reason') == 'undo':
+            showStatus("Undo accepted")
+        elif undone or added > 1 or (newGame and codes):
+            showStatus("Caught up with the game (move %d)" % (len(gs.moveLog) // 2 + 1))
 
     def myColor():
         if currentModeIndex == 2:
@@ -486,85 +604,61 @@ async def main():
     while running:
 
         if multiplayerMode and networkConnected:
-            for msg in net.get_messages():
-                if msg.get('sender') == myPlayerId:
-                    continue
+            now = p.time.get_ticks()
+            opponentRole = 'client' if multiplayerRole == 'host' else 'host'
+            messages = [msg for msg in net.get_messages() if msg.get('sender') != myPlayerId]
+            for msg in messages:
+                print(f"Main: Received message type='{msg.get('type')}' from {msg.get('role')} sender={msg.get('sender', '???')}")
+
+            # game states: a replay after joining can deliver many, so only the newest one is used
+            newest = None
+            for msg in messages:
+                if msg.get('type') == 'state' and isinstance(msg.get('game'), int) and isinstance(msg.get('version'), int):
+                    if newest is None or (msg['game'], msg['version']) > (newest['game'], newest['version']):
+                        newest = msg
+            if newest is not None:
+                theirs = (newest['game'], newest['version'])
+                mine = (onlineGame, onlineVersion)
+                sameGame = (str(newest.get('moves') or "") == " ".join(move.getCode() for move in gs.moveLog)
+                            and (newest.get('result') or None) == (list(gameResult) if gameResult else None)
+                            and (newest.get('tc') or None) == (list(timeControl) if timeControl else None))
+                if theirs > mine or (theirs == mine and not sameGame and multiplayerRole == 'client'):
+                    # newer, or the same version told differently: the host's account wins
+                    adoptState(newest)
+                    lastStateHeard = now
+                elif theirs == mine:
+                    if sameGame:
+                        lastStateHeard = now
+                    elif now - lastSyncReply > SYNC_REPLY_MS:
+                        sendState('sync')
+                        lastSyncReply = now
+                elif now - lastSyncReply > SYNC_REPLY_MS:
+                    # they are behind (a message was lost, or they rejoined): send them the game
+                    sendState('sync')
+                    lastSyncReply = now
+
+            # requests and offers only count when they come from the opponent about the current position,
+            # which also skips stale ones replayed after joining
+            for msg in messages:
                 mtype = msg.get('type')
-                sender = msg.get('sender', '???')
-                print(f"Main: Received message type='{mtype}' from sender={sender}")
-                opponentColor = 'b' if multiplayerRole == 'host' else 'w'
-                if mtype == 'join' and multiplayerRole == 'host':
-                    pass
-                elif mtype == 'move':
-                    if gameResult is not None:
-                        print("Main: Ignoring move after the game ended")
-                        continue
-                    try:
-                        moveStr = msg.get('move')
-                        startPoint = (int(moveStr[0][0]), int(moveStr[0][1]))
-                        endPoint = (int(moveStr[1][0]), int(moveStr[1][1]))
-                    except (TypeError, IndexError, ValueError):
-                        print(f"Main: Ignoring malformed move message {msg}")
-                        continue
-                    # Match against our own legal moves so castling / en passant flags are set,
-                    # and reject illegal moves or moves of our own pieces
-                    remoteMove = None
-                    for m in validMoves:
-                        if (m.startRow, m.startCol) == startPoint and (m.endRow, m.endCol) == endPoint:
-                            remoteMove = m
-                            break
-                    if remoteMove is None or remoteMove.pieceMoved[0] != opponentColor:
-                        print(f"Main: Ignoring illegal move from {startPoint} to {endPoint}")
-                        continue
-
-                    # the host's time control applies to both players
-                    if multiplayerRole == 'client':
-                        tc = msg.get('tc')
-                        newTimeControl = (int(tc[0]), int(tc[1])) if isinstance(tc, list) and len(tc) == 2 else None
-                        if newTimeControl != timeControl:
-                            timeControl = newTimeControl
-                            if not gs.moveLog:
-                                startMs = timeControl[0] * 1000 if timeControl else 0
-                                clocks = {'w': startMs, 'b': startMs}
-                                clockHistory = [dict(clocks)]
-
-                    if remoteMove.isPawnPromotion:
-                        promoPiece = msg.get('promoPiece')
-                        remoteMove.promotionChoice = promoPiece if promoPiece in ('Q', 'R', 'B', 'N') else 'Q'
-                    print(f"Main: Received move {remoteMove.getChessNotation()}")
-                    playMove(remoteMove)
-                    # the mover's own clock reading is the one that counts
-                    remaining = msg.get('clock')
-                    if timeControl is not None and isinstance(remaining, (int, float)):
-                        clocks[opponentColor] = int(remaining)
-                        clockHistory[-1] = dict(clocks)
-
-                    moveMade = True
-                    animate = True
-                    squareSelected = ()
-                    playerClicks = []
-                elif mtype == 'undo_request':
+                if mtype == 'sync_request':
+                    if now - lastSyncReply > SYNC_REPLY_MS:
+                        sendState('sync')
+                        lastSyncReply = now
+                    continue
+                current = (msg.get('role') == opponentRole and msg.get('game') == onlineGame
+                           and msg.get('version') == onlineVersion)
+                if not current:
+                    continue
+                if mtype == 'undo_request':
                     pendingPrompt = {'kind': 'undo', 'text': "Opponent requested an undo"}
-                elif mtype == 'undo_response':
-                    if msg.get('accepted'):
-                        takeBack(2)
-                    else:
-                        showStatus("Opponent declined the undo")
-                elif mtype == 'resign':
-                    if msg.get('color') in ('w', 'b'):
-                        gameResult = resignationResult(msg.get('color'))
-                        pendingPrompt = None
+                elif mtype == 'undo_declined':
+                    showStatus("Opponent declined the undo")
                 elif mtype == 'draw_offer':
                     if gameResult is None:
                         pendingPrompt = {'kind': 'draw', 'text': "Opponent offers a draw"}
-                elif mtype == 'draw_response':
-                    if msg.get('accepted'):
-                        gameResult = ('Draw by agreement', '1/2-1/2')
-                    else:
-                        showStatus("Opponent declined the draw")
-                elif mtype == 'new_game':
-                    resetGame()
-                    showStatus("Opponent started a new game")
+                elif mtype == 'draw_declined':
+                    showStatus("Opponent declined the draw")
 
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
             not gs.whiteToMove and playerBlackHuman)
@@ -573,6 +667,14 @@ async def main():
         # Black at the bottom for the online guest, and when playing Black against the AI
         flip_board = (multiplayerMode and networkConnected and multiplayerRole == 'client') or \
             (currentModeIndex == 0 and playerBlackHuman and not playerWhiteHuman)
+        canRejoin = currentModeIndex == 2 and not networkConnected and savedSession is not None
+
+        # online: while waiting for the opponent (or after the game), keep re-sending our state so a
+        # lost message can't leave both players waiting for each other
+        if multiplayerMode and networkConnected:
+            interval = HEARTBEAT_MS * (2 if gameOver else 1)
+            if (gameOver or not humanTurn) and p.time.get_ticks() - max(lastStateSent, lastStateHeard) > interval:
+                sendState('heartbeat')
 
         for e in p.event.get():
             if e.type == p.QUIT:
@@ -585,7 +687,7 @@ async def main():
                 if e.button in (4, 5):  # wheel also fires button events; handled by MOUSEWHEEL
                     continue
                 location = p.mouse.get_pos()
-                layout = panelLayout(currentModeIndex, networkConnected)
+                layout = panelLayout(currentModeIndex, networkConnected, canRejoin)
 
                 # an open dropdown takes the click: choose an option or close it
                 if openDropdown:
@@ -629,13 +731,18 @@ async def main():
                         kind = pendingPrompt['kind']
                         pendingPrompt = None
                         if kind == 'undo':
-                            asyncio.ensure_future(net.send({'type': 'undo_response', 'accepted': accepted, 'sender': myPlayerId}))
                             if accepted:
-                                takeBack(2)
+                                # the opponent's last move comes back, and our reply after it
+                                takeBackMoveOf('b' if multiplayerRole == 'host' else 'w')
+                                publishChange('undo')
+                            else:
+                                sendOnline({'type': 'undo_declined'})
                         elif kind == 'draw':
-                            asyncio.ensure_future(net.send({'type': 'draw_response', 'accepted': accepted, 'sender': myPlayerId}))
                             if accepted:
                                 gameResult = ('Draw by agreement', '1/2-1/2')
+                                publishChange('draw')
+                            else:
+                                sendOnline({'type': 'draw_declined'})
                         elif kind == 'localDraw':
                             if accepted:
                                 gameResult = ('Draw by agreement', '1/2-1/2')
@@ -655,7 +762,7 @@ async def main():
                     openDropdown = clicked
                 elif clicked == 'undo':
                     if multiplayerMode and networkConnected:
-                        asyncio.ensure_future(net.send({'type': 'undo_request', 'sender': myPlayerId}))
+                        sendOnline({'type': 'undo_request'})
                         showStatus("Undo request sent")
                     else:
                         playerUndo()
@@ -671,11 +778,10 @@ async def main():
                     hintState = 'requested'
                     showStatus("Looking for a good move...", 10000)
                 elif clicked == 'resign':
-                    loser = myColor()
-                    if multiplayerMode and networkConnected:
-                        asyncio.ensure_future(net.send({'type': 'resign', 'color': loser, 'sender': myPlayerId}))
-                    gameResult = resignationResult(loser)
+                    gameResult = resignationResult(myColor())
                     pendingPrompt = None
+                    if multiplayerMode and networkConnected:
+                        publishChange('resign')
                 elif clicked == 'draw':
                     if currentModeIndex == 0:
                         aiSign = 1 if playerBlackHuman else -1  # scoreBoard is positive when White is better
@@ -687,7 +793,7 @@ async def main():
                         offering = "White" if gs.whiteToMove else "Black"
                         pendingPrompt = {'kind': 'localDraw', 'text': offering + " offers a draw"}
                     else:
-                        asyncio.ensure_future(net.send({'type': 'draw_offer', 'sender': myPlayerId}))
+                        sendOnline({'type': 'draw_offer'})
                         showStatus("Draw offer sent")
                 elif clicked == 'save':
                     savePgnFile()
@@ -699,27 +805,26 @@ async def main():
                     print("DEBUG: Host button clicked.")
                     if not roomCode:
                         roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-                    multiplayerRole = 'host'
-                    net.set_topic(roomCode)
-                    print(f"DEBUG: I am HOST. Full Network Topic: [{net.topic}]")
-                    networkConnected = True
-                    resetGame()
+                    connectOnline('host')
                     await asyncio.sleep(0)  # yield so poll task can start
                 elif clicked == 'join':
                     print("DEBUG: Join button clicked.")
-                    multiplayerRole = 'client'
-                    net.set_topic(roomCode)
-                    print(f"DEBUG: I am CLIENT. Full Network Topic: [{net.topic}]")
-                    networkConnected = True
-                    resetGame()
+                    connectOnline('client')
+                    await asyncio.sleep(0)  # yield so poll task can start
+                elif clicked == 'rejoin':
+                    print("DEBUG: Rejoin button clicked.")
+                    roomCode = savedSession['room']
+                    connectOnline(savedSession['role'])
+                    showStatus("Rejoining room " + roomCode)
                     await asyncio.sleep(0)  # yield so poll task can start
 
                 elif clicked is None and location[0] < BOARD_WIDTH:  # board click
                     if gameOver:
                         # clicking the board after the game starts a new one
                         if multiplayerMode and networkConnected:
-                            asyncio.ensure_future(net.send({'type': 'new_game', 'sender': myPlayerId}))
-                        resetGame()
+                            startOnlineGame()
+                        else:
+                            resetGame()
                         continue
                     col = location[0]//SQ_SIZE
                     row = location[1]//SQ_SIZE
@@ -752,17 +857,8 @@ async def main():
                                     candidate.promotionChoice = await pawnPromotionPopup(screen, candidate.pieceMoved[0])
                                 playMove(candidate)
                                 if multiplayerMode and networkConnected:
-                                    move_data = {
-                                        'type': 'move',
-                                        'move': [(candidate.startRow, candidate.startCol), (candidate.endRow, candidate.endCol)],
-                                        'promo': candidate.isPawnPromotion,
-                                        'promoPiece': candidate.promotionChoice if candidate.isPawnPromotion else "",
-                                        'clock': clocks[candidate.pieceMoved[0]] if timeControl else None,
-                                        'tc': list(timeControl) if timeControl else None,
-                                        'sender': myPlayerId
-                                    }
-                                    print(f"Main: Sending move {candidate.getChessNotation()}")
-                                    asyncio.ensure_future(net.send(move_data))
+                                    print(f"Main: Sending move {candidate.getCode()}")
+                                    publishChange('move')
                                 moveMade = True
                                 animate = True
                                 squareSelected = ()
@@ -785,7 +881,7 @@ async def main():
 
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
-                        asyncio.ensure_future(net.send({'type': 'undo_request', 'sender': myPlayerId}))
+                        sendOnline({'type': 'undo_request'})
                         showStatus("Undo request sent")
                         continue
                     playerUndo()
@@ -859,7 +955,7 @@ async def main():
         drawGameState(screen, gs, validMoves, squareSelected, flip_board, hintMove)
 
         # side panel
-        layout = panelLayout(currentModeIndex, networkConnected)
+        layout = panelLayout(currentModeIndex, networkConnected, canRejoin)
         stripY = min(rect.y for rect in layout.values()) - ROW_GAP - STRIP_HEIGHT
         p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), p.Rect(PANEL_X, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT))
         moveLogScroll = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, stripY)
@@ -889,6 +985,8 @@ async def main():
             'undo': "Undo",
             'restart': "Restart",
         }
+        if savedSession:
+            labels['rejoin'] = "Rejoin %s as %s" % (savedSession['room'], "White" if savedSession['role'] == 'host' else "Black")
         for name, rect in layout.items():
             if name == 'room':
                 p.draw.rect(screen, p.Color('white') if inputBoxActive else p.Color('lightgray'), rect)
@@ -908,7 +1006,7 @@ async def main():
                     dot_color = p.Color('red')
                 p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
                 # Network Stats
-                stats_text = f"Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.current_interval:.1f}s Wait | {net.last_status}"
+                stats_text = f"Game {onlineGame + 1}, change {onlineVersion} | Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.last_status}"
                 statsObj = get_text_surface(stats_text, 14, "gray", False)
                 screen.blit(statsObj, (rect.centerx - statsObj.get_width() / 2, rect.y + 24))
             else:

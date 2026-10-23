@@ -55,6 +55,9 @@ if WASM:
     ''')
 
 
+SESSION_FILE = os.path.join(os.path.expanduser("~"), ".chess-playing-ai-session.json")  # desktop only
+SESSION_MAX_AGE = 12 * 3600  # seconds; ntfy.sh keeps messages about this long
+
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
 print("Network: v13.0 Loaded (Proxy-Unified)")
 
@@ -226,5 +229,41 @@ class NetworkManager:
         res = list(self.incoming_messages)
         self.incoming_messages.clear()
         return res
+
+    def save_session(self, room, role):
+        """
+        Remembers the room and role so the player can rejoin after a page refresh or restart.
+        """
+        data = json.dumps({'room': room, 'role': role, 'time': time.time()})
+        try:
+            if WASM:
+                js.eval("localStorage.setItem('chess_ai_session', %s)" % json.dumps(data))
+            else:
+                with open(SESSION_FILE, "w") as f:
+                    f.write(data)
+        except Exception as e:
+            print("Network: Could not save session -", e)
+
+    def load_session(self):
+        """
+        Returns {'room', 'role'} of the last online game if it is recent enough to rejoin, else None.
+        """
+        try:
+            if WASM:
+                data = js.eval("localStorage.getItem('chess_ai_session') || ''")
+            else:
+                if not os.path.exists(SESSION_FILE):
+                    return None
+                with open(SESSION_FILE) as f:
+                    data = f.read()
+            session = json.loads(str(data)) if data else None
+        except Exception as e:
+            print("Network: Could not load session -", e)
+            return None
+        if not isinstance(session, dict) or session.get('role') not in ('host', 'client') or not session.get('room'):
+            return None
+        if time.time() - float(session.get('time', 0)) > SESSION_MAX_AGE:
+            return None
+        return session
 
 net = NetworkManager()

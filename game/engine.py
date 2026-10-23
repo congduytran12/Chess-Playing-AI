@@ -759,6 +759,16 @@ class GameState():
                     return move
         return None
 
+    # finds the legal move written in coordinate notation (Move.getCode)
+    def findMoveByCode(self, code, validMoves):
+        for move in validMoves:
+            if move.getCode()[:4] == code[:4]:
+                if move.isPawnPromotion:
+                    choice = code[4:5].upper()
+                    move.promotionChoice = choice if choice in ('Q', 'R', 'B', 'N') else 'Q'
+                return move
+        return None
+
     def getBoardString(self):
         # Convert the board state to a string
         boardString = ""
@@ -878,6 +888,13 @@ class Move():
         if isinstance(other, Move):
             return self.moveID == other.moveID
         return False
+
+    # coordinate notation, e.g. "e2e4", or "e7e8n" for a promotion; used to send moves online
+    def getCode(self):
+        code = self.getRankFile(self.startRow, self.startCol) + self.getRankFile(self.endRow, self.endCol)
+        if self.isPawnPromotion:
+            code += self.promotionChoice.lower()
+        return code
 
     def getChessNotation(self):
         return self.getPieceNotation(self.pieceMoved, self.startCol) + self.getRankFile(self.endRow, self.endCol)
