@@ -24,6 +24,7 @@ from chessAi import findRandomMoves, findBestMove
 import asyncio
 from network import net
 import pgn
+import hints
 from account import account, AccountError
 import random
 import string
@@ -676,7 +677,7 @@ async def main():
         inProgress = not gameOver
         online = currentModeIndex == 2
         return {
-            'hint': inProgress and humanTurn and not online and hintState is None,
+            'hint': inProgress and humanTurn and not online and hintState is None and hints.remaining() > 0,
             'resign': inProgress and (not online or networkConnected),
             'draw': inProgress and (not online or networkConnected) and pendingPrompt is None,
             'save': len(gs.moveLog) > 0,
@@ -1052,6 +1053,9 @@ async def main():
                     if rect.collidepoint(location):
                         clicked = name
                 inputBoxActive = clicked == 'room'
+                if clicked == 'hint' and hints.remaining() == 0:
+                    showStatus("You've used today's %d hints. More tomorrow!" % hints.HINTS_PER_DAY)
+                    continue
                 if clicked is not None and not controlStates().get(clicked, True):
                     continue
 
@@ -1269,7 +1273,8 @@ async def main():
                 if suggestion is None:
                     suggestion = findRandomMoves(validMoves)
                 hintMove = suggestion
-                showStatus("Hint: " + gs.getSan(suggestion, validMoves), 4000)
+                hints.use()
+                showStatus("Hint: %s (%d left today)" % (gs.getSan(suggestion, validMoves), hints.remaining()), 4000)
 
         # genetare new set of valid move if valid move is made
         if moveMade:
@@ -1355,7 +1360,7 @@ async def main():
             'level': "AI: " + LEVEL_OPTIONS[chessAi.LEVEL],
             'side': "Play as: " + SIDE_OPTIONS[sideIndex],
             'clock': "Clock: " + CLOCK_OPTIONS[clockIndex][0],
-            'hint': "Hint",
+            'hint': "Hint (%d left)" % hints.remaining(),
             'host': "Host (White)",
             'join': "Join (Black)",
             'save': "Save PGN",
