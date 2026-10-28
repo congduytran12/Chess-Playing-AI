@@ -150,8 +150,9 @@ class Account:
         self.stats = {}
         return True
 
-    async def signIn(self, email, password):
-        data = await self._post({'action': 'login', 'email': email, 'password': password})
+    async def signIn(self, login, password):
+        """login is the email or the username."""
+        data = await self._post({'action': 'login', 'login': login, 'password': password})
         self._session += 1
         self._signedInWith(data)
         await self.loadStats()

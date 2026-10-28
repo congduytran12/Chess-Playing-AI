@@ -24,6 +24,7 @@ SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
 USERNAME_PATTERN = re.compile(r'^[A-Za-z0-9_]{3,20}$')
 EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 MIN_PASSWORD_LENGTH = 8
+BAD_LOGIN = 'Invalid login credentials'  # Supabase Auth's answer to a wrong email or password
 MAX_PGN_LENGTH = 20000
 RESULTS = ('1-0', '0-1', '1/2-1/2')
 MIN_RATED_PLIES = 4  # shorter online games don't change ratings
@@ -133,12 +134,32 @@ def register(data):
     return {'confirm': True}  # email confirmation is on: the player signs in after clicking the link
 
 
+# "login" is the email or the username ("email" from older game versions)
 def login(data):
-    res = supabase('POST', '/auth/v1/token?grant_type=password',
-                   json={'email': text(data, 'email'), 'password': text(data, 'password')})
+    name = text(data, 'login' if 'login' in data else 'email')
+    password = text(data, 'password')
+    email = name if '@' in name else emailOfUsername(name)
+    res = supabase('POST', '/auth/v1/token?grant_type=password', json={'email': email, 'password': password})
     if res.status_code != 200:
         raise ApiError(authErrorMessage(res), 401)
     return signedIn(res.json())
+
+
+# Supabase Auth signs in by email only, so a username is looked up first; an unknown username gets
+# the same answer as a wrong password, so sign-in doesn't reveal which usernames exist
+def emailOfUsername(username):
+    if not USERNAME_PATTERN.match(username):
+        raise ApiError(BAD_LOGIN, 401)
+    rows = rest('GET', 'profiles', params={'username': 'ilike.' + username.replace('_', '\\_'), 'select': 'id'})
+    if not rows:
+        raise ApiError(BAD_LOGIN, 401)
+    res = supabase('GET', '/auth/v1/admin/users/' + rows[0]['id'])  # needs the service role key
+    if res.status_code != 200:
+        raise authUnavailable(res)
+    email = res.json().get('email')
+    if not email:
+        raise ApiError(BAD_LOGIN, 401)
+    return email
 
 
 def refresh(data):

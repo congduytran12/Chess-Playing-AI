@@ -328,8 +328,8 @@ async def main():
 
     # player account (see account.py): the account window, and saving finished games to the account
     accountView = None  # 'signin' | 'register' | 'profile' | 'games' | 'leaderboard' while the window is open
-    accountFields = {'username': "", 'email': "", 'password': ""}
-    accountFocus = 'email'  # the form field being typed into
+    accountFields = {'username': "", 'email': "", 'login': "", 'password': ""}  # login: email or username, to sign in
+    accountFocus = 'login'  # the form field being typed into
     accountMessage = ""  # error or notice shown in the account window
     accountList = []  # saved games or leaderboard rows shown in the window
     accountRequests = []  # running requests: (task, onDone, onError, shownInWindow)
@@ -753,7 +753,9 @@ async def main():
         accountMessage = ""
         accountList = []
         if view in ('signin', 'register'):
-            accountFocus = 'username' if view == 'register' else 'email'
+            accountFocus = 'username' if view == 'register' else 'login'
+            if view == 'signin' and not accountFields['login']:
+                accountFields['login'] = accountFields['email']  # e.g. right after registering
         elif view == 'profile':
             startRequest(account.loadStats())
         elif view == 'games':
@@ -766,12 +768,12 @@ async def main():
         accountList = rows
 
     def submitAccountForm():
-        email = accountFields['email'].strip()
         password = accountFields['password']
         if accountView == 'signin':
-            startRequest(account.signIn(email, password), onDone=lambda _: signedIn())
+            startRequest(account.signIn(accountFields['login'].strip(), password), onDone=lambda _: signedIn())
         else:
-            startRequest(account.register(email, password, accountFields['username'].strip()), onDone=registered)
+            startRequest(account.register(accountFields['email'].strip(), password, accountFields['username'].strip()),
+                         onDone=registered)
 
     def signedIn():
         accountFields['password'] = ""
@@ -1544,7 +1546,7 @@ ACCOUNT_BUTTONS = {'close': "Close", 'back': "Back", 'games': "My games", 'leade
 
 
 def accountFieldNames(view):
-    return ['username', 'email', 'password'] if view == 'register' else ['email', 'password']
+    return ['username', 'email', 'password'] if view == 'register' else ['login', 'password']
 
 
 # rects of the account window's parts, by name; count is the number of list rows (saved games, leaderboard)
@@ -1591,7 +1593,7 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
     screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
 
     if view in ('signin', 'register'):
-        labels = {'username': "Username (3-20 letters, digits or _)", 'email': "Email",
+        labels = {'username': "Username (3-20 letters, digits or _)", 'email': "Email", 'login': "Email or username",
                   'password': "Password (at least 8 characters)" if view == 'register' else "Password"}
         for name in accountFieldNames(view):
             rect = rects['field:' + name]
