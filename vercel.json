@@ -4,9 +4,6 @@
   "outputDirectory": "game/build/web",
   "framework": null,
   "functions": {
-    "api/sync.py": {
-      "maxDuration": 15
-    },
     "api/account.py": {
       "maxDuration": 15
     }
@@ -23,21 +20,9 @@
       "headers": [
         { "key": "Content-Type", "value": "application/javascript" }
       ]
-    },
-    {
-      "source": "/api/sync",
-      "headers": [
-        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate" },
-        { "key": "Pragma", "value": "no-cache" },
-        { "key": "Surrogate-Control", "value": "no-store" }
-      ]
     }
   ],
   "rewrites": [
-    {
-      "source": "/api/sync",
-      "destination": "/api/sync.py"
-    },
     {
       "source": "/api/account",
       "destination": "/api/account.py"

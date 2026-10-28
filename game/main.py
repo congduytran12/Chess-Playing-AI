@@ -83,6 +83,7 @@ PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
 # message is noticed and the side that is behind catches up; ntfy.sh allows about one message per 5s
 HEARTBEAT_MS = 15000
 SYNC_REPLY_MS = 2000  # at most one state reply to a player who is behind per this many ms
+ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
 
 
 def get_text_surface(text, size, color, bold=True):
@@ -317,6 +318,8 @@ async def main():
     # online games are synced by sending the whole game state; the newer (game, version) wins
     onlineGame = 0  # game number in the room, bumped by every new game
     onlineVersion = 0  # bumped by every change to the game: move, undo, resignation, draw
+    onlineGameId = ""  # random id of the current game, shared by both players (rating reports are matched by it)
+    liveGameId = None  # id of the online game we saw in progress; a game that was already over when we joined isn't saved again
     lastStateSent = 0  # ticks when we last sent our state
     lastStateHeard = 0  # ticks when we last heard a state matching ours
     lastSyncReply = 0  # ticks when we last answered a player who is behind
@@ -542,6 +545,7 @@ async def main():
         sendOnline({
             'type': 'state',
             'reason': reason,
+            'gid': onlineGameId,
             'moves': " ".join(move.getCode() for move in gs.moveLog),
             'tc': list(timeControl) if timeControl else None,
             'clocks': dict(clocks) if timeControl else None,
@@ -555,12 +559,16 @@ async def main():
         onlineVersion += 1
         sendState(reason)
 
+    def newOnlineGameId():
+        return "".join(random.choices(string.ascii_letters + string.digits, k=12))
+
     def startOnlineGame():  # a new game in the same room, keeping the time control
-        nonlocal onlineGame, onlineVersion, timeControl, clocks, clockHistory
+        nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, clockHistory
         keptTimeControl = timeControl
         resetGame()
         onlineGame += 1
         onlineVersion = 0
+        onlineGameId = newOnlineGameId()
         timeControl = keptTimeControl
         startMs = timeControl[0] * 1000 if timeControl else 0
         clocks = {'w': startMs, 'b': startMs}
@@ -568,7 +576,7 @@ async def main():
         sendState('new_game')
 
     def connectOnline(role):
-        nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, savedSession, lastStateHeard
+        nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, onlineGameId, savedSession, lastStateHeard
         nonlocal opponentInfo
         multiplayerRole = role
         opponentInfo = None
@@ -578,6 +586,7 @@ async def main():
         resetGame()
         onlineGame = 0
         onlineVersion = 0
+        onlineGameId = newOnlineGameId()  # replaced by the opponent's when we catch up with their game
         lastStateHeard = p.time.get_ticks()
         net.save_session(roomCode, role)
         savedSession = {'room': roomCode, 'role': role}
@@ -586,7 +595,7 @@ async def main():
 
     # rebuilds the game from a newer state: undo back to the common moves, then play the rest
     def adoptState(state):
-        nonlocal onlineGame, onlineVersion, timeControl, clocks, gameResult, moveMade, animate
+        nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, gameResult, moveMade, animate
         nonlocal lastClockTick, pendingPrompt, squareSelected, playerClicks
         codes = str(state.get('moves') or "").split()
         newGame = state['game'] != onlineGame
@@ -620,6 +629,7 @@ async def main():
         gameResult = (str(result[0]), str(result[1])) if isinstance(result, list) and len(result) == 2 else None
         onlineGame = state['game']
         onlineVersion = state['version']
+        onlineGameId = str(state.get('gid') or "")[:32]
 
         moveMade = True
         animate = added == 1 and undone == 0 and not newGame  # the usual case: the opponent's move
@@ -862,13 +872,16 @@ async def main():
             ratingBefore = account.profile['rating']
 
             def reported(outcome):
-                rated, pending = outcome
+                rated, pending, reason = outcome
                 if rated:
                     rating = account.profile['rating']
                     showStatus("Your rating: %d (%+d)" % (rating, rating - ratingBefore), 5000)
                 elif pending:
                     showStatus("Result sent; ratings change when your opponent confirms it", 5000)
-            startRequest(account.reportOnline(white, black, " ".join(m.getCode() for m in gs.moveLog), result),
+                elif reason == 'daily limit':
+                    showStatus("Not rated: you already played 3 rated games against this player today", 5000)
+            startRequest(account.reportOnline(white, black, onlineGameId, " ".join(m.getCode() for m in gs.moveLog),
+                                              result),
                          onDone=reported, inWindow=False,
                          onError=lambda message: showStatus("Couldn't report the result: " + message))
 
@@ -897,7 +910,8 @@ async def main():
             if newest is not None:
                 theirs = (newest['game'], newest['version'])
                 mine = (onlineGame, onlineVersion)
-                sameGame = (str(newest.get('moves') or "") == " ".join(move.getCode() for move in gs.moveLog)
+                sameGame = (str(newest.get('gid') or "")[:32] == onlineGameId
+                            and str(newest.get('moves') or "") == " ".join(move.getCode() for move in gs.moveLog)
                             and (newest.get('result') or None) == (list(gameResult) if gameResult else None)
                             and (newest.get('tc') or None) == (list(timeControl) if timeControl else None))
                 if theirs > mine or (theirs == mine and not sameGame and multiplayerRole == 'client'):
@@ -1179,9 +1193,9 @@ async def main():
                         roomCode = roomCode[:-1]
                     elif e.key == p.K_RETURN:
                         inputBoxActive = False
-                    else:
-                        if len(roomCode) < 12:
-                            roomCode += e.unicode.upper()
+                    # room codes become part of the ntfy topic name, which allows only these characters
+                    elif e.unicode and e.unicode in ROOM_CODE_CHARACTERS and len(roomCode) < 12:
+                        roomCode += e.unicode.upper()
                     continue
 
                 # after the game, the arrow keys step through the moves
@@ -1203,6 +1217,10 @@ async def main():
                         continue
                     playerUndo()
                 if e.key == p.K_r:  # reset board when 'r' is pressed
+                    if multiplayerMode and networkConnected:
+                        # a local reset would desync the online game (and the host's would win the sync)
+                        showStatus("Click the board after the game for a new one, or Restart to leave the room")
+                        continue
                     resetGame()
 
         # clocks: charge the side to move and check for a flag fall
@@ -1213,6 +1231,10 @@ async def main():
                 clocks[side] = 0
                 gameResult = timeoutResult(gs, side)
                 pendingPrompt = None
+                if multiplayerMode and networkConnected:
+                    # both sides usually see the flag fall and send the same result; if the flagged
+                    # player had moved in time, their newer move state replaces this one
+                    publishChange('timeout')
 
         # a PGN file the player picked (arrives later in the browser)
         if currentModeIndex != 2:
@@ -1282,8 +1304,12 @@ async def main():
             if onDone:
                 onDone(result)
 
-        # a game finished while signed in is saved to the account
-        if gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog:
+        # a game finished while signed in is saved to the account; an online game only when we saw it in
+        # progress, so joining a room whose game already ended (or rejoining it) doesn't save it again
+        if multiplayerMode and networkConnected and not gameOver:
+            liveGameId = onlineGameId
+        if (gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog
+                and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True
             saveFinishedGame()
 

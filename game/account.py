@@ -54,6 +54,7 @@ class Account:
         self.stats = {}  # 'ai0'..'ai4' / 'online' -> {'won', 'lost', 'drawn'}
         self._jsReady = False
         self._nextRequestId = 0
+        self._session = 0  # bumped by sign-in and sign-out; answers to requests from an older session are dropped
 
     @property
     def signedIn(self):
@@ -109,12 +110,16 @@ class Account:
         return await self._post(dict(fields, action=action, token=self.token))
 
     async def _refresh(self):
+        session = self._session
         try:
-            self._signedInWith(await self._post({'action': 'refresh', 'refresh': self.refreshToken}))
+            data = await self._post({'action': 'refresh', 'refresh': self.refreshToken})
         except AccountError as e:
-            if e.status == 401:
+            if e.status == 401 and session == self._session:
                 self.signOut()
             raise
+        if session != self._session:
+            raise AccountError("Not signed in", 401)  # signed out (or in as someone else) meanwhile
+        self._signedInWith(data)
 
     def _signedInWith(self, data):
         self.token = data['token']
@@ -140,23 +145,29 @@ class Account:
         data = await self._post({'action': 'register', 'email': email, 'password': password, 'username': username})
         if data.get('confirm'):
             return False
+        self._session += 1
         self._signedInWith(data)
         self.stats = {}
         return True
 
     async def signIn(self, email, password):
-        self._signedInWith(await self._post({'action': 'login', 'email': email, 'password': password}))
+        data = await self._post({'action': 'login', 'email': email, 'password': password})
+        self._session += 1
+        self._signedInWith(data)
         await self.loadStats()
 
     def signOut(self):
+        self._session += 1
         self.token = self.refreshToken = self.profile = None
         self.stats = {}
         self._store(None)
 
     async def loadStats(self):
+        session = self._session
         data = await self._authed('me')
-        self.profile = data['profile']
-        self.stats = data['stats']
+        if session == self._session:
+            self.profile = data['profile']
+            self.stats = data['stats']
 
     async def saveGame(self, game):
         """Saves a finished game ({'id'?, 'mode', 'ai_level', 'color', 'opponent', 'result', 'pgn'}); returns its id."""
@@ -169,11 +180,15 @@ class Account:
     async def loadGame(self, gameId):
         return (await self._authed('game', id=gameId))['pgn']
 
-    async def reportOnline(self, whiteId, blackId, moves, result):
-        """Returns (rated, pending); the profile's rating is updated when the game counted."""
-        data = await self._authed('report_online', white_id=whiteId, black_id=blackId, moves=moves, result=result)
-        self.profile = data.get('profile', self.profile)
-        return bool(data.get('rated')), bool(data.get('pending'))
+    async def reportOnline(self, whiteId, blackId, gameId, moves, result):
+        """Returns (rated, pending, reason); the profile's rating is updated when the game counted.
+        gameId is the id both players share for the game, so both reports are matched up."""
+        session = self._session
+        data = await self._authed('report_online', white_id=whiteId, black_id=blackId, game_id=gameId,
+                                  moves=moves, result=result)
+        if session == self._session:
+            self.profile = data.get('profile', self.profile)
+        return bool(data.get('rated')), bool(data.get('pending')), data.get('reason')
 
     async def leaderboard(self):
         return (await self._post({'action': 'leaderboard'}))['players']

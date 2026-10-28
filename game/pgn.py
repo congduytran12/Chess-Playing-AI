@@ -83,7 +83,7 @@ def parsePgn(text):
     headers = {}
     bodyLines = []
     inHeader = True
-    for line in text.replace('\r', '').split('\n'):
+    for line in text.replace('\r', '').lstrip('﻿').split('\n'):
         stripped = line.strip()
         if inHeader and stripped.startswith('['):
             match = re.match(r'\[(\w+)\s+"(.*)"\]', stripped)
@@ -187,7 +187,7 @@ def requestPgnLoad():
             return "No saved games in " + SAVE_FOLDER
         path = max(files, key=os.path.getmtime)
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:  # -sig drops a byte order mark (Notepad)
             _loadedText = f.read()
     except OSError as e:
         return "Couldn't open: " + str(e)

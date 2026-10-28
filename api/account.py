@@ -10,7 +10,6 @@
 import os
 import re
 import hashlib
-import datetime
 import requests
 from flask import Flask, request, jsonify
 
@@ -28,6 +27,7 @@ MIN_PASSWORD_LENGTH = 8
 MAX_PGN_LENGTH = 20000
 RESULTS = ('1-0', '0-1', '1/2-1/2')
 MIN_RATED_PLIES = 4  # shorter online games don't change ratings
+MOVE_PATTERN = re.compile(r'^[a-h][1-8][a-h][1-8][qrbn]?$')  # Move.getCode in the game
 CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -86,9 +86,17 @@ def currentUser(data):
     if not isinstance(token, str) or not token:
         raise ApiError('Not signed in', 401)
     res = supabase('GET', '/auth/v1/user', token=token)
-    if res.status_code != 200:
+    if res.status_code in (401, 403):
         raise ApiError('Your session expired, please sign in again', 401)
+    if res.status_code != 200:
+        raise authUnavailable(res)
     return res.json()['id']
+
+
+# a temporary auth service problem (rate limit, outage) must not look like a bad token: the game signs out on 401
+def authUnavailable(res):
+    print(f"[account] auth service -> {res.status_code} {res.text[:300]}")
+    return ApiError('The account service is busy, please try again', 503)
 
 
 def getProfile(userId):
@@ -135,8 +143,10 @@ def login(data):
 
 def refresh(data):
     res = supabase('POST', '/auth/v1/token?grant_type=refresh_token', json={'refresh_token': text(data, 'refresh', 1000)})
-    if res.status_code != 200:
+    if res.status_code in (400, 401, 403):  # the refresh token is invalid, expired or already used
         raise ApiError('Please sign in again', 401)
+    if res.status_code != 200:
+        raise authUnavailable(res)
     return signedIn(res.json())
 
 
@@ -213,38 +223,42 @@ def getGame(data):
     return rows[0]
 
 
-# Online games have no server watching them, so a result only changes ratings when it can be trusted:
-# both players reported the same result, or a player reported their own loss (e.g. a resignation)
+# Online games have no server watching them, so a result only changes ratings when both players reported
+# the same result for the same game (game_id is the id both clients share for it, see main.py), and at most
+# 3 games per pair of players a day (enforced in apply_rated_game) so two accounts can't farm rating
 def reportOnline(data):
     userId = currentUser(data)
     white = text(data, 'white_id', 64)
     black = text(data, 'black_id', 64)
-    moves = text(data, 'moves', 8000)
+    gameId = text(data, 'game_id', 32)
+    moves = text(data, 'moves', 8000).split()
     result = data.get('result')
     if userId not in (white, black) or white == black:
         raise ApiError("You didn't play in this game")
     if result not in RESULTS:
         raise ApiError('Unknown result')
-    if len(moves.split()) < MIN_RATED_PLIES:
+    if not gameId:
+        raise ApiError('Missing game_id')
+    if not all(MOVE_PATTERN.match(move) for move in moves):
+        raise ApiError('The moves are not in coordinate notation')
+    if len(moves) < MIN_RATED_PLIES:
         return {'rated': False, 'reason': 'too short', 'profile': getProfile(userId)}
 
-    gameHash = hashlib.sha256(('%s|%s|%s' % (white, black, moves)).encode()).hexdigest()
-    since = (datetime.datetime.utcnow() - datetime.timedelta(hours=24)).isoformat()
-    reports = rest('GET', 'online_reports', params={'game_hash': 'eq.' + gameHash, 'created_at': 'gte.' + since,
-                                                    'select': 'reporter,result,applied'})
+    gameHash = hashlib.sha256(('%s|%s|%s|%s' % (white, black, gameId, ' '.join(moves))).encode()).hexdigest()
+    # insert first, then read: when both players report at the same moment, the later read sees both reports
+    rest('POST', 'online_reports', params={'on_conflict': 'game_hash,reporter'},
+         json={'game_hash': gameHash, 'reporter': userId, 'white_id': white, 'black_id': black, 'result': result},
+         headers={'Prefer': 'resolution=ignore-duplicates,return=minimal'})
+    reports = rest('GET', 'online_reports', params={'game_hash': 'eq.' + gameHash, 'select': 'reporter,result,applied'})
     if any(report['applied'] for report in reports):
         return {'rated': True, 'profile': getProfile(userId)}  # already counted
-    if not any(report['reporter'] == userId for report in reports):
-        rest('POST', 'online_reports', json={'game_hash': gameHash, 'reporter': userId, 'white_id': white,
-                                              'black_id': black, 'result': result})
-
-    concedes = result == ('0-1' if userId == white else '1-0')
-    agreed = any(report['reporter'] != userId and report['result'] == result for report in reports)
-    if not (concedes or agreed):
+    if not any(report['reporter'] != userId and report['result'] == result for report in reports):
         return {'rated': False, 'pending': True, 'profile': getProfile(userId)}
     score = {'1-0': 1, '0-1': 0, '1/2-1/2': 0.5}[result]
-    rest('POST', 'rpc/apply_rated_game', json={'p_hash': gameHash, 'p_white': white, 'p_black': black,
-                                                'p_white_score': score})
+    status = rest('POST', 'rpc/apply_rated_game', json={'p_hash': gameHash, 'p_white': white, 'p_black': black,
+                                                         'p_white_score': score})
+    if status == 'limit':
+        return {'rated': False, 'reason': 'daily limit', 'profile': getProfile(userId)}
     return {'rated': True, 'profile': getProfile(userId)}
 
 

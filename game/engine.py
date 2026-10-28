@@ -344,8 +344,8 @@ class GameState():
                 kingRow, kingCol = self.blackKinglocation
 
         if self.board[row + moveAmount][col] == "--":  # first square move
-            # if piece is not pinned then its fine or if it is pinned but from forward direction then we can still move
-            if not piecePinned or pinDirection == (moveAmount, 0):
+            # if piece is not pinned then its fine or if it is pinned along the file (king behind or in front) then we can still move
+            if not piecePinned or pinDirection in ((moveAmount, 0), (-moveAmount, 0)):
                 moves.append(
                     Move((row, col), (row+moveAmount, col), self.board))
                 # Check if pawn can directly advance to second square
@@ -355,8 +355,8 @@ class GameState():
         # capture
         if col-1 >= 0:  # there is a col to the left for white
             # check if there is a black piece to the left of your pawn that you can capture
-            # if piece is not pinned then its fine or if it is pinned but from left direction then we can capture left piece
-            if not piecePinned or pinDirection == (moveAmount, -1):
+            # if piece is not pinned then its fine or if it is pinned along this diagonal (either way) then we can capture left piece
+            if not piecePinned or pinDirection in ((moveAmount, -1), (-moveAmount, 1)):
                 if self.board[row+moveAmount][col-1][0] == enemyColor:
                     moves.append(
                         Move((row, col), (row+moveAmount, col-1), self.board))
@@ -389,8 +389,8 @@ class GameState():
                                           self.board, isEnpassantMove=True))
         if col+1 <= 7:  # there is a col to the right for white
             # check if there is a black piece to the right of your pawn that you can capture
-            # if piece is not pinned then its fine or if it is pinned but from left direction then we can capture right piece
-            if not piecePinned or pinDirection == (moveAmount, 1):
+            # if piece is not pinned then its fine or if it is pinned along this diagonal (either way) then we can capture right piece
+            if not piecePinned or pinDirection in ((moveAmount, 1), (-moveAmount, -1)):
                 if self.board[row+moveAmount][col+1][0] == enemyColor:
                     moves.append(
                         Move((row, col), (row+moveAmount, col+1), self.board))
@@ -543,9 +543,11 @@ class GameState():
                             Move((row, col), (endRow, endCol), self.board))
 
     # Get all the Queen moves for the Queen located at row, col and add it to the moves
+    # rook moves first: getRookMoves keeps a queen's pin in self.pins, getBishopMoves removes it,
+    # so both halves see the pin
     def getQueenMoves(self, row, col, moves):
-        self.getBishopMoves(row, col, moves)
         self.getRookMoves(row, col, moves)
+        self.getBishopMoves(row, col, moves)
 
     # Get all the King moves for the King located at row, col and add it to the moves
     def getKingMoves(self, row, col, moves):

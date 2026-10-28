@@ -6,8 +6,10 @@ import base64
 import urllib.parse
 import sys
 import os
+import re
 import urllib.request
 import threading
+from collections import deque
 
 WASM = False
 try:
@@ -24,12 +26,14 @@ except:
 
 if WASM:
     js.eval('''
-        window.js_send_msg = function(url, raw, cb, eb) {
+        // no Python callbacks here: a proxy per send would never be freed
+        window.js_send_msg = function(url, raw) {
             fetch(url, {
                 method: "POST",
                 body: raw,
                 mode: "no-cors"
-            }).then(r => cb("Ok")).catch(e => eb(String(e)));
+            }).then(r => console.log("Network: Move Transmitted SUCCESS (Direct WASM)."))
+              .catch(e => console.warn("Network: Send error (Direct WASM):", String(e)));
         }
 
         window.start_ntfy_sse = function(topic, since, cb, eb) {
@@ -57,6 +61,7 @@ if WASM:
 
 SESSION_FILE = os.path.join(os.path.expanduser("~"), ".chess-playing-ai-session.json")  # desktop only
 SESSION_MAX_AGE = 12 * 3600  # seconds; ntfy.sh keeps messages about this long
+SEEN_IDS_KEPT = 200  # newest ntfy message ids remembered for deduplication
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
 print("Network: v13.0 Loaded (Proxy-Unified)")
@@ -69,8 +74,11 @@ class NetworkManager:
         self._sse_cb = None
         self._sse_eb = None
         self._listener_thread = None  # native background thread
+        self._generation = 0  # bumped by set_topic; a listener from an older generation stops
+        self._lock = threading.Lock()  # the native listener thread and the game loop share the queue and ids
         self.seen_ids = set()   # Track processed message IDs to avoid duplicates
-        
+        self._seen_order = deque()  # the same ids, oldest first, so the oldest are forgotten first
+
         self.server = "ntfy.sh"
         
         # Diagnostics
@@ -93,11 +101,14 @@ class NetworkManager:
         """
         # Stop any running listener first
         self.running = False
-        
-        self.topic = "chess_app_multiplayer_" + str(topic).strip().upper()
+        self._generation += 1
+
+        self.topic = "chess_app_multiplayer_" + roomName(topic)
         self.running = True
-        self.seen_ids.clear()
-        self.incoming_messages.clear()
+        with self._lock:
+            self.seen_ids.clear()
+            self._seen_order.clear()
+            self.incoming_messages.clear()
         self.msg_count = 0
         self.poll_count = 0
         self.last_since = "30m"  # wide window so late-joining clients catch all moves
@@ -115,14 +126,8 @@ class NetworkManager:
                 try:
                     msg = json.loads(data)
                     msg_id = msg.get('id')
-                    if msg_id and msg_id not in self.seen_ids:
-                        self.seen_ids.add(msg_id)
-                        if len(self.seen_ids) > 200:
-                            self.seen_ids = set(sorted(list(self.seen_ids))[100:])
-                        if msg.get('event') == 'message':
-                            content = json.loads(msg.get('message', '{}'))
-                            self.incoming_messages.append(content)
-                            print(f"Network: WASM received msg #{self.msg_count} id={msg_id}")
+                    if msg.get('event') == 'message' and self._accept(msg):
+                        print(f"Network: WASM received msg #{self.msg_count} id={msg_id}")
                 except Exception as e:
                     print(f"Network: SSE Parse error - {e}")
                     
@@ -153,15 +158,7 @@ class NetworkManager:
         raw = json.dumps(data)
         
         if WASM:
-            def on_send_success(text):
-                print("Network: Move Transmitted SUCCESS (Direct WASM).")
-            def on_send_error(err):
-                print(f"Network: Send error (Direct WASM): {err}")
-            
-            s_proxy = create_proxy(on_send_success)
-            e_proxy = create_proxy(on_send_error)
-            
-            js.window.js_send_msg(ntfy_url, raw, s_proxy, e_proxy)
+            js.window.js_send_msg(ntfy_url, raw)
         else:
             def _send():
                 try:
@@ -180,7 +177,8 @@ class NetworkManager:
         """
         print("Network: Native listener thread started.")
         topic_snapshot = self.topic  # capture topic at thread start
-        while self.running and self.topic == topic_snapshot:
+        generation = self._generation  # a rejoin of the same room starts a new generation, so this thread stops
+        while self.running and self._generation == generation:
             since = self.last_since
             url = f"https://{self.server}/{topic_snapshot}/json?since={since}"
             self.last_status = "CONNECTING"
@@ -191,7 +189,7 @@ class NetworkManager:
                     self.last_status = "SYNC HEALTHY"
                     self.poll_count += 1
                     for raw_line in response:
-                        if not self.running or self.topic != topic_snapshot:
+                        if not self.running or self._generation != generation:
                             break
                         raw_line = raw_line.strip()
                         if not raw_line:
@@ -199,24 +197,13 @@ class NetworkManager:
                         try:
                             msg = json.loads(raw_line.decode('utf-8'))
                             msg_id = msg.get('id')
-                            # Advance 'since' cursor so reconnects don't replay
-                            if msg_id:
-                                self.last_since = msg_id
-                                if msg_id in self.seen_ids:
-                                    continue
-                                self.seen_ids.add(msg_id)
-                                # Keep seen_ids bounded
-                                if len(self.seen_ids) > 200:
-                                    sorted_ids = sorted(self.seen_ids)
-                                    self.seen_ids = set(sorted_ids[100:])
-                            if msg.get('event') == 'message':
-                                try:
-                                    content = json.loads(msg.get('message', '{}'))
-                                    self.incoming_messages.append(content)
-                                    self.msg_count += 1
-                                    print(f"Network: Received msg #{self.msg_count} (id={msg_id})")
-                                except Exception as parse_err:
-                                    print(f"Network: Failed to parse message body: {parse_err}")
+                            # only 'message' events are stored by ntfy, so only their ids work as a 'since' cursor
+                            if msg.get('event') != 'message' or not msg_id:
+                                continue
+                            self.last_since = msg_id  # reconnects continue from here instead of replaying
+                            if self._accept(msg, generation):
+                                self.msg_count += 1
+                                print(f"Network: Received msg #{self.msg_count} (id={msg_id})")
                         except Exception as line_err:
                             print(f"Network: Failed to parse line: {line_err}")
             except Exception as conn_err:
@@ -225,9 +212,37 @@ class NetworkManager:
                 time.sleep(3)
         print("Network: Native listener thread exited.")
 
+    def _accept(self, msg, generation=None):
+        """
+        Queues the game message carried by an ntfy 'message' event, unless it was seen before or isn't
+        a JSON object (the topic is public, so anything can arrive). Returns True when it was queued.
+        """
+        msg_id = msg.get('id')
+        try:
+            content = json.loads(msg.get('message') or '')
+        except (ValueError, TypeError):
+            print(f"Network: Ignoring a message that isn't JSON (id={msg_id})")
+            return False
+        if not isinstance(content, dict):
+            print(f"Network: Ignoring a message that isn't a JSON object (id={msg_id})")
+            return False
+        with self._lock:
+            if generation is not None and generation != self._generation:
+                return False  # this listener belongs to a room that was left
+            if msg_id:
+                if msg_id in self.seen_ids:
+                    return False
+                self.seen_ids.add(msg_id)
+                self._seen_order.append(msg_id)
+                if len(self._seen_order) > SEEN_IDS_KEPT:
+                    self.seen_ids.discard(self._seen_order.popleft())
+            self.incoming_messages.append(content)
+        return True
+
     def get_messages(self):
-        res = list(self.incoming_messages)
-        self.incoming_messages.clear()
+        with self._lock:
+            res = self.incoming_messages
+            self.incoming_messages = []
         return res
 
     def save_session(self, room, role):
@@ -265,5 +280,12 @@ class NetworkManager:
         if time.time() - float(session.get('time', 0)) > SESSION_MAX_AGE:
             return None
         return session
+
+def roomName(room):
+    """
+    The room code as it goes into the ntfy topic, which only allows letters, digits, - and _.
+    """
+    return re.sub(r'[^A-Z0-9_-]', '', str(room).strip().upper())
+
 
 net = NetworkManager()

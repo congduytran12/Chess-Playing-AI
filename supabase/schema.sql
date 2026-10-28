@@ -55,10 +55,14 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
     for each row execute function public.handle_new_user();
 
+create index if not exists online_reports_pair on public.online_reports (white_id, black_id) where applied;
+
 -- applies an online game to both ratings (Elo, K = 32), at most once per game even if both players
--- report at the same moment; returns the new ratings, or nothing when the game was already counted
+-- report at the same moment, and at most 3 rated games per pair of players in 24 hours
+-- returns 'applied', 'counted' (the game was already applied) or 'limit' (the pair reached the daily limit)
+drop function if exists public.apply_rated_game(text, uuid, uuid, numeric);
 create or replace function public.apply_rated_game(p_hash text, p_white uuid, p_black uuid, p_white_score numeric)
-returns table (white_rating integer, black_rating integer)
+returns text
 language plpgsql security definer set search_path = public as $$
 declare
     white_before integer;
@@ -67,16 +71,23 @@ declare
 begin
     perform 1 from public.online_reports where game_hash = p_hash for update;
     if exists (select 1 from public.online_reports where game_hash = p_hash and applied) then
-        return;
+        return 'counted';
+    end if;
+    -- locking both profiles (in a fixed order) also makes concurrent games of this pair count one at a time
+    perform 1 from public.profiles where id in (p_white, p_black) order by id for update;
+    if (select count(distinct game_hash) from public.online_reports
+        where applied and created_at > now() - interval '24 hours'
+          and ((white_id = p_white and black_id = p_black) or (white_id = p_black and black_id = p_white))) >= 3 then
+        return 'limit';
     end if;
     update public.online_reports set applied = true where game_hash = p_hash;
 
-    select rating into white_before from public.profiles where id = p_white for update;
-    select rating into black_before from public.profiles where id = p_black for update;
+    select rating into white_before from public.profiles where id = p_white;
+    select rating into black_before from public.profiles where id = p_black;
     delta := round(32 * (p_white_score - 1 / (1 + power(10, (black_before - white_before) / 400.0))));
     update public.profiles set rating = rating + delta, rated_games = rated_games + 1 where id = p_white;
     update public.profiles set rating = rating - delta, rated_games = rated_games + 1 where id = p_black;
-    return query select white_before + delta, black_before - delta;
+    return 'applied';
 end;
 $$;
 
