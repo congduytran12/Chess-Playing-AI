@@ -1189,6 +1189,269 @@ class GameLoopTest(unittest.TestCase):
         self.assertTrue(main.lookBackText(gs.moveLog, 1).startswith("Looking back: after 1. e4  -"))
         self.assertTrue(main.lookBackText([], 0).startswith("Looking back: the start position"))
 
+    # --- step 6: sounds and the "Your move" alert
+
+    def fakeSounds(self):
+        """Replaces the game's sounds with recorders; returns (plays, restore). plays lists the names played."""
+        main = self.main
+        plays = []
+
+        class FakeSound:
+            def __init__(self, name):
+                self.name, self.volume = name, 1.0
+
+            def set_volume(self, volume):
+                self.volume = volume
+
+            def get_volume(self):
+                return self.volume
+
+            def play(self):
+                plays.append(self.name)
+
+        saved = dict(main.SOUNDS)
+        main.SOUNDS.clear()
+        main.SOUNDS.update({name: FakeSound(name) for name in main.SOUND_FILES})
+
+        def restore():
+            main.SOUNDS.clear()
+            main.SOUNDS.update(saved)
+        return plays, restore
+
+    def test_new_sounds_are_loaded(self):
+        for name in ('move', 'capture', 'promote', 'check', 'game-start', 'game-end', 'low-time', 'notify'):
+            self.assertIn(name, self.main.SOUNDS)
+            self.assertLess(self.main.SOUNDS[name].get_length(), 0.7, name)
+
+    def test_move_sound_names(self):
+        main = self.main
+
+        def soundOf(fen, code):
+            gs = support.fromFen(fen)
+            moves = gs.getValidMoves()
+            move = gs.findMoveByCode(code, moves)
+            gs.makeMoveWithSan(move, moves)
+            return main.moveSoundName(move)
+
+        start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+        self.assertEqual(soundOf(start, "e2e4"), 'move')
+        self.assertEqual(soundOf('4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1', "e4d5"), 'capture')
+        self.assertEqual(soundOf('8/P7/7k/8/8/8/8/K7 w - - 0 1', "a7a8q"), 'promote')
+        self.assertEqual(soundOf('4k3/8/8/8/8/8/8/R3K3 w - - 0 1', "a1a8"), 'check')
+        self.assertEqual(soundOf('3qk3/8/8/8/8/8/8/3RK3 w - - 0 1', "d1d8"), 'check', "a capture giving check")
+        self.assertEqual(soundOf('6k1/P7/8/8/8/8/8/K7 w - - 0 1', "a7a8q"), 'check', "a promotion giving check")
+
+    def test_play_sound_respects_sound_and_volume(self):
+        main = self.main
+        plays, restore = self.fakeSounds()
+        try:
+            self.settings.put('volume', 30)
+            self.assertTrue(main.playSound('check'))
+            self.assertAlmostEqual(main.SOUNDS['check'].volume, 0.3)
+            self.settings.put('sound', False)
+            self.assertFalse(main.playSound('move'))
+            self.settings.put('sound', True)
+            self.settings.put('volume', 0)
+            self.assertFalse(main.playSound('move'))
+            self.settings.put('volume', 80)
+            self.assertFalse(main.playSound('no such sound'))
+
+            def broken():
+                raise RuntimeError("no device")
+            main.SOUNDS['notify'].play = broken
+            self.assertFalse(main.playSound('notify'), "a failing sound doesn't raise")
+            self.assertEqual(plays, ['check'])
+        finally:
+            restore()
+            self.resetSwitches()
+
+    def test_low_time_sides(self):
+        sides = self.main.lowTimeSides
+        self.assertEqual(sides({'w': 9000, 'b': 9000}, 'wb', set()), ['w', 'b'])
+        self.assertEqual(sides({'w': 9000, 'b': 9000}, 'w', set()), ['w'], "only this device's players")
+        self.assertEqual(sides({'w': 9000, 'b': 20000}, 'wb', {'w'}), [], "once per side")
+        self.assertEqual(sides({'w': 0, 'b': 10000}, 'wb', set()), [], "a fallen flag or 10 s exactly isn't low")
+
+    def test_game_sounds_start_end_and_low_time(self):
+        main = self.main
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            seen['launch'] = list(plays)
+            await self.chooseTwoPlayers()  # a mode change starts a game
+            seen['mode'] = list(plays)
+            del plays[:]
+            for start, end in (((6, 5), (5, 5)), ((1, 4), (3, 4)), ((6, 6), (4, 6)), ((0, 3), (4, 7))):
+                await self.move(start, end)
+            await asyncio.sleep(0.3)
+            seen['mate'] = list(plays)
+            await self.click(self.square(0, 0))  # hides and shows the result card: no more sounds
+            await self.click(self.square(0, 0))
+            await self.key(p.K_z, 'z')  # take the mate back and give it again: still the same game
+            await self.move((0, 3), (4, 7), 0.5)
+            seen['mate again'] = list(plays)
+            del plays[:]
+            newGame = main.resultCardLayout("Black wins by checkmate", ['new'])[2]['new']
+            await self.click(newGame.center, 0.5)
+            seen['new game'] = list(plays)
+            # a 1+0 clock with "low" set just under a minute: each side's clock goes low once
+            clockRect = main.panelLayout(1, False)['clock']
+            await self.click(clockRect.center)
+            await self.click(main.dropdownOptionRects(clockRect, len(main.CLOCK_OPTIONS))[1].center, 0.3)
+            del plays[:]
+            await self.move((6, 4), (4, 4), 0.8)  # the clocks start with the first move: Black's runs
+            await self.move((1, 4), (3, 4), 0.8)
+            await self.move((6, 3), (4, 3), 0.8)
+            await self.move((1, 3), (3, 3), 0.8)
+            seen['low time'] = list(plays)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        plays, restore = self.fakeSounds()
+        savedLow = main.LOW_TIME_MS
+        main.LOW_TIME_MS = 59500
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            main.LOW_TIME_MS = savedLow
+        self.assertEqual(seen['launch'], [], "opening the game is quiet")
+        self.assertEqual(seen['mode'], ['game-start'])
+        self.assertEqual(seen['mate'], ['move', 'move', 'move', 'check', 'game-end'])
+        self.assertEqual(seen['mate again'].count('game-end'), 1, "the end is heard once per game")
+        self.assertEqual(seen['new game'], ['game-start'])
+        self.assertEqual(seen['low time'].count('low-time'), 2, seen['low time'])
+
+    def test_your_move_title_when_the_window_is_not_focused(self):
+        main = self.main
+        seen = {}
+
+        def focus(gained):
+            p.event.post(p.event.Event(main.WINDOW_FOCUS_GAINED if gained else main.WINDOW_FOCUS_LOST))
+
+        async def script():
+            await asyncio.sleep(1.0)
+            seen['start'] = p.display.get_caption()[0]
+            await self.move((6, 4), (4, 4), 0.2)  # 1.e4, and the player looks at another window
+            focus(False)
+            await asyncio.sleep(2.0)
+            seen['away'] = (p.display.get_caption()[0], list(plays))
+            focus(True)
+            await asyncio.sleep(0.3)
+            seen['back'] = p.display.get_caption()[0]
+            # away again: the alert goes when the player moves (the turn passes), even without focus
+            await self.move((6, 3), (4, 3), 0.2)
+            focus(False)
+            await asyncio.sleep(2.0)
+            seen['away again'] = p.display.get_caption()[0]
+            await self.move((7, 6), (5, 5), 0.3)
+            seen['moved'] = p.display.get_caption()[0]
+            focus(True)
+            # focused: the computer's reply changes nothing
+            await asyncio.sleep(2.0)
+            seen['focused'] = (p.display.get_caption()[0], plays.count('notify'))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        plays, restore = self.fakeSounds()
+        try:
+            self.runGame(script, thinkMs=1000)
+        finally:
+            restore()
+        self.assertEqual(seen['start'], main.GAME_TITLE)
+        title, played = seen['away']
+        self.assertEqual(title, "Your move · Chess Playing AI")
+        self.assertEqual(played.count('notify'), 1)
+        self.assertEqual(seen['back'], main.GAME_TITLE)
+        self.assertEqual(seen['away again'], main.YOUR_MOVE_TITLE)
+        self.assertEqual(seen['moved'], main.GAME_TITLE)
+        self.assertEqual(seen['focused'], (main.GAME_TITLE, 2))
+
+    def test_turn_arrived(self):
+        arrived = self.main.turnArrived
+        self.assertTrue(arrived(0, True, 1, 2, False), "the computer moved")
+        self.assertTrue(arrived(2, True, 3, 4, False), "the online opponent moved")
+        self.assertFalse(arrived(1, True, 1, 2, False), "two players on one screen")
+        self.assertFalse(arrived(0, False, 0, 1, False), "the player's own move")
+        self.assertFalse(arrived(0, True, 2, 0, False), "a new game or an undo")
+        self.assertFalse(arrived(0, True, 1, 2, True), "the game is over")
+    def test_online_sounds_and_your_move_alert(self):
+        main = self.main
+        import network
+        net = network.net
+        sent = []
+        seen = {}
+        realSetTopic, realSend = net.set_topic, net.send
+
+        def fakeSetTopic(topic):  # no internet: a room that only this test talks to
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+
+        async def fakeSend(data):
+            sent.append(dict(data))
+
+        def opponentState(**changes):
+            state = dict([m for m in sent if m.get('type') == 'state'][-1])
+            state.update({'role': 'client', 'sender': 'guest'})
+            state.update(changes)
+            return state
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            del plays[:]
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)  # the host plays White
+            seen['hosted'] = list(plays)
+            await self.move((6, 4), (4, 4), 0.5)
+            p.event.post(p.event.Event(main.WINDOW_FOCUS_LOST))  # the host looks at another window
+            del plays[:]
+            state = opponentState()
+            net.incoming_messages.append(opponentState(version=state['version'] + 1, moves="e2e4 e7e5"))
+            await asyncio.sleep(0.6)
+            seen['their move'] = (p.display.get_caption()[0], list(plays))
+            p.event.post(p.event.Event(main.WINDOW_FOCUS_GAINED))
+            await asyncio.sleep(0.3)
+            seen['back'] = p.display.get_caption()[0]
+            # they resign; the same state again (a heartbeat) changes nothing
+            del plays[:]
+            resigned = opponentState(version=state['version'] + 2, moves="e2e4 e7e5",
+                                     result=["White wins by resignation", "1-0"])
+            net.incoming_messages.append(resigned)
+            await asyncio.sleep(0.5)
+            net.incoming_messages.append(dict(resigned))
+            await asyncio.sleep(0.5)
+            seen['resigned'] = list(plays)
+            # and start the next game
+            del plays[:]
+            net.incoming_messages.append(opponentState(game=resigned['game'] + 1, version=0, moves="", result=None,
+                                                       gid="nextgame"))
+            await asyncio.sleep(0.5)
+            seen['next game'] = list(plays)
+            await self.click(main.panelLayout(2, True)['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        plays, restore = self.fakeSounds()
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)  # no Rejoin row for the other tests
+        self.assertEqual(seen['hosted'], ['game-start'])
+        self.assertEqual(seen['their move'], (main.YOUR_MOVE_TITLE, ['move', 'notify']))
+        self.assertEqual(seen['back'], main.GAME_TITLE)
+        self.assertEqual(seen['resigned'], ['game-end'], "an online result is heard once")
+        self.assertEqual(seen['next game'], ['game-start'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,10 +1,11 @@
-# Network message handling, PGN, the daily hint count and the saved settings
+# Network message handling, PGN, the daily hint count, the saved settings and the browser helpers
 import json
 import os
 import tempfile
 import unittest
 
 import support  # noqa: F401  (puts game/ on the path)
+import browser
 import hints
 import network
 import pgn
@@ -129,6 +130,57 @@ class SettingsTest(unittest.TestCase):
             f.write('[1, 2')
         self.assertEqual(settings.get('board'), settings.DEFAULTS['board'])
         self.assertIsNone(settings.get('no such setting'))
+
+
+class BrowserTest(unittest.TestCase):
+    URL = "https://chess.example/play/index.html?room=AB12&x=1#game=e2e4"
+
+    def test_url_helpers(self):
+        self.assertEqual(browser.paramFromUrl(self.URL, 'room'), "AB12")
+        self.assertEqual(browser.paramFromUrl(self.URL, 'x'), "1")
+        self.assertIsNone(browser.paramFromUrl(self.URL, 'none'))
+        self.assertEqual(browser.paramFromUrl("https://a.b/?room=", 'room'), "", "present but empty")
+        self.assertEqual(browser.paramFromUrl("https://a.b/?name=A%20B", 'name'), "A B")
+        self.assertEqual(browser.urlWithoutParam(self.URL, 'room'), "https://chess.example/play/index.html?x=1#game=e2e4")
+        self.assertEqual(browser.urlWithoutParam("https://a.b/?room=X", 'room'), "https://a.b/")
+        self.assertEqual(browser.hashFromUrl(self.URL), "game=e2e4")
+        self.assertEqual(browser.hashFromUrl("https://a.b/"), "")
+        self.assertEqual(browser.urlWithoutHash(self.URL), "https://chess.example/play/index.html?room=AB12&x=1")
+        self.assertEqual(browser.siteFromUrl(self.URL), "https://chess.example/play/index.html")
+
+    def test_desktop_fallbacks(self):
+        self.assertFalse(browser.inBrowser())
+        self.assertFalse(browser.pageHidden())
+        self.assertIsNone(browser.queryParam('room'))
+        self.assertEqual(browser.locationHash(), "")
+        browser.removeQueryParam('room')  # nothing to do, and no error
+        browser.clearLocationHash()
+        self.assertEqual(browser.siteUrl(), browser.SITE_URL)
+        self.assertIsNone(browser.takePastedText(), "desktop pastes through clipboardText()")
+
+    def test_desktop_clipboard_tries_pygame_then_tkinter(self):
+        calls = []
+        saved = browser._scrapCopy, browser._tkCopy, browser._scrapPaste, browser._tkPaste
+        try:
+            browser._scrapCopy = lambda text: calls.append(('scrap', text)) or False
+            browser._tkCopy = lambda text: calls.append(('tk', text)) or True
+            self.assertTrue(browser.copyText("1. e4 e5"))
+            self.assertEqual(calls, [('scrap', "1. e4 e5"), ('tk', "1. e4 e5")])
+            browser._tkCopy = lambda text: False
+            self.assertFalse(browser.copyText("x"), "neither worked")
+            browser._scrapPaste = lambda: ""
+            browser._tkPaste = lambda: "from tk"
+            self.assertEqual(browser.clipboardText(), "from tk")
+            browser._tkPaste = lambda: ""
+            self.assertEqual(browser.clipboardText(), "")
+        finally:
+            browser._scrapCopy, browser._tkCopy, browser._scrapPaste, browser._tkPaste = saved
+
+    def test_set_title(self):
+        import pygame
+        browser.setTitle("Your move · Chess Playing AI")
+        self.assertEqual(pygame.display.get_caption()[0], "Your move · Chess Playing AI")
+        browser.setTitle("Chess Playing AI")
 
 
 if __name__ == '__main__':

@@ -27,6 +27,7 @@ from network import net
 import pgn
 import hints
 import settings
+import browser
 from account import account, AccountError
 import random
 import string
@@ -36,12 +37,20 @@ import time
 random.seed(int(time.time() * 1000))
 
 # Initialize the mixer
-p.mixer.init()
-# Load sound files
-move_sound = p.mixer.Sound("sounds/move-sound.ogg")
-capture_sound = p.mixer.Sound("sounds/capture.ogg")
-promote_sound = p.mixer.Sound("sounds/promote.ogg")
-SOUNDS = {'move': move_sound, 'capture': capture_sound, 'promote': promote_sound}
+try:
+    p.mixer.init()
+except p.error as e:  # no sound device: the game plays silently
+    print("Main: no sound -", e)
+# the game's sounds by name (play them with playSound); a file that can't be loaded is left out
+SOUND_FILES = {'move': "move-sound.ogg", 'capture': "capture.ogg", 'promote': "promote.ogg", 'check': "check.ogg",
+               'game-start': "game-start.ogg", 'game-end': "game-end.ogg", 'low-time': "low-time.ogg",
+               'notify': "notify.ogg"}
+SOUNDS = {}
+for _name, _file in SOUND_FILES.items():
+    try:
+        SOUNDS[_name] = p.mixer.Sound("sounds/" + _file)
+    except Exception as e:
+        print("Main: could not load sound %s -" % _file, e)
 
 BOARD_WIDTH = BOARD_HEIGHT = 768
 MOVE_LOG_PANEL_WIDTH = 375
@@ -162,6 +171,9 @@ DRAG_THRESHOLD = 6  # px the pointer moves with the button held before a press o
 DRAG_TARGET_COLOR = (30, 30, 30, 110)  # outline of the square under a dragged piece
 # the player's own marks and arrows (right button); see-through like ARROW_COLOR, and readable on every board theme
 ANNOTATION_COLORS = {'green': (21, 120, 27, 200), 'red': (200, 32, 32, 200), 'blue': (0, 72, 186, 200)}
+# the window's focus events (pygame 2.0.1+; without them the window counts as always focused)
+WINDOW_FOCUS_LOST = getattr(p, 'WINDOWFOCUSLOST', -1)
+WINDOW_FOCUS_GAINED = getattr(p, 'WINDOWFOCUSGAINED', -1)
 KING_FLASH_MS = 600  # a refused move (it would leave the king in check) makes the king's square pulse this long
 KING_FLASH_COLOR = (220, 20, 20)
 # why a move the piece could make is refused (see refusalReason)
@@ -254,13 +266,63 @@ def setBoardTheme(name):
 
 
 # Settings > Sound and Volume: every sound plays at the chosen volume, or not at all
-def applySoundSettings():
+def soundVolume():  # 0 to 1
     try:
         volume = max(0, min(100, int(settings.get('volume')))) if settings.get('sound') else 0
     except (TypeError, ValueError):
         volume = settings.DEFAULTS['volume']
+    return volume / 100
+
+
+def applySoundSettings():
+    volume = soundVolume()
     for sound in SOUNDS.values():
-        sound.set_volume(volume / 100)
+        sound.set_volume(volume)
+
+
+# every sound goes through here: nothing plays while Sound is off, and a sound problem never stops the game
+# returns whether it played
+def playSound(name):
+    try:
+        sound = SOUNDS.get(name)
+        volume = soundVolume()
+        if sound is None or volume <= 0:
+            return False
+        sound.set_volume(volume)
+        sound.play()
+        return True
+    except Exception as e:
+        print("Main: could not play %s -" % name, e)
+        return False
+
+
+# the sound of a move: check matters most, then a promotion, then a capture (move.san ends in + or # for check)
+def moveSoundName(move):
+    if (move.san or "").endswith(('+', '#')):
+        return 'check'
+    if move.isPawnPromotion:
+        return 'promote'
+    if move.isCapture:
+        return 'capture'
+    return 'move'
+
+
+LOW_TIME_MS = 10000  # a player's clock below this plays 'low-time' once per game
+
+
+# the sides whose clock just went low: on this device's players' clocks, each once per game
+def lowTimeSides(clocks, humanColors, warned):
+    return [color for color in 'wb' if color in humanColors and color not in warned and 0 < clocks[color] < LOW_TIME_MS]
+
+
+GAME_TITLE = "Chess Playing AI"
+YOUR_MOVE_TITLE = "Your move · Chess Playing AI"  # while the player is away and it's their turn
+
+
+# whether the opponent's move just gave the turn to the player (vs computer or online, not two players on one
+# screen): there are more moves than last frame, and now it's the player's turn
+def turnArrived(modeIndex, humanTurn, movesBefore, movesNow, gameOver):
+    return modeIndex in (0, 2) and humanTurn and movesNow > movesBefore and not gameOver
 
 
 # how long a move's slide takes (ms): longer moves a little longer, scaled by Settings > Animation (0 = no slide)
@@ -454,7 +516,7 @@ async def main():
     p.init()
     print("Main: v13.0 Loaded (Clocks, Hints, PGN)")
     # the desktop window's title and icon (before set_mode: some systems ignore an icon set afterwards)
-    p.display.set_caption("Chess Playing AI")
+    p.display.set_caption(GAME_TITLE)
     try:
         p.display.set_icon(p.transform.smoothscale(p.image.load("images1/wN.png"), (64, 64)))
     except Exception as e:
@@ -576,6 +638,14 @@ async def main():
     clockHistory = [dict(clocks)]  # clocks after each ply, so an undo can restore them
     lastClockTick = p.time.get_ticks()
 
+    # sounds and alerts of the game as a whole
+    endSoundPlayed = False  # 'game-end' plays once per game
+    lowTimeWarned = set()  # the colors whose low clock was already heard this game
+    lastStartSound = -10000  # ticks of the last 'game-start', so starting and catching up don't play it twice
+    windowFocused = True  # desktop: the window has the keyboard focus (WINDOWFOCUSLOST / WINDOWFOCUSGAINED)
+    yourMoveAlert = False  # the title says "Your move" (the player was away when their turn came)
+    movesSeen = 0  # moves in the game last frame, to notice the opponent's move
+
     def showStatus(text, duration=3000):
         nonlocal statusText, statusUntil
         statusText = text
@@ -661,13 +731,17 @@ async def main():
             aiSearch['task'].cancel()
             aiSearch = None
 
-    def resetGame():
+    # startSound: the player started this game (New game, Restart, a mode change, a room...), so it plays 'game-start'
+    def resetGame(startSound=False):
         nonlocal gs, validMoves, squareSelected, playerClicks, moveMade, animate, gameOver, moveUndone
         nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll, resultCardHidden
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
+        nonlocal endSoundPlayed, lowTimeWarned
         clearReview()
         clearAnnotations()
+        endSoundPlayed = False
+        lowTimeWarned = set()
         drag = None
         kingFlash = None
         premove = None
@@ -705,6 +779,16 @@ async def main():
         clocks = {'w': startMs, 'b': startMs}
         clockHistory = [dict(clocks)]
         lastClockTick = p.time.get_ticks()
+        if startSound:
+            playStartSound()
+
+    # 'game-start', unless it just played (connecting to a room starts a game, and catching up may start another)
+    def playStartSound():
+        nonlocal lastStartSound
+        now = p.time.get_ticks()
+        if now - lastStartSound > 1500:
+            playSound('game-start')
+        lastStartSound = now
 
     # the result card's buttons: against the computer the player can also switch sides
     def resultButtons():
@@ -718,7 +802,7 @@ async def main():
             roomCode = ""
             networkConnected = False
             multiplayerRole = None
-        resetGame()
+        resetGame(startSound=True)
 
     # asks first when that would throw away a game in progress or leave an online room
     def askToRestart():
@@ -764,12 +848,7 @@ async def main():
         hintMove = None
         moveLogScroll = 0  # jump back to the latest moves
         if sound:
-            if move.isPawnPromotion:
-                promote_sound.play()
-            elif move.isCapture:
-                capture_sound.play()
-            else:
-                move_sound.play()
+            playSound(moveSoundName(move))
 
     # undo plies and restore everything tied to them
     def takeBack(plies):
@@ -854,7 +933,7 @@ async def main():
     def startOnlineGame():  # a new game in the same room, keeping the time control
         nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, clockHistory
         keptTimeControl = timeControl
-        resetGame()
+        resetGame(startSound=True)
         onlineGame += 1
         onlineVersion = 0
         onlineGameId = newOnlineGameId()
@@ -873,7 +952,7 @@ async def main():
         net.set_topic(roomCode)
         print(f"DEBUG: I am {role.upper()}. Full Network Topic: [{net.topic}]")
         networkConnected = True
-        resetGame()
+        resetGame(startSound=True)
         onlineGame = 0
         onlineVersion = 0
         onlineGameId = newOnlineGameId()  # replaced by the opponent's when we catch up with their game
@@ -890,7 +969,7 @@ async def main():
         codes = str(state.get('moves') or "").split()
         newGame = state['game'] != onlineGame
         if newGame:
-            resetGame()
+            resetGame(startSound=not codes)  # the opponent started the next game (catching up isn't a start)
         mine = [move.getCode() for move in gs.moveLog]
         common = 0
         while common < min(len(mine), len(codes)) and mine[common] == codes[common]:
@@ -1080,7 +1159,7 @@ async def main():
         showStatus(pgn.savePgn(text, time.strftime("chess-%Y%m%d-%H%M%S.pgn")))
 
     def loadPgnText(text):
-        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult, gameLoaded
+        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult, gameLoaded, endSoundPlayed
         headers, sans = pgn.parsePgn(text)
         if headers.get('SetUp') == '1' or 'FEN' in headers:
             showStatus("Games from a custom start position aren't supported")
@@ -1108,6 +1187,7 @@ async def main():
         moveMade = True
         moveUndone = True  # let the position show before the AI replies
         gameLoaded = True
+        endSoundPlayed = getOutcome(gs, positionHistory, gameResult) is not None  # a finished game ends quietly
 
     # what a menu item does once it's chosen
     def menuAction(name):
@@ -1502,6 +1582,19 @@ async def main():
         flip_board = flip_board != boardFlipped  # Flip board (F) turns it around from there
         canRejoin = currentModeIndex == 2 and not networkConnected and savedSession is not None
 
+        # "Your move": the opponent moved while the player is away (a hidden tab, or another window in front);
+        # the title says so until they're back or the turn passes
+        away = browser.pageHidden() if browser.inBrowser() else not windowFocused
+        if (turnArrived(currentModeIndex, humanTurn and not (currentModeIndex == 2 and not networkConnected),
+                        movesSeen, len(gs.moveLog), gameOver) and away and not yourMoveAlert):
+            yourMoveAlert = True
+            browser.setTitle(YOUR_MOVE_TITLE)
+            playSound('notify')
+        elif yourMoveAlert and (not away or not humanTurn or gameOver):
+            yourMoveAlert = False
+            browser.setTitle(GAME_TITLE)
+        movesSeen = len(gs.moveLog)
+
         # online: while waiting for the opponent (or after the game), keep re-sending our state so a
         # lost message can't leave both players waiting for each other
         if multiplayerMode and networkConnected:
@@ -1527,6 +1620,10 @@ async def main():
                 tooltipHidden = True  # a click hides the tooltip until the pointer moves to something else
             if e.type == p.QUIT:
                 running = False
+            elif e.type == WINDOW_FOCUS_LOST:
+                windowFocused = False
+            elif e.type == WINDOW_FOCUS_GAINED:
+                windowFocused = True
             # Mouse Handler
             elif e.type == p.MOUSEWHEEL:
                 if p.mouse.get_pos()[0] >= BOARD_WIDTH:
@@ -1589,11 +1686,11 @@ async def main():
                     elif name == 'side':
                         if chosen != sideIndex or SIDE_OPTIONS[chosen] == "Random":
                             sideIndex = chosen
-                            resetGame()
+                            resetGame(startSound=True)
                     elif name == 'clock':
                         if chosen != clockIndex:
                             clockIndex = chosen
-                            resetGame()
+                            resetGame(startSound=True)
                     elif name == 'mode' and chosen != currentModeIndex:
                         currentModeIndex = chosen
                         multiplayerMode = currentModeIndex == 2
@@ -1604,7 +1701,7 @@ async def main():
                         networkConnected = False
                         multiplayerRole = None
                         # Reset game on mode change
-                        resetGame()
+                        resetGame(startSound=True)
                     continue
 
                 # an open menu takes the click too: run an item or close it
@@ -1757,10 +1854,10 @@ async def main():
                             if multiplayerMode and networkConnected:
                                 startOnlineGame()
                             else:
-                                resetGame()
+                                resetGame(startSound=True)
                         elif 'switch' in cardRects and cardRects['switch'].collidepoint(location):
                             sideIndex = 1 if playerWhiteHuman else 0  # "Play as" changes to the other color
-                            resetGame()
+                            resetGame(startSound=True)
                         else:
                             resultCardHidden = True
                         continue
@@ -1879,6 +1976,14 @@ async def main():
                     # both sides usually see the flag fall and send the same result; if the flagged
                     # player had moved in time, their newer move state replaces this one
                     publishChange('timeout')
+            # a warning tick when a clock of a player on this device goes under 10 s
+            if currentModeIndex == 2:
+                humanColors = myColor()
+            else:
+                humanColors = ('w' if playerWhiteHuman else '') + ('b' if playerBlackHuman else '')
+            for color in lowTimeSides(clocks, humanColors, lowTimeWarned):
+                lowTimeWarned.add(color)
+                playSound('low-time')
 
         # a PGN file the player picked (arrives later in the browser)
         if currentModeIndex != 2:
@@ -1955,6 +2060,12 @@ async def main():
             premove = None
         if gameOver and not wasGameOver and reviewPly is not None:
             reviewTo(len(gs.moveLog))  # the game ended while looking back (e.g. on time): show the result
+        # the end of the game is heard once; not for a finished game that was loaded, or an online game that was
+        # already over when we joined
+        if gameOver and not endSoundPlayed:
+            endSoundPlayed = True
+            if currentModeIndex != 2 or liveGameId == onlineGameId:
+                playSound('game-end')
         wasGameOver = gameOver
 
         # account requests that finished since the last frame
@@ -3052,7 +3163,7 @@ def changeVolume(step):
     settings.put('volume', max(0, min(100, settingValue('volume') + step)))
     settings.put('sound', True)  # changing the volume means the player wants to hear it
     applySoundSettings()
-    SOUNDS['move'].play()  # how loud it is now
+    playSound('move')  # how loud it is now
 
 
 # applies the choice clicked in the Settings window and remembers it
@@ -3077,7 +3188,7 @@ def settingsClick(location, tab='board'):
             elif kind == 'sound':
                 applySoundSettings()
                 if value:
-                    SOUNDS['move'].play()
+                    playSound('move')
         else:
             settings.put(kind, choice)
             if kind == 'board':
