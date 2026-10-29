@@ -46,6 +46,10 @@ MOVE_LOG_PANEL_HEIGHT = BOARD_HEIGHT
 DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 30
+ANIMATION_FPS = 60  # moving pieces slide at up to this frame rate
+ANIMATION_BASE_MS = 90  # a move's slide takes this long plus ANIMATION_MS_PER_SQUARE per square
+ANIMATION_MS_PER_SQUARE = 30
+AI_MIN_THINK_MS = 400  # the computer's move (even an instant opening book move) waits at least this long
 IMAGES = {}
 SMALL_IMAGES = {}  # piece icons for the captured pieces row
 SMALL_PIECE_SIZE = 22
@@ -66,6 +70,7 @@ HALF_WIDTH = (CONTROL_WIDTH - 10) // 2
 ROW_HEIGHT = 40
 ROW_GAP = 8
 STRIP_HEIGHT = 52
+STATUS_HEIGHT = 46  # the status message slot above the lower player strip
 
 MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
 LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
@@ -142,6 +147,8 @@ MOVE_HIGHLIGHT_COLOR = (84, 115, 161)
 POSSIBLE_MOVE_COLOR = (255, 255, 51)
 LAST_MOVE_COLOR = (205, 210, 106)
 HINT_COLOR = (64, 160, 220)
+MOVE_MARKER_COLOR = (20, 60, 20, 90)  # dots and rings showing where the selected piece can go
+MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
 STRIP_COLOR = (222, 224, 190)
 DISABLED_COLOR = (165, 165, 165)
 
@@ -179,42 +186,47 @@ def loadImages():
             original_image, (HELP_ICON_SIZE, HELP_ICON_SIZE))
 
 
-# color is the side promoting ('w' or 'b'); returns 'Q', 'R', 'B' or 'N'
-async def pawnPromotionPopup(screen, color):
-    font = get_font(45, False)
-    text = font.render("Choose promotion:", True, p.Color("black"))
-
-    # Create buttons for promotion choices with images
-    button_width, button_height = 150, 150
-    buttons = [
-        p.Rect(50, 300, button_width, button_height),
-        p.Rect(225, 300, button_width, button_height),
-        p.Rect(400, 300, button_width, button_height),
-        p.Rect(575, 300, button_width, button_height)
-    ]
+# the four pieces in a column over the promotion square, with the board dimmed behind them
+# color is the side promoting ('w' or 'b'), row and col the promotion square; flip as in drawGameState
+# returns 'Q', 'R', 'B' or 'N', or None when the player clicks elsewhere or presses Esc (to pick another move)
+async def pawnPromotionPopup(screen, color, row, col, flip=False):
+    drawRow = (7 - row) if flip else row
+    drawCol = (7 - col) if flip else col
+    step = 1 if drawRow == 0 else -1  # the column runs from the promotion square toward the middle
     choices = ["Q", "R", "B", "N"]
-    button_images = [p.transform.smoothscale(p.image.load("images1/" + color + piece + ".png"), (150, 150))
-                     for piece in choices]
+    buttons = [p.Rect(drawCol * SQ_SIZE, (drawRow + i * step) * SQ_SIZE, SQ_SIZE, SQ_SIZE) for i in range(4)]
+
+    background = screen.copy()  # the board as it was when the pawn was moved
+    shade = p.Surface((BOARD_WIDTH, BOARD_HEIGHT))
+    shade.set_alpha(120)
+    shade.fill(p.Color(0, 0, 0))
+    background.blit(shade, (0, 0))
+    clock = p.time.Clock()
 
     while True:
         for e in p.event.get():
             if e.type == p.QUIT:
                 p.quit()
                 sys.exit()
-            elif e.type == p.MOUSEBUTTONDOWN:
-                mouse_pos = e.pos
+            elif e.type == p.KEYDOWN and e.key == p.K_ESCAPE:
+                return None
+            elif e.type == p.MOUSEBUTTONDOWN and e.button in (1, 2, 3):
+                mouse_pos = p.mouse.get_pos()
                 for i, button in enumerate(buttons):
                     if button.collidepoint(mouse_pos):
                         return choices[i]
+                return None
 
-        screen.fill(p.Color(LIGHT_SQUARE_COLOR))
-        screen.blit(text, (110, 150))
-
+        screen.blit(background, (0, 0))
+        mouse_pos = p.mouse.get_pos()
         for i, button in enumerate(buttons):
-            p.draw.rect(screen, p.Color("white"), button)
-            screen.blit(button_images[i], button.topleft)
+            hovered = button.collidepoint(mouse_pos)
+            p.draw.rect(screen, p.Color(LAST_MOVE_COLOR) if hovered else p.Color("white"), button)
+            p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), button, 2)
+            screen.blit(IMAGES[color + choices[i]], button.topleft)
 
         p.display.flip()
+        clock.tick(MAX_FPS)
         await asyncio.sleep(0) # Yield for browser UI
 
 
@@ -307,7 +319,9 @@ async def main():
     gameOver = False  # gameover if checkmate, stalemate, draw, resignation or time out
     playerWhiteHuman = not SET_WHITE_AS_BOT
     playerBlackHuman = not SET_BLACK_AS_BOT
-    AIThinking = False  # True if ai is thinking
+    # the computer's search while it thinks: {'task', 'gs', 'ply', 'started'}; it runs in the background on a
+    # copy of the game, so the screen and the clocks keep updating
+    aiSearch = None
     openDropdown = None  # name of the dropdown whose options are showing
 
     currentModeIndex = 0 # 0: Local vs AI, 1: Local 2-Player, 2: Online Multiplayer
@@ -423,9 +437,16 @@ async def main():
             print("Main: analysis failed:", e)
         result['done'] = True
 
+    # cancels the computer's search; the game changed, so its answer wouldn't fit any more
+    def stopAI():
+        nonlocal aiSearch
+        if aiSearch is not None:
+            aiSearch['task'].cancel()
+            aiSearch = None
+
     def resetGame():
         nonlocal gs, validMoves, squareSelected, playerClicks, moveMade, animate, gameOver, moveUndone
-        nonlocal positionHistory, AIThinking, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll
+        nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported
         clearReview()
@@ -444,7 +465,7 @@ async def main():
         gameOver = False
         moveUndone = False
         positionHistory = [gs.getPositionKey()]
-        AIThinking = False
+        stopAI()
         gameResult = None
         hintMove = None
         hintState = None
@@ -502,6 +523,7 @@ async def main():
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
         nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved
         clearReview()
+        stopAI()
         gameSaved = False  # if the game is finished again, its saved copy is updated
         for _ in range(plies):
             gs.undoMove()
@@ -1186,7 +1208,13 @@ async def main():
                             if move == candidate:
                                 if candidate.isPawnPromotion:
                                     # Show pawn promotion popup and get the selected piece
-                                    candidate.promotionChoice = await pawnPromotionPopup(screen, candidate.pieceMoved[0])
+                                    choice = await pawnPromotionPopup(screen, candidate.pieceMoved[0], candidate.endRow,
+                                                                      candidate.endCol, flip_board)
+                                    if choice is None:  # cancelled: the player picks another move
+                                        squareSelected = ()
+                                        playerClicks = []
+                                        break
+                                    candidate.promotionChoice = choice
                                 playMove(candidate)
                                 if multiplayerMode and networkConnected:
                                     print(f"Main: Sending move {candidate.getCode()}")
@@ -1196,8 +1224,8 @@ async def main():
                                 squareSelected = ()
                                 playerClicks = []
                                 break
-                        if not moveMade:
-                            playerClicks = [squareSelected]
+                        if not moveMade:  # the second click starts a new selection (none after a cancelled promotion)
+                            playerClicks = [squareSelected] if squareSelected else []
 
             # Key Handler
             elif e.type == p.KEYDOWN:
@@ -1264,20 +1292,32 @@ async def main():
             if loadedText:
                 loadPgnText(loadedText)
 
-        # AI move finder
-        if currentModeIndex == 0 and not gameOver and gameResult is None and not humanTurn and not moveUndone and validMoves:
-            if not AIThinking:
-                AIThinking = True
-                await asyncio.sleep(0.1)
-                AIMove = await findBestMove(gs, validMoves, history=positionHistory)
-                if AIMove is None:
-                    AIMove = findRandomMoves(validMoves)
-                playMove(AIMove)  # promotes to a queen, which is what the AI always picks
-                AIThinking = False
-                moveMade = True
-                animate = True
-                squareSelected = ()
-                playerClicks = []
+        # AI move finder: starts the search in the background, and plays its move once it is done
+        aiTurn = (currentModeIndex == 0 and not gameOver and gameResult is None and not humanTurn and not moveUndone
+                  and validMoves)
+        if aiSearch is not None and (not aiTurn or aiSearch['gs'] is not gs or aiSearch['ply'] != len(gs.moveLog)):
+            stopAI()  # the position it was searching is gone
+        if aiTurn and aiSearch is None:
+            board = copyGame(gs)
+            aiSearch = {'task': asyncio.ensure_future(findBestMove(board, board.getValidMoves(),
+                                                                   history=list(positionHistory))),
+                        'gs': gs, 'ply': len(gs.moveLog), 'started': p.time.get_ticks()}
+        elif aiTurn and aiSearch['task'].done() and p.time.get_ticks() - aiSearch['started'] >= AI_MIN_THINK_MS:
+            task = aiSearch['task']
+            aiSearch = None
+            try:
+                found = task.result()
+            except Exception as e:
+                print("Main: AI search failed:", e)
+                found = None
+            AIMove = gs.findMoveByCode(found.getCode(), validMoves) if found is not None else None
+            if AIMove is None:
+                AIMove = findRandomMoves(validMoves)
+            playMove(AIMove)  # promotes to a queen, which is what the AI always picks
+            moveMade = True
+            animate = True
+            squareSelected = ()
+            playerClicks = []
 
         # hint: wait one frame so the "Looking..." message is on screen during the search
         if hintState == 'requested':
@@ -1350,24 +1390,29 @@ async def main():
         stripY = min(rect.y for rect in layout.values()) - ROW_GAP - STRIP_HEIGHT
         p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), p.Rect(PANEL_X, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT))
         marks = moveMarks(analysis, gs.moveLog) if analysis else {}
+        # below the moves: a slot for status messages, and after the game the review info under it
+        infoRect = p.Rect(PANEL_X + 10, stripY - 60, MOVE_LOG_PANEL_WIDTH - 20, 54)
+        statusRect = p.Rect(PANEL_X + 10, (infoRect.y if gameOver else stripY) - STATUS_HEIGHT - 4,
+                            MOVE_LOG_PANEL_WIDTH - 20, STATUS_HEIGHT)
         if gameOver:
-            # below the moves: the shown position, its evaluation and the analysis
-            infoRect = p.Rect(PANEL_X + 10, stripY - 60, MOVE_LOG_PANEL_WIDTH - 20, 54)
-            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, infoRect.y - 4,
+            # the shown position, its evaluation and the analysis
+            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2,
                                                    shownPly() - 1, marks, reviewScroll)
             drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate)
         else:
-            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, stripY)
+            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2)
         reviewScroll = False
         taken = capturedPieces(shownGs)
         balance = materialBalance(shownGs.board)
         sideToMove = 'w' if shownGs.whiteToMove else 'b'
         shownClocks = clockHistory[reviewPly] if reviewPly is not None and reviewPly < len(clockHistory) else clocks
+        thinkingColor = ('w' if gs.whiteToMove else 'b') if aiSearch is not None else None
         for color, y in ((('w' if flip_board else 'b'), 0), (('b' if flip_board else 'w'), stripY)):
             drawPlayerStrip(screen, y, color, playerName(color), taken[color],
                             balance if color == 'w' else -balance,
                             shownClocks[color] if timeControl else None,
-                            clockRunning() and sideToMove == color)
+                            clockRunning() and sideToMove == color,
+                            "thinking" + "." * (1 + p.time.get_ticks() // 400 % 3) if color == thinkingColor else None)
 
         mouse_pos = p.mouse.get_pos()
         states = controlStates()
@@ -1453,7 +1498,7 @@ async def main():
         if helpPage is not None:
             drawHelpWindow(screen, helpPage, mouse_pos)
         if statusText and p.time.get_ticks() < statusUntil:
-            drawStatus(screen, statusText)
+            drawStatus(screen, statusRect, statusText)
 
         clock.tick(MAX_FPS)
         await asyncio.sleep(0) # Essential for WASM performance/UI responsiveness
@@ -1486,8 +1531,8 @@ def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None)
             p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y - 4), (center_x + 6, center_y - 4), (center_x, center_y + 4)])
 
 
-# name, captured pieces, material lead and clock of one player
-def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockActive):
+# name, captured pieces, material lead and clock of one player, and an optional note after the name
+def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockActive, note=None):
     rect = p.Rect(PANEL_X, y, MOVE_LOG_PANEL_WIDTH, STRIP_HEIGHT)
     p.draw.rect(screen, p.Color(STRIP_COLOR), rect)
     p.draw.line(screen, p.Color(DARK_SQUARE_COLOR), (rect.x, rect.bottom - 1), (rect.right, rect.bottom - 1))
@@ -1497,6 +1542,9 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
     p.draw.circle(screen, p.Color('black'), (rect.x + 18, rect.y + 15), 7, 1)
     nameObj = get_text_surface(name, 18, "black", True)
     screen.blit(nameObj, (rect.x + 32, rect.y + 15 - nameObj.get_height() / 2))
+    if note:  # e.g. "thinking..." while the computer searches
+        noteObj = get_text_surface(note, 16, "dimgray", False)
+        screen.blit(noteObj, (rect.x + 40 + nameObj.get_width(), rect.y + 15 - noteObj.get_height() / 2))
 
     # captured pieces, grouped by type, then the material lead
     x = rect.x + 10
@@ -1548,15 +1596,22 @@ def materialBalance(board):
     return balance
 
 
-def drawStatus(screen, text):
-    textObj = get_fitting_text(text, BOARD_WIDTH - 60, 20, "white")
-    rect = p.Rect(0, 0, textObj.get_width() + 30, textObj.get_height() + 14)
-    rect.center = (BOARD_WIDTH // 2, BOARD_HEIGHT - 40)
-    s = p.Surface(rect.size)
-    s.set_alpha(210)
-    s.fill(p.Color(40, 40, 40))
+# a short message in its own slot of the side panel (rect), so it never covers the board; up to two lines
+def drawStatus(screen, rect, text):
+    font = get_font(17, False)
+    lines = wrapText(text, font, rect.width - 20)
+    if len(lines) > 2:
+        font = get_font(14, False)
+        lines = wrapText(text, font, rect.width - 20)[:2]
+    lineHeight = font.get_linesize()
+    s = p.Surface(rect.size, p.SRCALPHA)
+    p.draw.rect(s, (40, 40, 40, 225), s.get_rect(), border_radius=8)
     screen.blit(s, rect.topleft)
-    screen.blit(textObj, (rect.x + 15, rect.y + 7))
+    y = rect.centery - lineHeight * len(lines) / 2
+    for line in lines:
+        textObj = font.render(line, True, p.Color("white"))
+        screen.blit(textObj, (rect.centerx - textObj.get_width() / 2, y))
+        y += lineHeight
 
 
 # --- account window, drawn over the board
@@ -1721,7 +1776,7 @@ HELP_PAGES = [
          "under attack."),
         (None, "Taking turns",
          "White moves first, then the players take turns, one move each. Click one of your pieces to see "
-         "where it can go, then click one of the highlighted squares."),
+         "where it can go (dots, or rings around pieces it can take), then click one of those squares."),
         (None, "Capturing",
          "Move onto an opponent's piece to take it. The pieces each side has taken, and who is ahead in "
          "material, are shown next to the players' names."),
@@ -1747,8 +1802,8 @@ HELP_PAGES = [
          "Neither piece may have moved, the squares between must be empty, and the king can't be in check or "
          "cross an attacked square."),
         (None, "Promotion",
-         "A pawn that reaches the far side becomes a queen, rook, bishop or knight. Pick one in the window "
-         "that opens."),
+         "A pawn that reaches the far side becomes a queen, rook, bishop or knight. Pick one from the pieces "
+         "shown over the square, or click elsewhere to take the move back."),
         (None, "En passant",
          "A pawn that moves two squares can be taken by an enemy pawn beside it, as if it had moved only one, "
          "but only on the very next move."),
@@ -1878,7 +1933,7 @@ def drawGameState(screen, gs, validMoves, squareSelected, flip=False, hintMove=N
     if hintMove is not None:
         tintSquare(screen, hintMove.startRow, hintMove.startCol, HINT_COLOR, 150, flip)
         tintSquare(screen, hintMove.endRow, hintMove.endCol, HINT_COLOR, 150, flip)
-    highlightSquares(screen, gs, validMoves, squareSelected, flip)
+    highlightSquares(screen, gs, squareSelected, flip)
 
     # Check/Checkmate effect: Highlight the king's square in red
     if gs.inCheck:
@@ -1891,6 +1946,7 @@ def drawGameState(screen, gs, validMoves, squareSelected, flip=False, hintMove=N
         screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
 
     drawPieces(screen, gs.board, flip)
+    drawMoveMarkers(screen, gs, validMoves, squareSelected, flip)
 
 
 def tintSquare(screen, row, col, color, alpha, flip=False):
@@ -1911,45 +1967,63 @@ def drawSquare(screen, flip=False):
             p.draw.rect(screen, color, p.Rect(
                 col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
-    # Draw rank and file labels
+    # Draw rank and file labels, each in the color of the other kind of square so it stands out
     for row in range(DIMENSION):
         # Draw rank labels (1 to 8 from bottom, or 8 to 1 when flipped)
         rank_num = (row + 1) if flip else (8 - row)
         rank_text = str(rank_num)
-        text_color = "gray" # Simplified for better caching
-        text_obj = get_text_surface(rank_text, 14, text_color, True)
-        text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(2, 2)
+        text_color = DARK_SQUARE_COLOR if row % 2 == 0 else LIGHT_SQUARE_COLOR
+        text_obj = get_text_surface(rank_text, 15, text_color, True)
+        text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(4, 2)
         screen.blit(text_obj, text_loc)
 
     for col in range(DIMENSION):
         # Draw file labels (a-h left to right, or h-a when flipped)
         file_char = chr(ord('h') - col) if flip else chr(ord('a') + col)
         file_text = file_char
-        text_color = "gray"
-        text_obj = get_text_surface(file_text, 14, text_color, True)
-        text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 2, SQ_SIZE - text_obj.get_height() - 2)
+        text_color = DARK_SQUARE_COLOR if (7 + col) % 2 == 0 else LIGHT_SQUARE_COLOR
+        text_obj = get_text_surface(file_text, 15, text_color, True)
+        text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 4, SQ_SIZE - text_obj.get_height() - 2)
         screen.blit(text_obj, text_loc)
 
 
 
-def highlightSquares(screen, gs, validMoves, squareSelected, flip=False):
-    if squareSelected != ():  # make sure there is a square to select
+# True when squareSelected holds a piece of the side to move (only then are it and its moves highlighted)
+def ownPieceSelected(gs, squareSelected):
+    if squareSelected == ():
+        return False
+    row, col = squareSelected
+    return gs.board[row][col][0] == ('w' if gs.whiteToMove else 'b')
+
+
+# tints the selected piece's square; drawn under the pieces
+def highlightSquares(screen, gs, squareSelected, flip=False):
+    if ownPieceSelected(gs, squareSelected):
         row, col = squareSelected
-        draw_row = (7 - row) if flip else row
-        draw_col = (7 - col) if flip else col
-        if gs.board[row][col][0] == ('w' if gs.whiteToMove else 'b'):  # only highlight if selected piece belongs to current player
-            # highlight selected square
-            s = p.Surface((SQ_SIZE, SQ_SIZE))
-            s.set_alpha(100)  # transparency value
-            s.fill(p.Color(MOVE_HIGHLIGHT_COLOR))
-            screen.blit(s, (draw_col*SQ_SIZE, draw_row*SQ_SIZE))
-            # highlighting valid square
-            s.fill(p.Color(POSSIBLE_MOVE_COLOR))
-            for move in validMoves:
-                if move.startRow == row and move.startCol == col:
-                    end_r = (7 - move.endRow) if flip else move.endRow
-                    end_c = (7 - move.endCol) if flip else move.endCol
-                    screen.blit(s, (end_c*SQ_SIZE, end_r*SQ_SIZE))
+        tintSquare(screen, row, col, MOVE_HIGHLIGHT_COLOR, 100, flip)
+
+
+# marks where the selected piece can go: a dot on an empty square, a ring around a piece it can take
+# drawn over the pieces, so the rings show around them
+def drawMoveMarkers(screen, gs, validMoves, squareSelected, flip=False):
+    if not ownPieceSelected(gs, squareSelected):
+        return
+    if not MOVE_MARKERS:
+        for name in ('dot', 'ring'):
+            surface = p.Surface((SQ_SIZE, SQ_SIZE), p.SRCALPHA)
+            center = (SQ_SIZE // 2, SQ_SIZE // 2)
+            if name == 'dot':
+                p.draw.circle(surface, MOVE_MARKER_COLOR, center, SQ_SIZE // 6)
+            else:
+                p.draw.circle(surface, MOVE_MARKER_COLOR, center, SQ_SIZE // 2 - 2, 7)
+            MOVE_MARKERS[name] = surface
+    row, col = squareSelected
+    for move in validMoves:
+        if move.startRow == row and move.startCol == col:
+            marker = MOVE_MARKERS['ring' if gs.board[move.endRow][move.endCol] != '--' else 'dot']
+            end_r = (7 - move.endRow) if flip else move.endRow
+            end_c = (7 - move.endCol) if flip else move.endCol
+            screen.blit(marker, (end_c * SQ_SIZE, end_r * SQ_SIZE))
 
 
 def drawPieces(screen, board, flip=False):
@@ -2011,7 +2085,7 @@ def drawMoveLog(screen, gs, scroll, top, bottom, currentPly=None, marks=None, fo
 def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate):
     p.draw.rect(screen, p.Color(STRIP_COLOR), rect)
     p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), rect, 1)
-    if ply == 0:
+    if ply == 0: 
         first = "Start position"
     else:
         i = ply - 1
@@ -2090,14 +2164,17 @@ async def animateMove(move, screen, board, clock, flip=False):
     # change in row, col
     deltaRow = move.endRow - move.startRow
     deltaCol = move.endCol - move.startCol
-    framesPerSquare = 5  # frames move one square
-    # how many frame the animation will take
-    frameCount = (abs(deltaRow) + abs(deltaCol)) * framesPerSquare
-    # generate all the coordinates
-    for frame in range(frameCount + 1):
+    # how long the animation takes: longer moves a little longer (120 ms for one square, 300 ms across the
+    # board); the piece's position comes from the time passed, so the speed doesn't depend on the computer
+    duration = ANIMATION_BASE_MS + ANIMATION_MS_PER_SQUARE * max(abs(deltaRow), abs(deltaCol))
+    start = p.time.get_ticks()
+    done = False
+    while not done:
+        progress = min(1.0, (p.time.get_ticks() - start) / duration)
+        done = progress >= 1.0
         # how much does the row and col move by
-        row, col = ((move.startRow + deltaRow*frame/frameCount, move.startCol +
-                    deltaCol*frame/frameCount))  # how far through the animation
+        row, col = ((move.startRow + deltaRow*progress, move.startCol +
+                    deltaCol*progress))  # how far through the animation
         # for each frame draw the moved piece
         drawSquare(screen, flip)
         drawPieces(screen, board, flip)
@@ -2134,33 +2211,34 @@ async def animateMove(move, screen, board, clock, flip=False):
             draw_curr_col*SQ_SIZE, draw_curr_row*SQ_SIZE, SQ_SIZE, SQ_SIZE))
 
         p.display.flip()
+        clock.tick(ANIMATION_FPS)
         await asyncio.sleep(0) # Yield for browser interaction
 
 
+# the result on a dark card in the middle of the board, so it reads over any position
 def drawEndGameText(screen, text):
-    # use surface cache for end game text
-    textObject = get_fitting_text(text, BOARD_WIDTH - 40, 45, "black")
+    titleObj = get_fitting_text(text, BOARD_WIDTH - 120, 42, "white")
+    subObj = get_text_surface("Click the board to play again", 22, (225, 225, 225), False)
+    width = max(titleObj.get_width(), subObj.get_width()) + 60
+    height = titleObj.get_height() + subObj.get_height() + 44
+    card = p.Rect(0, 0, width, height)
+    card.center = (BOARD_WIDTH // 2, BOARD_HEIGHT // 2)
 
-    text_width = textObject.get_width()
-    text_height = textObject.get_height()
+    shade = p.Surface(card.size, p.SRCALPHA)
+    p.draw.rect(shade, (30, 30, 30, 215), shade.get_rect(), border_radius=14)
+    screen.blit(shade, card.topleft)
+    screen.blit(titleObj, (card.centerx - titleObj.get_width() / 2, card.y + 18))
+    screen.blit(subObj, (card.centerx - subObj.get_width() / 2, card.y + 26 + titleObj.get_height()))
 
-    textLocation = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(
-        BOARD_WIDTH/2 - text_width/2, BOARD_HEIGHT/2 - text_height/2)
 
-    screen.blit(textObject, textLocation)
-    # Shadow effect
-    shadowObject = get_fitting_text(text, BOARD_WIDTH - 40, 45, "gray")
-    screen.blit(shadowObject, textLocation.move(1, 1))
-
-    # Add subtitle
-    msg = "Click the board to play again"
-    subTextObject = get_text_surface(msg, 25, "darkgray", False)
-    subLocation = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(
-        BOARD_WIDTH/2 - subTextObject.get_width()/2, BOARD_HEIGHT/2 + text_height/2 + 20)
-
-    screen.blit(subTextObject, subLocation)
-    subShadow = get_text_surface(msg, 25, "black", False)
-    screen.blit(subShadow, subLocation.move(1, 1))
+# a separate GameState with the same moves, for searching in the background while gs stays on screen
+def copyGame(gs):
+    board = GameState()
+    if board.playerWantsToPlayAsBlack:
+        board.board = board.board1
+    for move in gs.moveLog:
+        board.makeMove(move)
+    return board
 
 
 # keep one position key per ply plus the start position, so an undo just truncates the list
