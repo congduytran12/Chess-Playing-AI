@@ -1,5 +1,5 @@
-# The player's preferences (board colors, piece style), kept on this device: browser localStorage, or a file
-# in the home folder on desktop.
+# The player's preferences (board, pieces, theme, switches and sound), kept on this device: browser localStorage,
+# or a file in the home folder on desktop.
 
 import os
 import sys
@@ -17,13 +17,17 @@ STORAGE_KEY = "chess_ai_settings"
 STORAGE_FILE = os.path.join(os.path.expanduser("~"), ".chess-playing-ai-settings.json")  # desktop only
 
 _values = None  # read from storage once
+# what get() returns for a setting that was never saved
+DEFAULTS = {'board': "Green", 'pieces': "Modern", 'uiTheme': 'light', 'coordinates': True, 'moveMarkers': True,
+            'lastMove': True, 'animation': 'normal', 'figurines': False, 'sound': True, 'volume': 80,
+            'premoves': True, 'seenHelp': False}
 
 
 def get(name, default=None):
     global _values
     if _values is None:
         _values = _load()
-    return _values.get(name, default)
+    return _values.get(name, DEFAULTS.get(name) if default is None else default)
 
 
 def put(name, value):

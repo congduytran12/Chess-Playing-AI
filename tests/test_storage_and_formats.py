@@ -127,7 +127,8 @@ class SettingsTest(unittest.TestCase):
     def test_a_broken_file_gives_the_defaults(self):
         with open(settings.STORAGE_FILE, 'w') as f:
             f.write('[1, 2')
-        self.assertIsNone(settings.get('board'))
+        self.assertEqual(settings.get('board'), settings.DEFAULTS['board'])
+        self.assertIsNone(settings.get('no such setting'))
 
 
 if __name__ == '__main__':

@@ -41,6 +41,7 @@ p.mixer.init()
 move_sound = p.mixer.Sound("sounds/move-sound.ogg")
 capture_sound = p.mixer.Sound("sounds/capture.ogg")
 promote_sound = p.mixer.Sound("sounds/promote.ogg")
+SOUNDS = {'move': move_sound, 'capture': capture_sound, 'promote': promote_sound}
 
 BOARD_WIDTH = BOARD_HEIGHT = 768
 MOVE_LOG_PANEL_WIDTH = 375
@@ -51,6 +52,7 @@ MAX_FPS = 30
 ANIMATION_FPS = 60  # moving pieces slide at up to this frame rate
 ANIMATION_BASE_MS = 90  # a move's slide takes this long plus ANIMATION_MS_PER_SQUARE per square
 ANIMATION_MS_PER_SQUARE = 30
+ANIMATION_SPEEDS = {'off': 0, 'fast': 0.5, 'normal': 1.0, 'slow': 1.7}  # Settings > Animation scales the slide's time
 AI_MIN_THINK_MS = 400  # the computer's move (even an instant opening book move) waits at least this long
 IMAGES = {}
 SMALL_IMAGES = {}  # piece icons for the captured pieces row
@@ -73,7 +75,7 @@ ROW_HEIGHT = 40
 ROW_GAP = 8
 STRIP_HEIGHT = 52
 STATUS_HEIGHT = 46  # the status message slot above the lower player strip
-CONTROL_WEIGHTS = {'settings': 0.45}  # share of a row's width, against 1 for other controls (the gear is an icon)
+CONTROL_WEIGHTS = {'menu': 0.45}  # share of a row's width, against 1 for other controls (the menu is an icon)
 
 MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
 LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
@@ -85,7 +87,6 @@ HINT_SECONDS = 1.0  # thinking time for hints, independent of the AI difficulty
 ANALYSIS_SECONDS = 0.8  # thinking time per position when analyzing a finished game
 # a move that loses at least this much (in pawns, against the best move) is marked in the move log
 MOVE_MARKS = [(3.0, "??"), (1.5, "?"), (0.8, "?!")]  # blunder, mistake, inaccuracy
-MARK_COLORS = {"??": (200, 30, 30), "?": (225, 110, 0), "?!": (185, 150, 0)}
 EVAL_CAP = 10  # evaluations are capped at +-10 pawns before comparing, so won positions don't flag everything
 # the AI accepts a draw offer only when its evaluation is below this (it is losing)
 AI_DRAW_ACCEPT_SCORE = -1
@@ -99,33 +100,34 @@ OPPONENT_GONE_SECONDS = 60  # no message from the opponent for this long (server
 ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
 
 
-def get_text_surface(text, size, color, bold=True):
+def get_text_surface(text, size, color, bold=True, sans=False):
     """
     Returns a cached text surface or renders a new one if not found.
     Reduces the number of font.render calls to once per dynamic change.
     """
-    key = (text, size, color, bold)
+    key = (text, size, color, bold, sans)
     if key not in UI_CACHE:
-        UI_CACHE[key] = get_font(size, bold).render(text, True, p.Color(color))
+        UI_CACHE[key] = get_font(size, bold, sans).render(text, True, p.Color(color))
     return UI_CACHE[key]
 
 
 # the font ships with the game: browsers have no system fonts, and SysFont there falls back
 # to an already-bold sans font that turns smudgy when bolded again
+# sans: pygame's bundled default font (already bold, so bold is ignored), for button labels
 # also used directly for text that changes every frame (clocks), which would otherwise fill the surface cache
-def get_font(size, bold=True):
-    key = (size, bold)
+def get_font(size, bold=True, sans=False):
+    key = (size, bold and not sans, sans)
     if key not in FONT_CACHE:
-        FONT_CACHE[key] = p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size)
+        FONT_CACHE[key] = p.font.Font(None, size) if sans else p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size)
     return FONT_CACHE[key]
 
 
 # largest text surface (up to size) that fits in maxWidth
-def get_fitting_text(text, maxWidth, size, color, bold=True):
-    surface = get_text_surface(text, size, color, bold)
+def get_fitting_text(text, maxWidth, size, color, bold=True, sans=False):
+    surface = get_text_surface(text, size, color, bold, sans)
     while surface.get_width() > maxWidth and size > 12:
         size -= 2
-        surface = get_text_surface(text, size, color, bold)
+        surface = get_text_surface(text, size, color, bold, sans)
     return surface
 
 
@@ -156,11 +158,85 @@ ARROW_COLOR = HINT_COLOR + (190,)  # hint arrows, and the better move in the ana
 ARROW_LAYER = None  # see-through board-sized surface the arrows are drawn on, made on first use
 MOVE_MARKER_COLOR = (20, 60, 20, 90)  # dots and rings showing where the selected piece can go
 MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
+DRAG_THRESHOLD = 6  # px the pointer moves with the button held before a press on a piece becomes a drag
+DRAG_TARGET_COLOR = (30, 30, 30, 110)  # outline of the square under a dragged piece
+# the player's own marks and arrows (right button); see-through like ARROW_COLOR, and readable on every board theme
+ANNOTATION_COLORS = {'green': (21, 120, 27, 200), 'red': (200, 32, 32, 200), 'blue': (0, 72, 186, 200)}
+KING_FLASH_MS = 600  # a refused move (it would leave the king in check) makes the king's square pulse this long
+KING_FLASH_COLOR = (220, 20, 20)
+# why a move the piece could make is refused (see refusalReason)
+PREMOVE_COLOR = (132, 76, 196)  # the chosen premove's squares: a soft purple that reads on every board theme
+PREMOVE_ALPHA = 150
+PREMOVE_DROPPED = "Premove canceled: no longer legal"
+LOOK_BACK_BANNER = p.Rect(0, 0, BOARD_WIDTH, 36)  # across the top of the board while looking back during a game
+REFUSED_IN_CHECK = "You're in check: move the king, block, or capture"
+REFUSED_EXPOSES_KING = "That would leave your king in check"
 STRIP_COLOR = (222, 224, 190)
 DISABLED_COLOR = (165, 165, 165)
 CONFIRM_COLOR = (186, 72, 58)  # the action of a confirmation that can't be taken back (Resign, Leave)
 SELECTED_OPTION_COLOR = (82, 112, 54)  # the current choice in an open dropdown
 NEUTRAL_COLOR = (118, 118, 118)  # Cancel / Decline
+
+# colors of the side panel and the windows, light or dark (Settings); the board keeps BOARD_COLORS.
+# Drawing code reads the live dict UI, which setUiTheme() refills. Besides the shared keys:
+# textBody (help paragraphs), hoverOutline (a hovered swatch), clockActive / clockIdle / clockText /
+# clockTextIdle / clockLow (the clock boxes), blunder / mistake / inaccuracy (analysis marks),
+# segment / segmentText (an unselected choice of a Settings switch), accentText (text on the accent color) and
+# bannerBg / bannerText (the see-through Looking back bar over the board)
+PALETTES = {
+    'light': {
+        'panel': LIGHT_SQUARE_COLOR, 'strip': STRIP_COLOR, 'stripLine': DARK_SQUARE_COLOR,
+        'text': (0, 0, 0), 'textDim': (105, 105, 105), 'textBody': (60, 60, 60),
+        'button': DARK_SQUARE_COLOR, 'buttonHover': MOVE_HIGHLIGHT_COLOR, 'buttonPressed': (62, 88, 128),
+        'buttonDisabled': DISABLED_COLOR, 'buttonText': (255, 255, 255), 'buttonTextDisabled': (240, 240, 240),
+        'window': LIGHT_SQUARE_COLOR, 'windowBorder': DARK_SQUARE_COLOR, 'shade': (0, 0, 0, 150),
+        'field': (225, 225, 225), 'fieldFocus': (255, 255, 255), 'fieldBorder': (190, 190, 190),
+        'fieldBorderFocus': MOVE_HIGHLIGHT_COLOR, 'fieldText': (0, 0, 0),
+        'accent': MOVE_HIGHLIGHT_COLOR, 'selectedOption': SELECTED_OPTION_COLOR, 'confirm': CONFIRM_COLOR,
+        'neutral': NEUTRAL_COLOR, 'statusBg': (40, 40, 40, 225), 'statusText': (255, 255, 255),
+        'error': (178, 34, 34), 'success': (0, 100, 0), 'warning': (230, 120, 0),
+        'infoBox': STRIP_COLOR, 'infoBoxBorder': DARK_SQUARE_COLOR, 'logHighlight': LAST_MOVE_COLOR,
+        'tooltipBg': (40, 40, 40), 'tooltipText': (255, 255, 255), 'hoverOutline': (128, 128, 128),
+        'clockActive': (255, 255, 255), 'clockIdle': (200, 200, 200), 'clockText': (0, 0, 0),
+        'clockTextIdle': (0, 0, 0), 'clockLow': (220, 0, 0),
+        'blunder': (200, 30, 30), 'mistake': (225, 110, 0), 'inaccuracy': (185, 150, 0),
+        'segment': (222, 222, 214), 'segmentText': (45, 45, 45), 'accentText': (255, 255, 255),
+        'bannerBg': MOVE_HIGHLIGHT_COLOR + (205,), 'bannerText': (255, 255, 255),
+    },
+    'dark': {
+        'panel': (38, 40, 36), 'strip': (50, 53, 47), 'stripLine': (78, 104, 54),
+        'text': (232, 232, 225), 'textDim': (160, 164, 155), 'textBody': (208, 210, 201),
+        'button': (86, 118, 58), 'buttonHover': MOVE_HIGHLIGHT_COLOR, 'buttonPressed': (62, 88, 128),
+        'buttonDisabled': (74, 77, 71), 'buttonText': (242, 242, 236), 'buttonTextDisabled': (146, 149, 142),
+        'window': (46, 48, 44), 'windowBorder': (86, 118, 58), 'shade': (0, 0, 0, 170),
+        'field': (62, 64, 60), 'fieldFocus': (74, 77, 71), 'fieldBorder': (96, 99, 92),
+        'fieldBorderFocus': (112, 148, 204), 'fieldText': (235, 235, 228),
+        'accent': (112, 148, 204), 'selectedOption': (62, 88, 42), 'confirm': (168, 66, 54),
+        'neutral': (96, 98, 94), 'statusBg': (222, 224, 214, 238), 'statusText': (28, 30, 26),
+        'error': (240, 112, 100), 'success': (126, 200, 112), 'warning': (240, 170, 72),
+        'infoBox': (50, 53, 47), 'infoBoxBorder': (86, 118, 58), 'logHighlight': (84, 96, 50),
+        'tooltipBg': (222, 224, 214), 'tooltipText': (28, 30, 26), 'hoverOutline': (130, 134, 126),
+        'clockActive': (222, 224, 214), 'clockIdle': (66, 69, 63), 'clockText': (20, 20, 18),
+        'clockTextIdle': (200, 202, 195), 'clockLow': (200, 30, 30),
+        'blunder': (240, 96, 86), 'mistake': (245, 152, 64), 'inaccuracy': (222, 196, 76),
+        'segment': (64, 67, 61), 'segmentText': (222, 224, 214), 'accentText': (18, 22, 30),
+        'bannerBg': (112, 148, 204, 210), 'bannerText': (18, 22, 30),
+    },
+}
+UI = dict(PALETTES['light'])
+MARK_KINDS = {"??": 'blunder', "?": 'mistake', "?!": 'inaccuracy'}  # analysis mark -> its palette color
+BUTTON_RADIUS = 8  # rounded corners of buttons, dropdown options and the status slot
+WINDOW_RADIUS = 12  # and of the account, help and settings windows
+BUTTON_LABEL_SIZE = 28  # largest button label (sans font)
+# a panel row shrinks its labels together down to this size; a label that still doesn't fit (a long name) shrinks alone
+BUTTON_LABEL_MIN = 20
+MOUSE_HELD = [False]  # the left mouse button is down (from the events), for the pressed look of buttons
+
+
+def setUiTheme(name):
+    UI.clear()
+    UI.update(PALETTES.get(name, PALETTES['light']))
+
 
 # the board's squares can be recolored in Settings (the side panel keeps the green colors above):
 # name -> (light square, dark square)
@@ -175,6 +251,23 @@ PIECES = ['bR', 'bN', 'bB', 'bQ', 'bK', 'bp', 'wR', 'wN', 'wB', 'wQ', 'wK', 'wp'
 
 def setBoardTheme(name):
     BOARD_COLORS[:] = BOARD_THEMES.get(name, BOARD_THEMES["Green"])
+
+
+# Settings > Sound and Volume: every sound plays at the chosen volume, or not at all
+def applySoundSettings():
+    try:
+        volume = max(0, min(100, int(settings.get('volume')))) if settings.get('sound') else 0
+    except (TypeError, ValueError):
+        volume = settings.DEFAULTS['volume']
+    for sound in SOUNDS.values():
+        sound.set_volume(volume / 100)
+
+
+# how long a move's slide takes (ms): longer moves a little longer, scaled by Settings > Animation (0 = no slide)
+def animationDuration(move, speed=None):
+    scale = ANIMATION_SPEEDS.get(speed or settings.get('animation'), 1.0)
+    squares = max(abs(move.endRow - move.startRow), abs(move.endCol - move.startCol))
+    return (ANIMATION_BASE_MS + ANIMATION_MS_PER_SQUARE * squares) * scale
 
 
 # loads the pieces of a style from PIECE_SETS (the saved one when none is given)
@@ -225,6 +318,7 @@ async def pawnPromotionPopup(screen, color, row, col, flip=False):
 
         screen.blit(background, (0, 0))
         mouse_pos = p.mouse.get_pos()
+        setCursor('hand' if any(button.collidepoint(mouse_pos) for button in buttons) else 'arrow')
         for i, button in enumerate(buttons):
             hovered = button.collidepoint(mouse_pos)
             p.draw.rect(screen, p.Color(LAST_MOVE_COLOR) if hovered else p.Color("white"), button)
@@ -236,8 +330,8 @@ async def pawnPromotionPopup(screen, color, row, col, flip=False):
         await asyncio.sleep(0) # Yield for browser UI
 
 
-# rects of the panel controls, by name; which controls exist depends on the mode
-def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
+# names of the panel controls, row by row from the top; which controls exist depends on the mode
+def panelRows(modeIndex, connected, canRejoin=False, reviewing=False):
     if modeIndex == 0:  # Local vs AI
         rows = [['mode'], ['level', 'side'], ['clock', 'hint']]
     elif modeIndex == 1:  # Local 2-Player
@@ -248,13 +342,17 @@ def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
             rows.append(['rejoin'])
     else:  # Online, in a room
         rows = [['mode'], ['roomInfo']]
-    rows.append(['save', 'load', 'help'])
     if reviewing:  # after the game: analysis and stepping through the moves
         rows += [['analyze'], ['first', 'prev', 'next', 'last']]
-    else:
+    elif modeIndex != 2 or connected:  # online without a room there is no game to resign or draw yet
         rows.append(['resign', 'draw'])
-    rows.append(['undo', 'restart', 'account', 'settings'])
+    rows.append(['undo', 'restart', 'account', 'menu'])  # the menu holds the rarer actions (MENU_ITEMS)
+    return rows
 
+
+# rects of the panel controls, by name
+def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
+    rows = panelRows(modeIndex, connected, canRejoin, reviewing)
     rects = {}
     y = BOARD_HEIGHT - PANEL_PADDING - len(rows) * ROW_HEIGHT - (len(rows) - 1) * ROW_GAP
     for row in rows:
@@ -271,6 +369,40 @@ def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
     return rects
 
 
+DROPDOWNS = ('mode', 'level', 'side', 'clock')  # panel controls that open a list of options
+
+
+# room a button leaves for its label (a dropdown also shows its arrow)
+def buttonTextWidth(rect, arrow=False):
+    return rect.width - (36 if arrow else 12)
+
+
+LABEL_FIT_CACHE = {}  # (text, width) -> largest label size that fits
+
+
+def labelFitSize(text, width):
+    key = (text, width)
+    if key not in LABEL_FIT_CACHE:
+        size = BUTTON_LABEL_SIZE
+        while size > BUTTON_LABEL_MIN and get_font(size, True, True).size(text)[0] > width:
+            size -= 1
+        LABEL_FIT_CACHE[key] = size
+    return LABEL_FIT_CACHE[key]
+
+
+# one label size per row of buttons, the largest at which every label in the row fits, so a row reads evenly
+# rows: lists of names (panelRows), rects and labels by name; icon buttons (empty labels) don't count
+def evenLabelSizes(rows, rects, labels):
+    sizes = {}
+    for row in rows:
+        names = [name for name in row if name in rects and labels.get(name)]
+        size = min([labelFitSize(labels[name], buttonTextWidth(rects[name], name in DROPDOWNS)) for name in names]
+                   or [BUTTON_LABEL_SIZE])
+        for name in row:
+            sizes[name] = size
+    return sizes
+
+
 def dropdownLabels(name):
     if name == 'mode':
         return MODE_OPTIONS
@@ -284,6 +416,29 @@ def dropdownLabels(name):
 # dropdown options open upwards from the dropdown button
 def dropdownOptionRects(rect, count):
     return [p.Rect(rect.x, rect.y - (count - i) * ROW_HEIGHT, rect.width, ROW_HEIGHT) for i in range(count)]
+
+
+# the menu (the three-line button at the bottom right): its items in order, top to bottom
+MENU_ITEMS = [('save', "Save game (PGN)"), ('load', "Load game (PGN)"), ('flip', "Flip board (F)"),
+              ('settings', "Settings"), ('help', "How to play (H)")]
+MENU_WIDTH = 230
+MENU_GAP = 4  # between the items
+MENU_PADDING = 6  # between the items and the menu's frame, and between the frame and its button
+
+
+# the menu opens upwards from its button like a dropdown, its frame right-aligned with it (the button is narrow)
+def menuItemRects(menuRect):
+    count = len(MENU_ITEMS)
+    x = menuRect.right - MENU_PADDING - MENU_WIDTH
+    bottom = menuRect.y - 2 * MENU_PADDING
+    return {name: p.Rect(x, bottom - (count - i) * ROW_HEIGHT - (count - 1 - i) * MENU_GAP, MENU_WIDTH, ROW_HEIGHT)
+            for i, (name, _) in enumerate(MENU_ITEMS)}
+
+
+# the frame drawn around the menu's items
+def menuBoxRect(menuRect):
+    rects = list(menuItemRects(menuRect).values())
+    return rects[0].unionall(rects[1:]).inflate(2 * MENU_PADDING, 2 * MENU_PADDING)
 
 
 # Accept / Decline prompt for undo requests and draw offers, drawn over the move log
@@ -316,7 +471,10 @@ async def main():
             print("Main: could not refit canvas:", e)
 
     clock = p.time.Clock()
-    screen.fill(p.Color(LIGHT_SQUARE_COLOR))
+    setUiTheme(settings.get('uiTheme'))  # the panel theme, board colors and pieces chosen in Settings last time
+    setBoardTheme(settings.get('board'))
+    applySoundSettings()
+    screen.fill(p.Color(UI['panel']))
     # Creating gamestate object calling our constructor
     gs = GameState()
     if (gs.playerWantsToPlayAsBlack):
@@ -325,7 +483,6 @@ async def main():
     validMoves = gs.getValidMoves()
     moveMade = False  # if user makes a valid moves and the gamestate changes then we should generate new set of valid move
     animate = False  # flag var for when we should animate a move
-    setBoardTheme(settings.get('board'))  # the board colors and pieces chosen in Settings last time
     loadImages()
     running = True
     squareSelected = ()  # keep tracks of last click
@@ -338,6 +495,19 @@ async def main():
     # copy of the game, so the screen and the clocks keep updating
     aiSearch = None
     openDropdown = None  # name of the dropdown whose options are showing
+    menuOpen = False  # the menu's items are showing
+    boardFlipped = False  # the player turned the board around (F); flips whatever the automatic orientation is
+    # dragging a piece: {'square', 'pressPos', 'active'}; armed by pressing on an own piece, active once the
+    # pointer moved DRAG_THRESHOLD px with the button held (until then the press is an ordinary click)
+    drag = None
+    # the player's marks and arrows (right button): square -> color name, (start, end) -> color name
+    boardRings = {}
+    boardArrows = {}
+    rightPressed = None  # (square, color name) where the right button went down on the board
+    kingFlash = None  # (king's square, ticks) after a refused move, while the square pulses
+    # the player's move chosen during the opponent's turn, played when their turn comes: (start, end) squares
+    premove = None
+    premoveCache = {'key': None, 'moves': []}  # the premove candidates of the current position (premoveMoves)
 
     currentModeIndex = 0 # 0: Local vs AI, 1: Local 2-Player, 2: Online Multiplayer
     sideIndex = 0  # vs AI: play as White, Black or Random
@@ -365,7 +535,12 @@ async def main():
     # player account (see account.py): the account window, and saving finished games to the account
     accountView = None  # 'signin' | 'register' | 'profile' | 'games' | 'leaderboard' while the window is open
     helpPage = None  # page of the How to play window (index into HELP_PAGES) while it's open
-    settingsOpen = False  # the Settings window is showing
+    settingsTab = None  # the Settings window's open tab ('board' or 'game'), None while it's closed
+    lastSettingsTab = 'board'  # it opens on the tab it was closed on
+    # tooltips: what the pointer is over (an id from pointerTarget), since when, and whether a click hid its tooltip
+    hoverId = None
+    hoverSince = 0
+    tooltipHidden = False
     accountFields = {'username': "", 'email': "", 'login': "", 'password': ""}  # login: email or username, to sign in
     accountFocus = 'login'  # the form field being typed into
     accountMessage = ""  # error or notice shown in the account window
@@ -388,8 +563,10 @@ async def main():
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
     # after the game: stepping through the moves, and the AI's analysis of them
-    reviewPly = None  # number of moves shown on the board, None for the final position
+    # looking back, during the game or after it: the board shows an earlier position, read-only
+    reviewPly = None  # number of moves shown on the board, None for the live (or final) position
     reviewGs = None  # the position at reviewPly
+    wasGameOver = False  # the game was over last frame (a game that just ended leaves any looking back)
     reviewScroll = False  # scroll the move log to the shown move on the next draw
     analysis = None  # {'evals', 'best', 'bestSan', 'done', 'task'}, filled in while the analysis runs
     moveRects = []  # (rect, ply) of the moves in the log, for clicking
@@ -404,6 +581,21 @@ async def main():
         statusText = text
         statusUntil = p.time.get_ticks() + duration
 
+    # the marks and arrows belong to the position they were drawn on
+    def clearAnnotations():
+        nonlocal rightPressed
+        boardRings.clear()
+        boardArrows.clear()
+        rightPressed = None
+
+    # the dragged piece goes back to its square; deselect: also drop the selection (Esc, right button)
+    def cancelDrag(deselect=False):
+        nonlocal drag, squareSelected, playerClicks
+        if drag is not None and deselect:
+            squareSelected = ()
+            playerClicks = []
+        drag = None
+
     # leaves the review of a finished game and stops its analysis; the game is about to change
     def clearReview():
         nonlocal reviewPly, reviewGs, analysis
@@ -413,14 +605,19 @@ async def main():
         reviewGs = None
         analysis = None
 
-    # shows the position after the first ply moves (the final position leaves the review)
+    # shows the position after the first ply moves (the live or final position leaves the review)
+    # works during the game too (looking back): the game goes on underneath, and any new move returns to it
     def reviewTo(ply):
-        nonlocal reviewPly, reviewGs, reviewScroll
+        nonlocal reviewPly, reviewGs, reviewScroll, moveLogScroll, squareSelected, playerClicks
         ply = max(0, min(ply, len(gs.moveLog)))
         reviewScroll = True
+        clearAnnotations()  # another position is shown
+        squareSelected = ()  # nothing stays picked up while another position is shown
+        playerClicks = []
         if ply == len(gs.moveLog):
             reviewPly = None
             reviewGs = None
+            moveLogScroll = 0  # back to the latest moves
             return
         reviewPly = ply
         reviewGs = GameState()
@@ -468,8 +665,13 @@ async def main():
         nonlocal gs, validMoves, squareSelected, playerClicks, moveMade, animate, gameOver, moveUndone
         nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll, resultCardHidden
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
-        nonlocal gameSaved, savedGameId, gameLoaded, ratingReported
+        nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
         clearReview()
+        clearAnnotations()
+        drag = None
+        kingFlash = None
+        premove = None
+        boardFlipped = False  # each game starts the usual way round
         gameSaved = False
         savedGameId = None
         gameLoaded = False
@@ -544,9 +746,13 @@ async def main():
         lastClockTick = now
 
     # every move of the game (player, AI, opponent or loaded) goes through here
+    # a piece the player is dragging stays in hand (picked up for a premove, it can be dropped as a move once the
+    # opponent has moved); the frame's canDrag check lets go of it if it was captured
     def playMove(move, sound=True):
-        nonlocal validMoves, hintMove, moveLogScroll
-        clearReview()
+        nonlocal validMoves, hintMove, moveLogScroll, kingFlash
+        clearReview()  # also returns from looking back
+        clearAnnotations()
+        kingFlash = None
         chargeClock()
         mover = move.pieceMoved[0]
         validMoves = gs.makeMoveWithSan(move, validMoves)
@@ -568,8 +774,13 @@ async def main():
     # undo plies and restore everything tied to them
     def takeBack(plies):
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
-        nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved, resultCardHidden
+        nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved, resultCardHidden, drag, kingFlash
+        nonlocal premove
         clearReview()
+        clearAnnotations()
+        drag = None
+        kingFlash = None
+        premove = None  # it was chosen for a position that's gone
         stopAI()
         resultCardHidden = False  # when the game ends again, its result shows again
         gameSaved = False  # if the game is finished again, its saved copy is updated
@@ -758,6 +969,7 @@ async def main():
             'hint': inProgress and humanTurn and not online and hintState is None and hints.remaining() > 0,
             'resign': inProgress and (not online or networkConnected),
             'draw': inProgress and (not online or networkConnected) and pendingPrompt is None,
+            'undo': not online or networkConnected,
             'save': len(gs.moveLog) > 0,
             'load': not online,
             'join': bool(roomCode),
@@ -770,6 +982,88 @@ async def main():
 
     def shownPly():  # number of moves of the position on the board
         return len(gs.moveLog) if reviewPly is None else reviewPly
+
+    def reasonDisabled(name):
+        return disabledReason(name, gameOver=gameOver, online=currentModeIndex == 2, connected=networkConnected,
+                              humanTurn=humanTurn, hintsLeft=hints.remaining(), hintBusy=hintState is not None,
+                              prompt=pendingPrompt is not None,
+                              analysis=None if analysis is None else 'done' if analysis['done'] else 'running',
+                              moves=len(gs.moveLog), atStart=shownPly() == 0, atEnd=shownPly() == len(gs.moveLog),
+                              roomCode=roomCode)
+
+    # what the pointer is over, topmost first: (id, tooltip text or None, clickable)
+    # the id restarts the tooltip's delay when it changes; clickable gives the hand cursor
+    def pointerTarget(pos, layout, states):
+        if drag is not None and drag['active']:  # a hand holds the dragged piece, wherever it is
+            return 'drag', None, True
+        if accountView:  # an open window takes all the pointing
+            for name, rect in accountLayout(accountView, len(accountList)).items():
+                if name != 'box' and rect.collidepoint(pos):
+                    return 'account:' + name, None, not accountBusy() or name == 'close'
+            return None, None, False
+        if helpPage is not None:
+            rects = helpLayout()
+            for name, enabled in (('prev', helpPage > 0), ('close', True), ('next', helpPage < len(HELP_PAGES) - 1)):
+                if rects[name].collidepoint(pos):
+                    return 'help:' + name, None, enabled
+            return None, None, False
+        if settingsTab:
+            return settingsPointer(settingsTab, pos)
+        if openDropdown in layout:  # and so does an open dropdown (a click elsewhere only closes it)
+            for i, optRect in enumerate(dropdownOptionRects(layout[openDropdown], len(dropdownLabels(openDropdown)))):
+                if optRect.collidepoint(pos):
+                    return 'option:%d' % i, None, True
+            return None, None, False
+        if menuOpen and 'menu' in layout:  # like a dropdown; disabled items say why
+            for name, rect in menuItemRects(layout['menu']).items():
+                if rect.collidepoint(pos):
+                    if states.get(name, True):
+                        return 'menu:' + name, tooltipText(name), True
+                    return 'menu:' + name, reasonDisabled(name), False
+            return ('menu', None, True) if layout['menu'].collidepoint(pos) else (None, None, False)
+        if pendingPrompt:
+            _, acceptRect, declineRect = promptRects()
+            for name, rect in (('yes', acceptRect), ('no', declineRect)):
+                if rect.collidepoint(pos):
+                    return 'prompt:' + name, None, True
+        if gameOver and reviewPly is None and not resultCardHidden:
+            rects = resultCardLayout(outcome[0], resultButtons())[2]
+            for name in resultButtons():
+                if rects[name].collidepoint(pos):
+                    return 'result:' + name, None, True
+        for name, rect in layout.items():
+            if rect.collidepoint(pos):
+                if name == 'roomInfo':
+                    return None, None, False
+                if states.get(name, True):
+                    return name, tooltipText(name, multiplayerMode and networkConnected, account.signedIn), True
+                return name, reasonDisabled(name), False
+        if pos[0] >= BOARD_WIDTH:  # the moves in the log show their position, during the game too
+            for rect, ply in moveRects:
+                if rect.collidepoint(pos):
+                    return 'ply:%d' % ply, None, True
+        if pos[0] < BOARD_WIDTH and not gameOver and reviewPly is not None:
+            return 'lookBack', None, True  # looking back: a click returns to the game
+        if pos[0] < BOARD_WIDTH and not gameOver and reviewPly is None and (currentModeIndex != 2 or networkConnected):
+            row, col = boardSquare(pos, flip_board)
+            if humanTurn:
+                # the player's own pieces that can move, and where the selected one can go
+                movable = any(move.startRow == row and move.startCol == col for move in validMoves)
+                target = ownPieceSelected(gs, squareSelected) and any(
+                    (move.startRow, move.startCol) == squareSelected and move.endRow == row and move.endCol == col
+                    for move in validMoves)
+            elif premoveTurn():  # the same for a premove, and the premoved piece (a click cancels it)
+                moves = premoveCandidates()
+                movable = (any(move.startRow == row and move.startCol == col for move in moves)
+                           or (premove is not None and premove[0] == (row, col)))
+                target = squareSelected != () and any(
+                    (move.startRow, move.startCol) == squareSelected and move.endRow == row and move.endCol == col
+                    for move in moves)
+            else:
+                movable = target = False
+            if movable or target:
+                return 'square:%d%d' % (row, col), None, True
+        return None, None, False
 
     def buildPgnText():  # returns (PGN text, result)
         outcome = getOutcome(gs, positionHistory, gameResult)
@@ -814,6 +1108,169 @@ async def main():
         moveMade = True
         moveUndone = True  # let the position show before the AI replies
         gameLoaded = True
+
+    # what a menu item does once it's chosen
+    def menuAction(name):
+        nonlocal helpPage, settingsTab, boardFlipped
+        if name == 'save':
+            savePgnFile()
+        elif name == 'load':
+            message = pgn.requestPgnLoad()
+            if message:
+                showStatus(message)
+        elif name == 'flip':
+            boardFlipped = not boardFlipped
+        elif name == 'settings':
+            settingsTab = lastSettingsTab
+        elif name == 'help':
+            helpPage = 0
+
+    # --- moving with the mouse: two clicks or a drag, and the right button's marks and arrows
+
+    # the player's move from start to end (the second click, or where a dragged piece was dropped), with the
+    # promotion piece asked first; slide: animate it (a dropped piece is already there)
+    # returns 'played', 'cancelled' (the promotion picker was closed), 'refused' (it would leave the king in
+    # check: says so and flashes the king) or None (the piece can't go there at all)
+    # promotion: the piece a promotion becomes without asking (a premove promotes to a queen)
+    async def tryMove(start, end, slide=True, promotion=None):
+        nonlocal squareSelected, playerClicks, moveMade, animate, kingFlash
+        move = Move(start, end, gs.board)
+        for candidate in validMoves:
+            if move == candidate:
+                if candidate.isPawnPromotion:
+                    choice = promotion or await pawnPromotionPopup(screen, candidate.pieceMoved[0], candidate.endRow,
+                                                                   candidate.endCol, flip_board)
+                    if choice is None:  # cancelled: the player picks another move
+                        squareSelected = ()
+                        playerClicks = []
+                        return 'cancelled'
+                    candidate.promotionChoice = choice
+                playMove(candidate)
+                if multiplayerMode and networkConnected:
+                    print(f"Main: Sending move {candidate.getCode()}")
+                    publishChange('move')
+                moveMade = True
+                animate = slide
+                squareSelected = ()
+                playerClicks = []
+                return 'played'
+        reason = refusalReason(gs, start, end)
+        if reason:
+            showStatus(reason)
+            kingFlash = (gs.whiteKinglocation if gs.whiteToMove else gs.blackKinglocation, p.time.get_ticks())
+            return 'refused'
+        return None
+
+    # a press on square can pick its piece up: the player's own piece in the live position, on their turn or
+    # (for a premove) while the opponent is to move
+    def canDrag(square):
+        if gameOver or reviewPly is not None or (currentModeIndex == 2 and not networkConnected):
+            return False
+        color = gs.board[square[0]][square[1]][0]
+        if humanTurn:
+            return color == ('w' if gs.whiteToMove else 'b')
+        return bool(premoveTurn()) and color == myColor()
+
+    # the dragged piece let go at pos: a legal move is played there (no slide), or during the opponent's turn
+    # chosen as the premove; otherwise it goes back, still selected
+    async def dropPiece(pos):
+        nonlocal drag, squareSelected, playerClicks
+        start = drag['square']
+        drag = None
+        if 0 <= pos[0] < BOARD_WIDTH and 0 <= pos[1] < BOARD_HEIGHT:
+            end = boardSquare(pos, flip_board)
+            if end != start:
+                if not humanTurn:
+                    if premoveTurn() and setPremove(start, end):
+                        return
+                elif await tryMove(start, end, slide=False) in ('played', 'cancelled'):
+                    return
+        squareSelected = start
+        playerClicks = [start]
+
+    # --- premoves: while the opponent is to move, the player picks their next move; it's played when their turn comes
+
+    # premoves can be chosen now: switched on, the opponent (the computer, or online the other player) to move
+    def premoveTurn():
+        return bool(settings.get('premoves') and not humanTurn and not gameOver and gameResult is None
+                    and reviewPly is None and (currentModeIndex == 0 or (currentModeIndex == 2 and networkConnected)))
+
+    # the moves a premove can be (premoveMoves), worked out once per position
+    def premoveCandidates():
+        key = (id(gs), len(gs.moveLog), gs.getPositionKey())
+        if premoveCache['key'] != key:
+            premoveCache['key'] = key
+            premoveCache['moves'] = premoveMoves(gs)
+        return premoveCache['moves']
+
+    # makes start -> end the premove (replacing any other) when the piece could go there; returns whether it did
+    def setPremove(start, end):
+        nonlocal premove, squareSelected, playerClicks
+        if not any((move.startRow, move.startCol) == start and (move.endRow, move.endCol) == end
+                   for move in premoveCandidates()):
+            return False
+        premove = (start, end)
+        squareSelected = ()
+        playerClicks = []
+        return True
+
+    # a left click on square during the opponent's turn; returns 'set', 'cancelled', 'selected' or None
+    def choosePremove(square):
+        nonlocal squareSelected, playerClicks
+        if premove is not None and premove[0] == square:  # the premoved piece again: cancels it
+            cancelPremove()
+            return 'cancelled'
+        if squareSelected != () and squareSelected != square and setPremove(squareSelected, square):
+            return 'set'
+        if square != squareSelected and gs.board[square[0]][square[1]][0] == myColor():
+            squareSelected = square
+            playerClicks = [square]
+            return 'selected'
+        squareSelected = ()
+        playerClicks = []
+        return None
+
+    # a premove, or a piece picked up for one, that Esc or the right button would cancel
+    def premovePending():
+        return premove is not None or (premoveTurn() and squareSelected != ())
+
+    def cancelPremove():
+        nonlocal premove, squareSelected, playerClicks
+        premove = None
+        if not humanTurn:
+            squareSelected = ()
+            playerClicks = []
+
+    # the right button went down at location; returns True when it was taken (the rest of the click is skipped)
+    # it first cancels a drag in progress, then a premove (then draws nothing); on the board it starts a mark or arrow
+    def rightPress(location):
+        nonlocal rightPressed
+        rightPressed = None
+        if drag is not None:
+            cancelDrag(deselect=drag['active'])
+            return True
+        if location[0] < BOARD_WIDTH and premovePending():  # cancels the premove instead of drawing
+            cancelPremove()
+            return True
+        if location[0] < BOARD_WIDTH and not (gameOver and reviewPly is None and not resultCardHidden):
+            rightPressed = (boardSquare(location, flip_board), annotationColor(p.key.get_mods()))
+            return True
+        return False  # e.g. over the result card: a click like any other
+
+    # released on the square it went down on: a ring there; on another square: an arrow between them
+    def rightRelease(location):
+        nonlocal rightPressed
+        if rightPressed is None:
+            return
+        start, color = rightPressed
+        rightPressed = None
+        if not (0 <= location[0] < BOARD_WIDTH and 0 <= location[1] < BOARD_HEIGHT):
+            return
+        end = boardSquare(location, flip_board)
+        if end == start:
+            toggleAnnotation(boardRings, start, color)
+        else:
+            toggleAnnotation(boardArrows, (start, end), color)
 
     # --- account
 
@@ -1042,6 +1499,7 @@ async def main():
         # Black at the bottom for the online guest, and when playing Black against the AI
         flip_board = (multiplayerMode and networkConnected and multiplayerRole == 'client') or \
             (currentModeIndex == 0 and playerBlackHuman and not playerWhiteHuman)
+        flip_board = flip_board != boardFlipped  # Flip board (F) turns it around from there
         canRejoin = currentModeIndex == 2 and not networkConnected and savedSession is not None
 
         # online: while waiting for the opponent (or after the game), keep re-sending our state so a
@@ -1055,25 +1513,62 @@ async def main():
             if p.time.get_ticks() - lastMessageSent > PRESENCE_MS:
                 sendOnline({'type': 'ping'})
 
+        # a drag ends when the position can't be played any more (the game ended, a window opened, ...)
+        if drag is not None and (not canDrag(drag['square']) or menuOpen or openDropdown or accountView
+                                 or helpPage is not None or settingsTab):
+            drag = None
+        if kingFlash is not None and p.time.get_ticks() - kingFlash[1] > KING_FLASH_MS:
+            kingFlash = None
+
         for e in p.event.get():
+            if e.type in (p.MOUSEBUTTONDOWN, p.MOUSEBUTTONUP) and e.button == 1:
+                MOUSE_HELD[0] = e.type == p.MOUSEBUTTONDOWN  # buttons look pressed while it's held
+            if e.type == p.MOUSEBUTTONDOWN:
+                tooltipHidden = True  # a click hides the tooltip until the pointer moves to something else
             if e.type == p.QUIT:
                 running = False
             # Mouse Handler
             elif e.type == p.MOUSEWHEEL:
                 if p.mouse.get_pos()[0] >= BOARD_WIDTH:
                     moveLogScroll += e.y  # wheel up scrolls back through older moves
+            elif e.type == p.MOUSEMOTION:
+                if drag is not None and not getattr(e, 'buttons', (1,))[0]:
+                    # the button was let go where we didn't hear it (outside the window): the piece goes back
+                    if drag['active']:
+                        squareSelected, playerClicks = drag['square'], [drag['square']]
+                    drag = None
+                elif drag is not None and not drag['active']:
+                    pos = p.mouse.get_pos()
+                    if math.hypot(pos[0] - drag['pressPos'][0], pos[1] - drag['pressPos'][1]) > DRAG_THRESHOLD:
+                        drag['active'] = True
+                        squareSelected = drag['square']  # picked up again if the press had deselected it
+                        playerClicks = [squareSelected]
+            elif e.type == p.MOUSEBUTTONUP:
+                if e.button == 1 and drag is not None:
+                    if drag['active']:
+                        await dropPiece(p.mouse.get_pos())
+                    else:
+                        drag = None  # a plain click: the press already did everything
+                elif e.button == 3:
+                    rightRelease(p.mouse.get_pos())
             elif e.type == p.MOUSEBUTTONDOWN:
                 if e.button in (4, 5):  # wheel also fires button events; handled by MOUSEWHEEL
                     continue
                 location = p.mouse.get_pos()
+                # the right button: a drag is cancelled, then a premove (rightPress), marks and arrows on the board;
+                # elsewhere a click as before
+                if e.button == 3 and drag is not None:
+                    rightPress(location)
+                    continue
                 if accountView:  # the account window takes every click while it's open
                     handleAccountClick(location)
                     continue
                 if helpPage is not None:  # and so does the How to play window
                     helpPage = helpClick(helpPage, location)
                     continue
-                if settingsOpen:  # and the Settings window
-                    settingsOpen = settingsClick(location)
+                if settingsTab:  # and the Settings window
+                    settingsTab = settingsClick(location, settingsTab)
+                    lastSettingsTab = settingsTab or lastSettingsTab
                     continue
                 layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
 
@@ -1110,6 +1605,27 @@ async def main():
                         multiplayerRole = None
                         # Reset game on mode change
                         resetGame()
+                    continue
+
+                # an open menu takes the click too: run an item or close it
+                if menuOpen:
+                    menuOpen = False
+                    chosen = None
+                    for name, rect in menuItemRects(layout['menu']).items():
+                        if rect.collidepoint(location):
+                            chosen = name
+                    if chosen is None:
+                        continue
+                    if not controlStates().get(chosen, True):
+                        reason = reasonDisabled(chosen)
+                        if reason:
+                            showStatus(reason)
+                        menuOpen = True  # stays open, so another item can be picked
+                        continue
+                    menuAction(chosen)
+                    continue
+
+                if e.button == 3 and rightPress(location):
                     continue
 
                 if pendingPrompt:
@@ -1149,10 +1665,10 @@ async def main():
                     if rect.collidepoint(location):
                         clicked = name
                 inputBoxActive = clicked == 'room'
-                if clicked == 'hint' and hints.remaining() == 0:
-                    showStatus("You've used today's %d hints. More tomorrow!" % hints.HINTS_PER_DAY)
-                    continue
                 if clicked is not None and not controlStates().get(clicked, True):
+                    reason = reasonDisabled(clicked)  # the same reason as its tooltip, for touch screens too
+                    if reason:
+                        showStatus(reason)
                     continue
 
                 if clicked in ('mode', 'level', 'side', 'clock'):
@@ -1187,16 +1703,8 @@ async def main():
                         showStatus("Draw offer sent")
                 elif clicked == 'account':
                     openAccountView('profile' if account.signedIn else 'signin')
-                elif clicked == 'help':
-                    helpPage = 0
-                elif clicked == 'settings':
-                    settingsOpen = True
-                elif clicked == 'save':
-                    savePgnFile()
-                elif clicked == 'load':
-                    message = pgn.requestPgnLoad()
-                    if message:
-                        showStatus(message)
+                elif clicked == 'menu':
+                    menuOpen = True
                 elif clicked == 'host':
                     print("DEBUG: Host button clicked.")
                     if not roomCode:
@@ -1225,13 +1733,18 @@ async def main():
                     reviewTo(shownPly() + 1)
                 elif clicked == 'last':
                     reviewTo(len(gs.moveLog))
-                elif clicked is None and gameOver and location[0] >= BOARD_WIDTH:
-                    # clicking a move in the log shows the position after it
+                elif clicked is None and location[0] >= BOARD_WIDTH:
+                    # clicking a move in the log shows the position after it (during the game: looking back)
                     for rect, ply in moveRects:
                         if rect.collidepoint(location):
                             reviewTo(ply + 1)
 
                 elif clicked is None and location[0] < BOARD_WIDTH:  # board click
+                    if e.button == 1:
+                        clearAnnotations()  # a left click on the board wipes the marks and arrows
+                    if currentModeIndex == 2 and not networkConnected:  # no game until there is a room
+                        showStatus("Host or join a room to start a game")
+                        continue
                     if gameOver:
                         if reviewPly is not None:
                             continue  # stepping through the moves; the board isn't playable
@@ -1251,11 +1764,16 @@ async def main():
                         else:
                             resultCardHidden = True
                         continue
-                    col = location[0]//SQ_SIZE
-                    row = location[1]//SQ_SIZE
-                    if flip_board:
-                        row = 7 - row
-                        col = 7 - col
+                    if reviewPly is not None:  # looking back during the game: a click returns to it, nothing more
+                        reviewTo(len(gs.moveLog))
+                        continue
+                    row, col = boardSquare(location, flip_board)
+                    drag = None  # a new press; it may pick a piece up again below
+                    if premoveTurn():  # the opponent is to move: the click chooses the premove
+                        chosen = choosePremove((row, col))
+                        if e.button == 1 and chosen != 'set' and canDrag((row, col)):
+                            drag = {'square': (row, col), 'pressPos': location, 'active': False}
+                        continue
                     # if user clicked on same square twice
                     if squareSelected == (row, col):
                         squareSelected = ()  # deselect
@@ -1264,6 +1782,7 @@ async def main():
                         squareSelected = (row, col)
                         # append player both clicks (place and destination)
                         playerClicks.append(squareSelected)
+                    result = None
                     # after second click (at destination)
                     if len(playerClicks) == 2:
                         if not humanTurn:
@@ -1271,32 +1790,16 @@ async def main():
                             squareSelected = ()
                             playerClicks = []
                             continue
-
-                        # user generated a move
-                        move = Move(playerClicks[0], playerClicks[1], gs.board)
-                        for candidate in validMoves:
-                            # check if the move is in the validMoves
-                            if move == candidate:
-                                if candidate.isPawnPromotion:
-                                    # Show pawn promotion popup and get the selected piece
-                                    choice = await pawnPromotionPopup(screen, candidate.pieceMoved[0], candidate.endRow,
-                                                                      candidate.endCol, flip_board)
-                                    if choice is None:  # cancelled: the player picks another move
-                                        squareSelected = ()
-                                        playerClicks = []
-                                        break
-                                    candidate.promotionChoice = choice
-                                playMove(candidate)
-                                if multiplayerMode and networkConnected:
-                                    print(f"Main: Sending move {candidate.getCode()}")
-                                    publishChange('move')
-                                moveMade = True
-                                animate = True
-                                squareSelected = ()
-                                playerClicks = []
-                                break
-                        if not moveMade:  # the second click starts a new selection (none after a cancelled promotion)
-                            playerClicks = [squareSelected] if squareSelected else []
+                        start = playerClicks[0]
+                        result = await tryMove(start, playerClicks[1])
+                        if result == 'refused':  # the piece stays selected, to try another square
+                            squareSelected = start
+                            playerClicks = [start]
+                        elif result is None:  # the second click starts a new selection
+                            playerClicks = [squareSelected]
+                    # pressing on an own piece arms a drag: it starts once the pointer moves with the button held
+                    if e.button == 1 and result is None and canDrag((row, col)):
+                        drag = {'square': (row, col), 'pressPos': location, 'active': False}
 
             # Key Handler
             elif e.type == p.KEYDOWN:
@@ -1306,11 +1809,22 @@ async def main():
                 if helpPage is not None:
                     helpPage = helpKey(helpPage, e.key)
                     continue
-                if settingsOpen:
-                    settingsOpen = e.key != p.K_ESCAPE
+                if settingsTab:
+                    settingsTab = settingsKey(settingsTab, e.key)
+                    lastSettingsTab = settingsTab or lastSettingsTab
                     continue
                 if openDropdown and e.key == p.K_ESCAPE:
                     openDropdown = None
+                    continue
+                if drag is not None and e.key == p.K_ESCAPE:  # Esc puts a dragged piece back
+                    cancelDrag(deselect=drag['active'])
+                    continue
+                if menuOpen:  # any key closes the menu; Esc does nothing else
+                    menuOpen = False
+                    if e.key == p.K_ESCAPE:
+                        continue
+                if e.key == p.K_ESCAPE and premovePending():
+                    cancelPremove()
                     continue
                 if inputBoxActive:
                     if e.key == p.K_BACKSPACE:
@@ -1322,8 +1836,8 @@ async def main():
                         roomCode += e.unicode.upper()
                     continue
 
-                # after the game, the arrow keys step through the moves
-                if gameOver and e.key in (p.K_LEFT, p.K_RIGHT, p.K_HOME, p.K_END, p.K_UP, p.K_DOWN):
+                # the arrow keys step through the moves: during the game to look back (End returns), and after it
+                if e.key in (p.K_LEFT, p.K_RIGHT, p.K_HOME, p.K_END, p.K_UP, p.K_DOWN):
                     if e.key in (p.K_LEFT, p.K_UP):
                         reviewTo(shownPly() - 1)
                     elif e.key in (p.K_RIGHT, p.K_DOWN):
@@ -1336,6 +1850,9 @@ async def main():
 
                 if e.key in (p.K_h, p.K_F1):  # How to play
                     helpPage = 0
+                    continue
+                if e.key == p.K_f:  # Flip board, as in the menu
+                    menuAction('flip')
                     continue
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
@@ -1396,6 +1913,17 @@ async def main():
             squareSelected = ()
             playerClicks = []
 
+        # the premove: once the opponent's move is in (and shown), it's played if it's still legal, else dropped
+        if premove is not None and humanTurn and not moveMade and not (currentModeIndex == 2 and not networkConnected):
+            chosen, premove = premove, None
+            if settings.get('premoves') and getOutcome(gs, positionHistory, gameResult) is None:
+                if reviewPly is not None:
+                    reviewTo(len(gs.moveLog))  # back to the game first
+                if resolvePremove(chosen, validMoves) is not None:
+                    await tryMove(chosen[0], chosen[1], promotion='Q')
+                else:
+                    showStatus(PREMOVE_DROPPED)
+
         # hint: wait one frame so the "Looking..." message is on screen during the search
         if hintState == 'requested':
             hintState = 'searching'
@@ -1423,6 +1951,11 @@ async def main():
         gameOver = outcome is not None
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
             pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
+        if gameOver or not settings.get('premoves'):
+            premove = None
+        if gameOver and not wasGameOver and reviewPly is not None:
+            reviewTo(len(gs.moveLog))  # the game ended while looking back (e.g. on time): show the result
+        wasGameOver = gameOver
 
         # account requests that finished since the last frame
         for entry in [entry for entry in accountRequests if entry[0].done()]:
@@ -1453,26 +1986,41 @@ async def main():
             gameSaved = True
             saveFinishedGame()
 
-        if not gameOver and reviewPly is not None:
-            clearReview()  # the game went on (e.g. an undo from the opponent)
         # arrows: the hint, and after the game the better move instead of an analysed mistake
         marks = moveMarks(analysis, gs.moveLog) if analysis else {}
         arrows = []
-        if hintMove is not None and not gameOver:  # a hint is for the game in progress (it may end by resigning)
+        # a hint is for the game in progress (it may end by resigning), in the live position
+        if hintMove is not None and not gameOver and reviewPly is None:
             arrows.append(((hintMove.startRow, hintMove.startCol), (hintMove.endRow, hintMove.endCol)))
         if gameOver and shownPly() - 1 in marks and analysis['best'][shownPly() - 1]:
             arrows.append(codeSquares(analysis['best'][shownPly() - 1]))
-        # the board shows the reviewed position while stepping through a finished game
+        # and the player's own (right button), in their colors
+        arrows += [(start, end, ANNOTATION_COLORS[color]) for (start, end), color in boardArrows.items()]
+        rings = [(square, ANNOTATION_COLORS[color]) for square, color in boardRings.items()]
+        # the board shows the reviewed position while looking back (during the game, or after it)
         shownGs = reviewGs if reviewGs is not None else gs
+        dragging = drag is not None and drag['active']
+        lookingBack = reviewGs is not None and not gameOver
         if reviewGs is not None:
-            drawGameState(screen, reviewGs, [], (), flip_board, arrows)
+            drawGameState(screen, reviewGs, [], (), flip_board, arrows, rings=rings)
+            if lookingBack:
+                drawLookBackBanner(screen, lookBackText(gs.moveLog, reviewPly))
         else:
-            drawGameState(screen, gs, validMoves, squareSelected, flip_board, arrows)
+            # the premove's squares, or the piece picked up for one and where it could go
+            premoveShown = {'squares': list(premove) if premove else [], 'moves': []}
+            if premoveTurn() and squareSelected != ():
+                premoveShown['squares'].append(squareSelected)
+                premoveShown['moves'] = [move for move in premoveCandidates()
+                                         if (move.startRow, move.startCol) == squareSelected]
+            drawGameState(screen, gs, validMoves, squareSelected, flip_board, arrows,
+                          hidden=drag['square'] if dragging else None, rings=rings,
+                          flash=(kingFlash[0], p.time.get_ticks() - kingFlash[1]) if kingFlash else None,
+                          premove=premoveShown if premoveShown['squares'] else None)
 
         # side panel
         layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
         stripY = min(rect.y for rect in layout.values()) - ROW_GAP - STRIP_HEIGHT
-        p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), p.Rect(PANEL_X, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT))
+        p.draw.rect(screen, p.Color(UI['panel']), p.Rect(PANEL_X, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT))
         # below the moves: a slot for status messages, and after the game the review info under it
         infoRect = p.Rect(PANEL_X + 10, stripY - 60, MOVE_LOG_PANEL_WIDTH - 20, 54)
         statusRect = p.Rect(PANEL_X + 10, (infoRect.y if gameOver else stripY) - STATUS_HEIGHT - 4,
@@ -1482,13 +2030,16 @@ async def main():
             moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2,
                                                    shownPly() - 1, marks, reviewScroll)
             drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate, outcome[0])
-        else:
-            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2)
+        else:  # while looking back, the shown move is highlighted
+            moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2,
+                                                   shownPly() - 1 if lookingBack else None, None, reviewScroll)
         reviewScroll = False
         taken = capturedPieces(shownGs)
         balance = materialBalance(shownGs.board)
-        sideToMove = 'w' if shownGs.whiteToMove else 'b'
-        shownClocks = clockHistory[reviewPly] if reviewPly is not None and reviewPly < len(clockHistory) else clocks
+        # during the game the clocks keep running while looking back; after it they show the reviewed move's times
+        sideToMove = 'w' if (shownGs if gameOver else gs).whiteToMove else 'b'
+        shownClocks = (clockHistory[reviewPly] if gameOver and reviewPly is not None and reviewPly < len(clockHistory)
+                       else clocks)
         notes = {}  # a note after a player's name
         if aiSearch is not None:
             notes['w' if gs.whiteToMove else 'b'] = "thinking" + "." * (1 + p.time.get_ticks() // 400 % 3)
@@ -1511,10 +2062,7 @@ async def main():
             'hint': "Hint (%d left)" % hints.remaining(),
             'host': "Host (White)",
             'join': "Join (Black)",
-            'save': "Save PGN",
-            'help': "How to play",
-            'settings': "",  # drawn as a gear
-            'load': "Load PGN",
+            'menu': "",  # drawn as three lines
             'resign': "Resign",
             'draw': "Offer Draw",
             'undo': "Undo",
@@ -1530,14 +2078,21 @@ async def main():
             labels['analyze'] = "Analysis done"
         if savedSession:
             labels['rejoin'] = "Rejoin %s as %s" % (savedSession['room'], "White" if savedSession['role'] == 'host' else "Black")
+        labelSizes = evenLabelSizes(panelRows(currentModeIndex, networkConnected, canRejoin, gameOver), layout, labels)
+        # under an open menu, dropdown or window the panel's buttons don't light up: the click goes to the overlay
+        overlayOpen = menuOpen or openDropdown or accountView or helpPage is not None or settingsTab
+        panelMouse = (-1, -1) if overlayOpen or dragging else mouse_pos  # nor under a dragged piece
         for name, rect in layout.items():
             if name == 'room':
-                p.draw.rect(screen, p.Color('white') if inputBoxActive else p.Color('lightgray'), rect)
-                p.draw.rect(screen, p.Color('black'), rect, 1)
-                textObj = get_fitting_text(roomCode if roomCode else "Type Room ID", rect.width - 12, 20, "black")
+                p.draw.rect(screen, p.Color(UI['fieldFocus'] if inputBoxActive else UI['field']), rect,
+                            border_radius=BUTTON_RADIUS)
+                p.draw.rect(screen, p.Color(UI['fieldBorderFocus'] if inputBoxActive else UI['fieldBorder']), rect, 2,
+                            border_radius=BUTTON_RADIUS)
+                textObj = get_fitting_text(roomCode if roomCode else "Type Room ID", rect.width - 12, 20,
+                                           UI['fieldText'] if roomCode else UI['textDim'])
                 screen.blit(textObj, rect.move(rect.width / 2 - textObj.get_width() / 2, rect.height / 2 - textObj.get_height() / 2))
             elif name == 'roomInfo':
-                textObj = get_text_surface(f"Room: {roomCode}", 20, "black", True)
+                textObj = get_text_surface(f"Room: {roomCode}", 20, UI['text'], True)
                 textLoc = rect.move(rect.width / 2 - textObj.get_width() / 2, 0)
                 screen.blit(textObj, textLoc)
                 # Connection Indicator (Traffic Light System)
@@ -1551,52 +2106,67 @@ async def main():
                 # whether the opponent is there (the connection details go to the console)
                 presenceText, presenceColor = presenceStatus(multiplayerRole, opponentSeen, net.server_time,
                                                              net.last_status)[:2]
-                presenceObj = get_fitting_text(presenceText, rect.width, 15, presenceColor, False)
+                presenceObj = get_fitting_text(presenceText, rect.width, 15, UI[presenceColor], False)
                 screen.blit(presenceObj, (rect.centerx - presenceObj.get_width() / 2, rect.y + 24))
             else:
                 arrow = None
-                if name in ('mode', 'level', 'side', 'clock'):
+                if name in DROPDOWNS:
                     arrow = 'up' if openDropdown == name else 'down'
-                drawButton(screen, rect, labels[name], states.get(name, True), mouse_pos, arrow)
+                drawButton(screen, rect, labels[name], states.get(name, True), panelMouse, arrow, size=labelSizes[name],
+                           color=UI['buttonPressed'] if name == 'menu' and menuOpen else None)
                 if name in ('first', 'prev', 'next', 'last'):
                     drawNavIcon(screen, rect, name)
-                elif name == 'settings':
-                    drawGearIcon(screen, rect)
+                elif name == 'menu':
+                    drawMenuIcon(screen, rect)
+
+        # the dragged piece follows the pointer, over the board and the panel but under the overlays
+        if dragging:
+            drawDraggedPiece(screen, gs.board[drag['square'][0]][drag['square'][1]], mouse_pos)
 
         if gameOver and reviewPly is None and not resultCardHidden:
             drawEndGameText(screen, outcome[0], resultButtons(), mouse_pos)
 
-        # overlays: open dropdown options and the Accept / Decline prompt
+        # overlays: the Accept / Decline prompt, windows, the status message and open dropdown options or menu (on top)
+        if pendingPrompt:
+            panel_rect, acceptBtn, denyBtn = promptRects()
+            p.draw.rect(screen, p.Color(UI['strip']), panel_rect, border_radius=WINDOW_RADIUS)
+            p.draw.rect(screen, p.Color(UI['windowBorder']), panel_rect, 2, border_radius=WINDOW_RADIUS)
+            textObj = get_fitting_text(pendingPrompt['text'], panel_rect.width - 20, 20, UI['text'])
+            screen.blit(textObj, (panel_rect.centerx - textObj.get_width() / 2, panel_rect.y + 12))
+            # a confirmation shows its action in red (it can't be taken back); an offer's Accept is green;
+            # the way out is a neutral gray
+            confirm = pendingPrompt.get('confirm', False)
+            drawButton(screen, acceptBtn, pendingPrompt.get('yes', "Accept"), True, mouse_pos,
+                       color=UI['confirm'] if confirm else UI['button'])
+            drawButton(screen, denyBtn, pendingPrompt.get('no', "Decline"), True, mouse_pos, color=UI['neutral'])
+        if accountView:
+            drawAccountWindow(screen, accountView, accountFields, accountFocus, accountMessage, accountBusy(),
+                              account, accountList, mouse_pos)
+        if helpPage is not None:
+            drawHelpWindow(screen, helpPage, mouse_pos)
+        if settingsTab:
+            drawSettingsWindow(screen, mouse_pos, settingsTab)
+        if statusText and p.time.get_ticks() < statusUntil:
+            drawStatus(screen, statusRect, statusText)
         if openDropdown in layout:
             options = dropdownLabels(openDropdown)
             current = {'mode': currentModeIndex, 'level': chessAi.LEVEL, 'side': sideIndex,
                        'clock': clockIndex}[openDropdown]
             for i, optRect in enumerate(dropdownOptionRects(layout[openDropdown], len(options))):
                 drawButton(screen, optRect, options[i], True, mouse_pos,
-                           color=SELECTED_OPTION_COLOR if i == current else None)
+                           color=UI['selectedOption'] if i == current else None)
                 if i == current:
                     drawCheckMark(screen, optRect)
-        if pendingPrompt:
-            panel_rect, acceptBtn, denyBtn = promptRects()
-            p.draw.rect(screen, p.Color(STRIP_COLOR), panel_rect)
-            p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), panel_rect, 2)
-            textObj = get_fitting_text(pendingPrompt['text'], panel_rect.width - 20, 20, "black")
-            screen.blit(textObj, (panel_rect.centerx - textObj.get_width() / 2, panel_rect.y + 12))
-            # a confirmation shows its action in red (it can't be taken back); an offer's Accept is green;
-            # the way out is a neutral gray
-            confirm = pendingPrompt.get('confirm', False)
-            drawButton(screen, acceptBtn, pendingPrompt.get('yes', "Accept"), True, mouse_pos,
-                       color=CONFIRM_COLOR if confirm else DARK_SQUARE_COLOR)
-            drawButton(screen, denyBtn, pendingPrompt.get('no', "Decline"), True, mouse_pos, color=NEUTRAL_COLOR)
-        if accountView:
-            drawAccountWindow(screen, accountView, accountFields, accountFocus, accountMessage, accountBusy(),
-                              account, accountList, mouse_pos)
-        if helpPage is not None:
-            drawHelpWindow(screen, helpPage, mouse_pos)
-        if settingsOpen:
-            drawSettingsWindow(screen, mouse_pos)
-        if statusText and p.time.get_ticks() < statusUntil:
-            drawStatus(screen, statusRect, statusText)
+        if menuOpen:
+            drawMenu(screen, layout['menu'], states, mouse_pos)
+
+        # the pointer: a hand over anything clickable, and the tooltip of the control it rests on
+        target, tip, clickable = pointerTarget(mouse_pos, layout, states)
+        if target != hoverId:
+            hoverId, hoverSince, tooltipHidden = target, p.time.get_ticks(), False
+        setCursor('hand' if clickable else 'arrow')
+        if tip and not tooltipHidden and p.time.get_ticks() - hoverSince >= TOOLTIP_DELAY_MS:
+            drawTooltip(screen, tip, mouse_pos)
 
         clock.tick(MAX_FPS)
         await asyncio.sleep(0) # Essential for WASM performance/UI responsiveness
@@ -1604,45 +2174,57 @@ async def main():
         await asyncio.sleep(0)
 
 
-# color: the button's own color instead of the panel green; it lightens under the mouse
-def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None, color=None):
+# a color made lighter (amount > 0) or darker (amount < 0)
+def shadeColor(color, amount):
+    return tuple(max(0, min(255, c + amount)) for c in color[:3])
+
+
+# color: the button's own color instead of the theme's; it lightens under the mouse and darkens while pressed
+# size: the label size (evenLabelSizes); the label still shrinks if it doesn't fit
+# textColor: the label's color on a button of its own color (a light one needs dark text)
+def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None, color=None, size=None,
+               textColor=None):
+    hovered = enabled and rect.collidepoint(mouse_pos)
+    pressed = hovered and MOUSE_HELD[0]
     if not enabled:
-        color = p.Color(DISABLED_COLOR)
-    elif rect.collidepoint(mouse_pos):
-        color = p.Color(MOVE_HIGHLIGHT_COLOR) if color is None else p.Color(*(min(255, c + 30) for c in color))
+        fill = UI['buttonDisabled']
+    elif color is None:
+        fill = UI['buttonPressed'] if pressed else UI['buttonHover'] if hovered else UI['button']
     else:
-        color = p.Color(color or DARK_SQUARE_COLOR)
-    p.draw.rect(screen, color, rect)
-    p.draw.rect(screen, p.Color('black'), rect, 1)
+        fill = shadeColor(color, -25) if pressed else shadeColor(color, 30) if hovered else color
+    p.draw.rect(screen, p.Color(*fill[:3]), rect, border_radius=BUTTON_RADIUS)
+    p.draw.rect(screen, p.Color(*shadeColor(fill, -28)), rect, 1, border_radius=BUTTON_RADIUS)  # a soft edge
+    textColor = UI['buttonTextDisabled'] if not enabled else textColor or UI['buttonText']
+    drop = 1 if pressed else 0  # the label sinks a little while pressed
 
     # leave room on the right for the dropdown arrow
-    textArea = rect.width - (36 if arrow else 12)
-    textObj = get_fitting_text(text, textArea, 24 if rect.width > CONTROL_WIDTH // 2 + 5 else 20, "white")
+    textObj = get_fitting_text(text, buttonTextWidth(rect, arrow), size or BUTTON_LABEL_SIZE, textColor, sans=True)
     textX = rect.x + (rect.width - (24 if arrow else 0)) / 2 - textObj.get_width() / 2
-    screen.blit(textObj, (textX, rect.centery - textObj.get_height() / 2))
+    screen.blit(textObj, (textX, rect.centery - textObj.get_height() / 2 + 1 + drop))
 
     if arrow:
         center_x = rect.right - 20
-        center_y = rect.centery
+        center_y = rect.centery + drop
+        arrowColor = p.Color(textColor)
         if arrow == 'up':
-            p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y + 4), (center_x + 6, center_y + 4), (center_x, center_y - 4)])
+            p.draw.polygon(screen, arrowColor, [(center_x - 6, center_y + 4), (center_x + 6, center_y + 4), (center_x, center_y - 4)])
         else:
-            p.draw.polygon(screen, p.Color('white'), [(center_x - 6, center_y - 4), (center_x + 6, center_y - 4), (center_x, center_y + 4)])
+            p.draw.polygon(screen, arrowColor, [(center_x - 6, center_y - 4), (center_x + 6, center_y - 4), (center_x, center_y + 4)])
 
 
 # name, captured pieces, material lead and clock of one player, and an optional note after the name
 def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockActive, note=None):
     rect = p.Rect(PANEL_X, y, MOVE_LOG_PANEL_WIDTH, STRIP_HEIGHT)
-    p.draw.rect(screen, p.Color(STRIP_COLOR), rect)
-    p.draw.line(screen, p.Color(DARK_SQUARE_COLOR), (rect.x, rect.bottom - 1), (rect.right, rect.bottom - 1))
+    p.draw.rect(screen, p.Color(UI['strip']), rect)
+    p.draw.line(screen, p.Color(UI['stripLine']), (rect.x, rect.bottom - 1), (rect.right, rect.bottom - 1))
 
     # side marker and name
     p.draw.circle(screen, p.Color('white' if color == 'w' else 'black'), (rect.x + 18, rect.y + 15), 7)
-    p.draw.circle(screen, p.Color('black'), (rect.x + 18, rect.y + 15), 7, 1)
-    nameObj = get_text_surface(name, 18, "black", True)
+    p.draw.circle(screen, p.Color(UI['text']), (rect.x + 18, rect.y + 15), 7, 1)
+    nameObj = get_text_surface(name, 18, UI['text'], True)
     screen.blit(nameObj, (rect.x + 32, rect.y + 15 - nameObj.get_height() / 2))
     if note:  # e.g. "thinking..." while the computer searches
-        noteObj = get_text_surface(note, 16, "dimgray", False)
+        noteObj = get_text_surface(note, 16, UI['textDim'], False)
         screen.blit(noteObj, (rect.x + 40 + nameObj.get_width(), rect.y + 15 - noteObj.get_height() / 2))
 
     # captured pieces, grouped by type, then the material lead
@@ -1654,14 +2236,16 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
         screen.blit(SMALL_IMAGES[piece], (x, rect.y + 27))
         previous = piece
     if advantage > 0:
-        leadObj = get_text_surface("+" + str(advantage), 16, "dimgray", True)
+        leadObj = get_text_surface("+" + str(advantage), 16, UI['textDim'], True)
         screen.blit(leadObj, (x + (SMALL_PIECE_SIZE + 4 if captured else 0), rect.y + 38 - leadObj.get_height() / 2))
 
     if clockMs is not None:
         clockRect = p.Rect(rect.right - 12 - 96, rect.y + 8, 96, 36)
-        p.draw.rect(screen, p.Color('white') if clockActive else p.Color(200, 200, 200), clockRect)
-        p.draw.rect(screen, p.Color('black'), clockRect, 1)
-        textColor = p.Color('red') if clockActive and clockMs < 20000 else p.Color('black')
+        p.draw.rect(screen, p.Color(UI['clockActive'] if clockActive else UI['clockIdle']), clockRect, border_radius=6)
+        if clockActive and clockMs < 20000:
+            textColor = p.Color(UI['clockLow'])
+        else:
+            textColor = p.Color(UI['clockText'] if clockActive else UI['clockTextIdle'])
         textObj = get_font(24, True).render(formatClock(clockMs), True, textColor)
         screen.blit(textObj, (clockRect.centerx - textObj.get_width() / 2, clockRect.centery - textObj.get_height() / 2))
 
@@ -1704,13 +2288,27 @@ def drawStatus(screen, rect, text):
         lines = wrapText(text, font, rect.width - 20)[:2]
     lineHeight = font.get_linesize()
     s = p.Surface(rect.size, p.SRCALPHA)
-    p.draw.rect(s, (40, 40, 40, 225), s.get_rect(), border_radius=8)
+    p.draw.rect(s, UI['statusBg'], s.get_rect(), border_radius=BUTTON_RADIUS)
     screen.blit(s, rect.topleft)
     y = rect.centery - lineHeight * len(lines) / 2
     for line in lines:
-        textObj = font.render(line, True, p.Color("white"))
+        textObj = font.render(line, True, p.Color(UI['statusText']))
         screen.blit(textObj, (rect.centerx - textObj.get_width() / 2, y))
         y += lineHeight
+
+
+# dims everything behind a window
+def drawShade(screen):
+    shade = p.Surface(screen.get_size())
+    shade.set_alpha(UI['shade'][3])
+    shade.fill(p.Color(*UI['shade'][:3]))
+    screen.blit(shade, (0, 0))
+
+
+# the rounded box of the account, help and settings windows
+def drawWindowBox(screen, box):
+    p.draw.rect(screen, p.Color(UI['window']), box, border_radius=WINDOW_RADIUS)
+    p.draw.rect(screen, p.Color(UI['windowBorder']), box, 3, border_radius=WINDOW_RADIUS)
 
 
 # --- account window, drawn over the board
@@ -1757,17 +2355,13 @@ def accountLayout(view, count=0):
 
 
 def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows, mouse_pos):
-    shade = p.Surface(screen.get_size())
-    shade.set_alpha(150)
-    shade.fill(p.Color(0, 0, 0))
-    screen.blit(shade, (0, 0))
+    drawShade(screen)
     rects = accountLayout(view, len(rows))
     box = rects['box']
-    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), box)
-    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), box, 3)
+    drawWindowBox(screen, box)
     x, width = box.x + 40, box.width - 80
     title = ACCOUNT_TITLES.get(view) or account.username or "Account"
-    titleObj = get_fitting_text(title, width, 32, "black")
+    titleObj = get_fitting_text(title, width, 32, UI['text'])
     screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
 
     if view in ('signin', 'register'):
@@ -1775,16 +2369,18 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
                   'password': "Password (at least 8 characters)" if view == 'register' else "Password"}
         for name in accountFieldNames(view):
             rect = rects['field:' + name]
-            screen.blit(get_text_surface(labels[name], 17, "dimgray", False), (rect.x, rect.y - 22))
-            p.draw.rect(screen, p.Color('white') if focus == name else p.Color(225, 225, 225), rect)
-            p.draw.rect(screen, p.Color(MOVE_HIGHLIGHT_COLOR) if focus == name else p.Color('gray'), rect, 2)
+            screen.blit(get_text_surface(labels[name], 17, UI['textDim'], False), (rect.x, rect.y - 22))
+            focused = focus == name
+            p.draw.rect(screen, p.Color(UI['fieldFocus'] if focused else UI['field']), rect, border_radius=6)
+            p.draw.rect(screen, p.Color(UI['fieldBorderFocus'] if focused else UI['fieldBorder']), rect, 2,
+                        border_radius=6)
             value = "*" * len(fields[name]) if name == 'password' else fields[name]
             if focus == name and (p.time.get_ticks() // 500) % 2 == 0:
                 value += "|"  # blinking cursor
             font = get_font(20, False)
             while value and font.size(value)[0] > rect.width - 16:
                 value = value[1:]  # long input scrolls: show its end
-            textObj = font.render(value, True, p.Color('black'))
+            textObj = font.render(value, True, p.Color(UI['fieldText']))
             screen.blit(textObj, (rect.x + 8, rect.centery - textObj.get_height() / 2))
         messageY = rects['submit'].y - 32
         buttons = {'submit': "Sign in" if view == 'signin' else "Create account",
@@ -1812,7 +2408,7 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
         y = box.y + 84
         for text, bold in lines:
             if text:
-                screen.blit(get_fitting_text(text, width, 20, "black" if bold else "dimgray", bold), (x, y))
+                screen.blit(get_fitting_text(text, width, 20, UI['text'] if bold else UI['textDim'], bold), (x, y))
             y += 28
         messageY = rects['games'].y - 40
         buttons = {}
@@ -1821,23 +2417,23 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
             rect = rects['row:%d' % i]
             if view == 'games':
                 if rect.collidepoint(mouse_pos):
-                    p.draw.rect(screen, p.Color(LAST_MOVE_COLOR), rect)
+                    p.draw.rect(screen, p.Color(UI['logHighlight']), rect, border_radius=4)
                 left = "%s   %s" % (str(row.get('played_at', ''))[:10], gameRowResult(row))
                 right = row.get('opponent') or "Local game"
             else:
                 left = "%d. %s" % (i + 1, row['username'])
                 right = "%d  (%s)" % (row["rating"], countGames(row["rated_games"]))
-            screen.blit(get_fitting_text(left, width // 2, 18, "black", False), (rect.x + 6, rect.y + 3))
-            rightObj = get_fitting_text(right, width // 2 - 10, 18, "dimgray", False)
+            screen.blit(get_fitting_text(left, width // 2, 18, UI['text'], False), (rect.x + 6, rect.y + 3))
+            rightObj = get_fitting_text(right, width // 2 - 10, 18, UI['textDim'], False)
             screen.blit(rightObj, (rect.right - 6 - rightObj.get_width(), rect.y + 3))
         if not rows and not busy:
             empty = "No saved games yet" if view == 'games' else "Nobody is rated yet"
-            screen.blit(get_text_surface(empty, 20, "dimgray", False), (x, box.y + 90))
+            screen.blit(get_text_surface(empty, 20, UI['textDim'], False), (x, box.y + 90))
         messageY = rects['back'].y - 40
         buttons = {}
 
     if message:
-        color = "dimgray" if busy else "firebrick"
+        color = UI['textDim'] if busy else UI['error']
         screen.blit(get_fitting_text(message, width, 18, color, True), (x, messageY))
     buttons.update(ACCOUNT_BUTTONS)
     for name, rect in rects.items():
@@ -1874,8 +2470,8 @@ HELP_PAGES = [
          "Attack the opponent's king so that it has no way to escape. You may never leave your own king "
          "under attack."),
         (None, "Taking turns",
-         "White moves first, then the players take turns, one move each. Click one of your pieces to see "
-         "where it can go (dots, or rings around pieces it can take), then click one of those squares."),
+         "White moves first, then the players take turns, one move each. Click one of your pieces, then a "
+         "square it can go to, or drag it there (see On the board)."),
         (None, "Capturing",
          "Move onto an opponent's piece to take it. The pieces each side has taken, and who is ahead in "
          "material, are shown next to the players' names."),
@@ -1907,6 +2503,21 @@ HELP_PAGES = [
          "A pawn that moves two squares can be taken by an enemy pawn beside it, as if it had moved only one, "
          "but only on the very next move."),
     ]),
+    ("On the board", [
+        (None, "Moving",
+         "Click a piece to see where it can go: dots on free squares, rings around pieces it can take. Then "
+         "click one of them, or drag the piece there. A move that would leave your king in check is refused, "
+         "and the king's square flashes."),
+        (None, "Arrows and marks",
+         "Right-click a square to circle it, or drag with the right button to draw an arrow. Hold Shift for "
+         "red, Ctrl or Alt for blue. A left click on the board clears them."),
+        (None, "Premoves",
+         "While your opponent thinks, choose your next move: its squares turn purple, and it's played as soon "
+         "as your turn comes if it's still legal. Right-click or Esc cancels it (Settings can turn premoves off)."),
+        (None, "Looking back",
+         "The arrow keys, or a click on a move in the list, show earlier positions, during the game too: End "
+         "or a click on the board returns. After the game, Analyze game marks mistakes with ?!, ? and ??."),
+    ]),
     ("Game modes", [
         (None, "Local vs AI",
          "Play the computer. Choose its level, from Easy to Impossible, and whether you play White, Black or "
@@ -1919,20 +2530,20 @@ HELP_PAGES = [
          "Pick a time control before the game. 3+2 means three minutes each, plus two seconds for every "
          "move. Running out of time loses."),
         (None, "Account", "Sign in to keep your finished games, see your record and get an online rating."),
-        (None, "Settings (gear button)", "Choose the board colors and the style of the pieces."),
     ]),
     ("Buttons and keys", [
         (None, "Hint", "Shows a good move on the board, up to 5 times a day."),
         (None, "Undo (Z) and Restart (R)",
-         "Undo takes back your last move (and the computer's reply). Online, your opponent must accept it, "
-         "and Restart leaves the room."),
+         "Take back your last move (and the computer's reply). Online, the opponent must agree, and Restart "
+         "leaves the room."),
         (None, "Resign and Offer Draw",
          "Give up the game, or offer a draw. The computer only accepts a draw when it is losing."),
-        (None, "Save PGN and Load PGN", "Save the game to a file, or open a saved game to replay it."),
-        (None, "After the game",
-         "Step through the moves with the arrow keys, or click Analyze game to mark mistakes with ?!, ? and "
-         "?? (an arrow shows the better move). Start the next game from the result card."),
-        (None, "How to play (H)", "Opens this window. Esc closes it."),
+        (None, "Menu (three lines, bottom right)",
+         "Save the game as a PGN file or open one, Flip board (F), Settings (board, pieces, theme, sound) "
+         "and How to play."),
+        (None, "How to play (H)",
+         "Opens this window. Esc closes it. Rest the pointer on a button to see what it does, or why it's grayed "
+         "out."),
     ]),
 ]
 
@@ -1987,20 +2598,16 @@ def wrapText(text, font, maxWidth):
 
 
 def drawHelpWindow(screen, page, mouse_pos):
-    shade = p.Surface(screen.get_size())
-    shade.set_alpha(150)
-    shade.fill(p.Color(0, 0, 0))
-    screen.blit(shade, (0, 0))
+    drawShade(screen)
     rects = helpLayout()
     box = rects['box']
-    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), box)
-    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), box, 3)
+    drawWindowBox(screen, box)
     x, width = box.x + 40, box.width - 80
 
     title, items = HELP_PAGES[page]
-    titleObj = get_fitting_text(title, width - 60, 32, "black")
+    titleObj = get_fitting_text(title, width - 60, 32, UI['text'])
     screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
-    pageObj = get_text_surface("%d / %d" % (page + 1, len(HELP_PAGES)), 16, "dimgray", False)
+    pageObj = get_text_surface("%d / %d" % (page + 1, len(HELP_PAGES)), 16, UI['textDim'], False)
     screen.blit(pageObj, (box.right - 16 - pageObj.get_width(), box.y + 14))
 
     textFont = get_font(17, False)
@@ -2011,10 +2618,10 @@ def drawHelpWindow(screen, page, mouse_pos):
         if icon:
             screen.blit(HELP_IMAGES[icon], (x, y))
             textX = x + HELP_ICON_SIZE + 12
-        screen.blit(get_text_surface(heading, 19, "black", True), (textX, y))
+        screen.blit(get_text_surface(heading, 19, UI['text'], True), (textX, y))
         y += 24
         for line in wrapText(text, textFont, x + width - textX):
-            screen.blit(textFont.render(line, True, p.Color(60, 60, 60)), (textX, y))
+            screen.blit(textFont.render(line, True, p.Color(UI['textBody'])), (textX, y))
             y += 20
         y = max(y, top + (HELP_ICON_SIZE if icon else 0)) + 12
 
@@ -2023,15 +2630,22 @@ def drawHelpWindow(screen, page, mouse_pos):
         drawButton(screen, rects[name], label, enabled, mouse_pos)
 
 
-# arrows: (start square, end square) pairs drawn over the pieces
-def drawGameState(screen, gs, validMoves, squareSelected, flip=False, arrows=()):
+# arrows: (start square, end square) pairs drawn over the pieces, or (start, end, color) triples
+# hidden: the square whose piece isn't drawn (it's being dragged); rings: (square, color) of the player's marks
+# flash: (king's square, ms since the refused move) while the king's square pulses (drawKingFlash)
+# premove: {'squares', 'moves'} during the opponent's turn: squares tinted in PREMOVE_COLOR (the premove, or the
+# piece picked up for one) and the moves whose targets get the move hints
+def drawGameState(screen, gs, validMoves, squareSelected, flip=False, arrows=(), hidden=None, rings=(), flash=None,
+                  premove=None):
     drawSquare(screen, flip)  # draw square on board
-    # last move played, and the hint if one is showing
-    if gs.moveLog:
+    # last move played (unless switched off in Settings)
+    if gs.moveLog and settings.get('lastMove'):
         lastMove = gs.moveLog[-1]
         tintSquare(screen, lastMove.startRow, lastMove.startCol, LAST_MOVE_COLOR, 170, flip)
         tintSquare(screen, lastMove.endRow, lastMove.endCol, LAST_MOVE_COLOR, 170, flip)
     highlightSquares(screen, gs, squareSelected, flip)
+    for row, col in (premove['squares'] if premove else ()):
+        tintSquare(screen, row, col, PREMOVE_COLOR, PREMOVE_ALPHA, flip)
 
     # Check/Checkmate effect: Highlight the king's square in red
     if gs.inCheck:
@@ -2043,10 +2657,93 @@ def drawGameState(screen, gs, validMoves, squareSelected, flip=False, arrows=())
         s.fill(p.Color("red"))
         screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
 
-    drawPieces(screen, gs.board, flip)
+    if flash is not None:  # under the king, so the piece stays clear
+        drawKingFlash(screen, flash[0], flash[1], flip)
+    drawPieces(screen, gs.board, flip, hidden)
     drawMoveMarkers(screen, gs, validMoves, squareSelected, flip)
-    for start, end in arrows:
-        drawArrow(screen, start, end, flip)
+    if premove and settings.get('moveMarkers'):
+        drawMarkers(screen, gs.board, premove['moves'], flip)
+    for square, color in rings:
+        drawRing(screen, square, color, flip)
+    for arrow in arrows:
+        drawArrow(screen, arrow[0], arrow[1], flip, *arrow[2:])
+
+
+# the board square (row, col) under a point on the screen
+def boardSquare(pos, flip=False):
+    row, col = min(7, max(0, pos[1] // SQ_SIZE)), min(7, max(0, pos[0] // SQ_SIZE))
+    return (7 - row, 7 - col) if flip else (row, col)
+
+
+# the color of a mark or arrow from the keys held: Shift red, Ctrl or Alt blue, otherwise green
+def annotationColor(mods):
+    if mods & p.KMOD_SHIFT:
+        return 'red'
+    if mods & (p.KMOD_CTRL | p.KMOD_ALT):
+        return 'blue'
+    return 'green'
+
+
+# drawing the same mark or arrow again removes it; in another color it changes color
+def toggleAnnotation(store, key, color):
+    if store.get(key) == color:
+        del store[key]
+    else:
+        store[key] = color
+
+
+# why the side to move can't play start -> end although the piece moves that way: it would leave their king
+# in check (REFUSED_IN_CHECK when it's in check already, else REFUSED_EXPOSES_KING). None when the move is legal,
+# or when the piece can't go there anyway (pins and checks ignored), which is just a change of selection
+def refusalReason(gs, start, end):
+    saved = (gs.inCheck, gs.pins, gs.checks, gs.checkmate, gs.stalemate)
+    try:
+        legal = gs.getValidMoves()
+        inCheck = gs.inCheck
+        gs.pins, gs.checks = [], []  # the moves without pins and checks; the king's own are checked anyway
+        possible = gs.getAllPossibleMoves()
+    finally:
+        gs.inCheck, gs.pins, gs.checks, gs.checkmate, gs.stalemate = saved
+
+    def goes(move):
+        return (move.startRow, move.startCol) == tuple(start) and (move.endRow, move.endCol) == tuple(end)
+    if any(goes(move) for move in legal) or not any(goes(move) for move in possible):
+        return None
+    return REFUSED_IN_CHECK if inCheck else REFUSED_EXPOSES_KING
+
+
+# a ring around a square, for the player's marks; see-through like the arrows
+def drawRing(screen, square, color, flip=False):
+    row, col = square
+    if flip:
+        row, col = 7 - row, 7 - col
+    layer = p.Surface((SQ_SIZE, SQ_SIZE), p.SRCALPHA)
+    p.draw.circle(layer, color, (SQ_SIZE // 2, SQ_SIZE // 2), SQ_SIZE // 2 - 3, max(4, SQ_SIZE // 13))
+    screen.blit(layer, (col * SQ_SIZE, row * SQ_SIZE))
+
+
+# the king's square after a refused move: a red tint and outline that pulse twice and fade out over KING_FLASH_MS
+def drawKingFlash(screen, square, elapsed, flip=False):
+    t = elapsed / KING_FLASH_MS
+    if not 0 <= t < 1:
+        return
+    strength = (0.6 + 0.4 * math.cos(4 * math.pi * t)) * (1 - t ** 3)
+    row, col = square
+    if flip:
+        row, col = 7 - row, 7 - col
+    layer = p.Surface((SQ_SIZE, SQ_SIZE), p.SRCALPHA)
+    layer.fill(KING_FLASH_COLOR + (int(110 * strength),))
+    p.draw.rect(layer, KING_FLASH_COLOR + (int(240 * strength),), layer.get_rect(), 6)
+    screen.blit(layer, (col * SQ_SIZE, row * SQ_SIZE))
+
+
+# a piece being dragged: centered under the pointer, with a quiet outline on the square it would land on
+def drawDraggedPiece(screen, piece, pos):
+    if 0 <= pos[0] < BOARD_WIDTH and 0 <= pos[1] < BOARD_HEIGHT:
+        layer = p.Surface((SQ_SIZE, SQ_SIZE), p.SRCALPHA)
+        p.draw.rect(layer, DRAG_TARGET_COLOR, layer.get_rect(), 4)
+        screen.blit(layer, ((pos[0] // SQ_SIZE) * SQ_SIZE, (pos[1] // SQ_SIZE) * SQ_SIZE))
+    screen.blit(IMAGES[piece], (pos[0] - SQ_SIZE // 2, pos[1] - SQ_SIZE // 2))
 
 
 # ((start row, col), (end row, col)) of a move in coordinate notation, e.g. "g1f3"
@@ -2055,8 +2752,9 @@ def codeSquares(code):
             (Move.ranksToRows[code[3]], Move.filesToCols[code[2]]))
 
 
-# a see-through arrow from the center of one square to another, over the pieces (hints, the analysis's best move)
-def drawArrow(screen, start, end, flip=False):
+# a see-through arrow from the center of one square to another, over the pieces: hints and the analysis's best
+# move in ARROW_COLOR, the player's own arrows in their ANNOTATION_COLORS
+def drawArrow(screen, start, end, flip=False, color=ARROW_COLOR):
     global ARROW_LAYER
     if ARROW_LAYER is None:
         ARROW_LAYER = p.Surface((BOARD_WIDTH, BOARD_HEIGHT), p.SRCALPHA)
@@ -2076,7 +2774,7 @@ def drawArrow(screen, start, end, flip=False):
     points = [(sx + nx * shaft, sy + ny * shaft), (bx + nx * shaft, by + ny * shaft), (bx + nx * head, by + ny * head),
               (x2, y2), (bx - nx * head, by - ny * head), (bx - nx * shaft, by - ny * shaft),
               (sx - nx * shaft, sy - ny * shaft)]
-    p.draw.polygon(ARROW_LAYER, ARROW_COLOR, points)
+    p.draw.polygon(ARROW_LAYER, color, points)
     screen.blit(ARROW_LAYER, (0, 0))
 
 
@@ -2097,6 +2795,8 @@ def drawSquare(screen, flip=False):
             color = colors[((row + col) % 2)]
             p.draw.rect(screen, color, p.Rect(
                 col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
+    if not settings.get('coordinates'):  # switched off in Settings
+        return
 
     # Draw rank and file labels, each in the color of the other kind of square so it stands out
     for row in range(DIMENSION):
@@ -2137,8 +2837,14 @@ def highlightSquares(screen, gs, squareSelected, flip=False):
 # marks where the selected piece can go: a dot on an empty square, a ring around a piece it can take
 # drawn over the pieces, so the rings show around them
 def drawMoveMarkers(screen, gs, validMoves, squareSelected, flip=False):
-    if not ownPieceSelected(gs, squareSelected):
+    if not settings.get('moveMarkers') or not ownPieceSelected(gs, squareSelected):
         return
+    row, col = squareSelected
+    drawMarkers(screen, gs.board, [move for move in validMoves if move.startRow == row and move.startCol == col], flip)
+
+
+# a dot or ring on the target square of each of moves
+def drawMarkers(screen, board, moves, flip=False):
     if not MOVE_MARKERS:
         for name in ('dot', 'ring'):
             surface = p.Surface((SQ_SIZE, SQ_SIZE), p.SRCALPHA)
@@ -2148,20 +2854,19 @@ def drawMoveMarkers(screen, gs, validMoves, squareSelected, flip=False):
             else:
                 p.draw.circle(surface, MOVE_MARKER_COLOR, center, SQ_SIZE // 2 - 2, 7)
             MOVE_MARKERS[name] = surface
-    row, col = squareSelected
-    for move in validMoves:
-        if move.startRow == row and move.startCol == col:
-            marker = MOVE_MARKERS['ring' if gs.board[move.endRow][move.endCol] != '--' else 'dot']
-            end_r = (7 - move.endRow) if flip else move.endRow
-            end_c = (7 - move.endCol) if flip else move.endCol
-            screen.blit(marker, (end_c * SQ_SIZE, end_r * SQ_SIZE))
+    for move in moves:
+        marker = MOVE_MARKERS['ring' if board[move.endRow][move.endCol] != '--' else 'dot']
+        end_r = (7 - move.endRow) if flip else move.endRow
+        end_c = (7 - move.endCol) if flip else move.endCol
+        screen.blit(marker, (end_c * SQ_SIZE, end_r * SQ_SIZE))
 
 
-def drawPieces(screen, board, flip=False):
+# hidden: a square whose piece is left out (it's being dragged)
+def drawPieces(screen, board, flip=False, hidden=None):
     for row in range(DIMENSION):
         for col in range(DIMENSION):
             piece = board[row][col]
-            if piece != "--":
+            if piece != "--" and (row, col) != hidden:
                 draw_row = (7 - row) if flip else row
                 draw_col = (7 - col) if flip else col
                 screen.blit(IMAGES[piece], p.Rect(
@@ -2195,17 +2900,17 @@ def drawMoveLog(screen, gs, scroll, top, bottom, currentPly=None, marks=None, fo
         y = top + padding + (i // 4 - start) * lineHeight
         x = PANEL_X + 10 + ((i % 4) // 2) * 180
         if i % 2 == 0:
-            numberObj = get_text_surface(str(i // 2 + 1) + ".", 18, "dimgray", False)
+            numberObj = get_text_surface(str(i // 2 + 1) + ".", 18, UI['textDim'], False)
             screen.blit(numberObj, (x + 30 - numberObj.get_width(), y))  # right-aligned
         moveX = x + (36 if i % 2 == 0 else 106)
         rect = p.Rect(moveX - 3, y - 1, 68, lineHeight - 2)
         if i == currentPly:
-            p.draw.rect(screen, p.Color(LAST_MOVE_COLOR), rect)
-        textObj = get_text_surface(moveLog[i].san or str(moveLog[i]), 18, "black", False)
+            p.draw.rect(screen, p.Color(UI['logHighlight']), rect, border_radius=4)
+        textObj = get_text_surface(moveLog[i].san or str(moveLog[i]), 18, UI['text'], False)
         screen.blit(textObj, (moveX, y))
         if i in marks:
             mark = marks[i][0]
-            markObj = get_text_surface(mark, 16, MARK_COLORS[mark], True)
+            markObj = get_text_surface(mark, 16, UI[MARK_KINDS[mark]], True)
             screen.blit(markObj, (moveX + textObj.get_width() + 1, y + 1))
         rects.append((rect, i))
 
@@ -2215,9 +2920,9 @@ def drawMoveLog(screen, gs, scroll, top, bottom, currentPly=None, marks=None, fo
 # the shown position, its evaluation and what the analysis says about the move that led to it
 # result: the game's result text, shown at the final position (the result card may be hidden)
 def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, result=None):
-    p.draw.rect(screen, p.Color(STRIP_COLOR), rect)
-    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), rect, 1)
-    if ply == 0: 
+    p.draw.rect(screen, p.Color(UI['infoBox']), rect, border_radius=BUTTON_RADIUS)
+    p.draw.rect(screen, p.Color(UI['infoBoxBorder']), rect, 1, border_radius=BUTTON_RADIUS)
+    if ply == 0:
         first = "Start position"
     else:
         i = ply - 1
@@ -2235,49 +2940,181 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
     elif analysis and not analysis['done']:
         second = "Analyzing the game..."
     elif analysis:
-        counts = {(color, mark): 0 for color in "wb" for mark, _ in MARK_COLORS.items()}
+        counts = {(color, mark): 0 for color in "wb" for mark in MARK_KINDS}
         for i, (mark, _) in marks.items():
             counts[('w' if i % 2 == 0 else 'b', mark)] += 1
         second = "   ".join("%s ??%d ?%d ?!%d" % (name, counts[(c, "??")], counts[(c, "?")], counts[(c, "?!")])
                              for c, name in (('w', "White"), ('b', "Black")))
     else:
         second = result if result and ply == len(moveLog) else "Step through the moves with the arrow keys"
-    screen.blit(get_fitting_text(first, rect.width - 16, 17, "black", True), (rect.x + 8, rect.y + 5))
-    screen.blit(get_fitting_text(second, rect.width - 16, 16, "dimgray", False), (rect.x + 8, rect.y + 29))
+    screen.blit(get_fitting_text(first, rect.width - 16, 17, UI['text'], True), (rect.x + 8, rect.y + 5))
+    screen.blit(get_fitting_text(second, rect.width - 16, 16, UI['textDim'], False), (rect.x + 8, rect.y + 29))
 
 
-# --- Settings window: board colors and piece style, drawn over the board like the other windows
+# --- Settings window, drawn over the board like the other windows: a Board tab and a Game tab of settings rows,
+# each a label on the left and its choices on the right
 
-PREVIEW_SIZE = 100  # piece previews in the Settings window
+SETTINGS_BOX = p.Rect(84, 34, 600, 700)
+SETTINGS_LABEL_WIDTH = 160  # the labels' column; the choices take the rest
+SETTINGS_TABS = [('board', "Board"), ('game', "Game")]
+SETTINGS_ROWS = {'board': ['board', 'pieces', 'coordinates', 'moveMarkers', 'lastMove', 'animation'],
+                 'game': ['uiTheme', 'sound', 'volume', 'figurines', 'premoves']}
+SETTING_LABELS = {'board': "Board colors", 'pieces': "Pieces", 'coordinates': "Coordinates", 'moveMarkers': "Move hints",
+                  'lastMove': "Last move", 'animation': "Animation", 'uiTheme': "Theme", 'sound': "Sound",
+                  'volume': "Volume", 'figurines': "Notation", 'premoves': "Premoves"}
+# the switches: setting -> its choices as (value, label), in the order shown
+SETTING_CHOICES = {
+    'coordinates': [(True, "On"), (False, "Off")],
+    'moveMarkers': [(True, "On"), (False, "Off")],
+    'lastMove': [(True, "On"), (False, "Off")],
+    'animation': [('off', "Off"), ('fast', "Fast"), ('normal', "Normal"), ('slow', "Slow")],
+    'uiTheme': [('light', "Light"), ('dark', "Dark")],
+    'sound': [(True, "On"), (False, "Off")],
+    'figurines': [(False, "Letters"), (True, "Figurines")],
+    'premoves': [(True, "On"), (False, "Off")],
+}
+# shown when the pointer rests on a setting's label
+SETTING_TIPS = {'board': "Colors of the board's squares", 'pieces': "The look of the pieces",
+                'coordinates': "Letters and numbers along the board's edges",
+                'moveMarkers': "Dots and rings where the selected piece can go",
+                'lastMove': "Color the squares of the last move", 'animation': "How fast the pieces slide",
+                'uiTheme': "Colors of the side panel and the windows", 'sound': "Sounds of moves and captures",
+                'volume': "How loud the sounds are",
+                'figurines': "Pieces in the move log as letters (Nf3) or symbols",
+                'premoves': "Choose your next move while the opponent is thinking"}
+VOLUME_STEP = 10
+SEGMENT_LABEL_SIZE = 24
+PREVIEW_SIZE = 72  # piece previews in the Settings window
 PREVIEW_IMAGES = {}  # (folder, piece) -> image, loaded on first use
 
 
-def settingsLayout():
-    box = ACCOUNT_BOX
-    x = box.x + 40
+# a switch value as it appears in rect names: 'on' / 'off' for True / False
+def choiceId(value):
+    if isinstance(value, bool):
+        return 'on' if value else 'off'
+    return str(value)
+
+
+# the saved value of a setting, or its default when the saved one isn't a valid choice
+def settingValue(kind):
+    value = settings.get(kind)
+    if kind == 'board':
+        return value if value in BOARD_THEMES else settings.DEFAULTS['board']
+    if kind == 'pieces':
+        return value if value in PIECE_SETS else settings.DEFAULTS['pieces']
+    if kind == 'volume':
+        try:
+            return max(0, min(100, int(value)))
+        except (TypeError, ValueError):
+            return settings.DEFAULTS['volume']
+    if any(value == choice and type(value) is type(choice) for choice, _ in SETTING_CHOICES[kind]):
+        return value
+    return settings.DEFAULTS[kind]
+
+
+# rects of the Settings window's parts, by name: 'tab:board', 'board:Green', 'pieces:Modern', 'coordinates:on',
+# 'animation:fast', 'uiTheme:dark', 'volume:-' / 'volume:+', 'close', ... and 'label:<setting>' (not clickable)
+def settingsLayout(tab='board'):
+    box = SETTINGS_BOX
+    x, width = box.x + 40, box.width - 80
+    controlsX, controlsWidth = x + SETTINGS_LABEL_WIDTH, width - SETTINGS_LABEL_WIDTH
     rects = {'box': box}
-    for i, name in enumerate(BOARD_THEMES):
-        rects['board:' + name] = p.Rect(x + i * 160, box.y + 116, 120, 120)
-    for i, name in enumerate(PIECE_SETS):
-        rects['pieces:' + name] = p.Rect(x + i * 240, box.y + 330, 2 * PREVIEW_SIZE, PREVIEW_SIZE)
-    rects['close'] = p.Rect(x, box.bottom - 24 - ROW_HEIGHT, box.width - 80, ROW_HEIGHT)
+    tabWidth = 150
+    for i, (name, _) in enumerate(SETTINGS_TABS):
+        rects['tab:' + name] = p.Rect(box.centerx - tabWidth - 4 + i * (tabWidth + 8), box.y + 76, tabWidth, ROW_HEIGHT)
+    y = box.y + 150
+    for row in SETTINGS_ROWS[tab]:
+        height = ROW_HEIGHT
+        if row == 'board':  # a swatch per board theme, its name below
+            height = 88
+            gap = (controlsWidth - len(BOARD_THEMES) * height) // (len(BOARD_THEMES) - 1)
+            for i, name in enumerate(BOARD_THEMES):
+                rects['board:' + name] = p.Rect(controlsX + i * (height + gap), y, height, height)
+        elif row == 'pieces':  # two pieces of each style, its name below
+            height = PREVIEW_SIZE
+            for i, name in enumerate(PIECE_SETS):
+                rects['pieces:' + name] = p.Rect(controlsX + i * (2 * PREVIEW_SIZE + 40), y, 2 * PREVIEW_SIZE, height)
+        elif row == 'volume':  # - and + with the value between them
+            rects['volume:-'] = p.Rect(controlsX, y, 56, height)
+            rects['volume:+'] = p.Rect(controlsX + 56 + 90, y, 56, height)
+        else:
+            choices = SETTING_CHOICES[row]
+            segment = min(120, (controlsWidth - 8 * (len(choices) - 1)) // len(choices))
+            for i, (value, _) in enumerate(choices):
+                rects['%s:%s' % (row, choiceId(value))] = p.Rect(controlsX + i * (segment + 8), y, segment, height)
+        rects['label:' + row] = p.Rect(x, y, SETTINGS_LABEL_WIDTH - 10, height)
+        y += height + (44 if row in ('board', 'pieces') else 14)  # the swatches and previews have names below
+    rects['close'] = p.Rect(x, box.bottom - 24 - ROW_HEIGHT, width, ROW_HEIGHT)
     return rects
 
 
-# applies the choice clicked in the Settings window and remembers it; returns False when the window closes
-def settingsClick(location):
-    for name, rect in settingsLayout().items():
-        if name == 'box' or not rect.collidepoint(location):
+def changeVolume(step):
+    settings.put('volume', max(0, min(100, settingValue('volume') + step)))
+    settings.put('sound', True)  # changing the volume means the player wants to hear it
+    applySoundSettings()
+    SOUNDS['move'].play()  # how loud it is now
+
+
+# applies the choice clicked in the Settings window and remembers it
+# returns the tab to show next, or None when the window closes
+def settingsClick(location, tab='board'):
+    for name, rect in settingsLayout(tab).items():
+        if name == 'box' or name.startswith('label:') or not rect.collidepoint(location):
             continue
         if name == 'close':
-            return False
+            return None
         kind, choice = name.split(':')
-        settings.put(kind, choice)
-        if kind == 'board':
-            setBoardTheme(choice)
+        if kind == 'tab':
+            return choice
+        if kind == 'volume':
+            if settingsEnabled(name):
+                changeVolume(VOLUME_STEP if choice == '+' else -VOLUME_STEP)
+        elif kind in SETTING_CHOICES:
+            value = next(value for value, _ in SETTING_CHOICES[kind] if choiceId(value) == choice)
+            settings.put(kind, value)
+            if kind == 'uiTheme':
+                setUiTheme(value)
+            elif kind == 'sound':
+                applySoundSettings()
+                if value:
+                    SOUNDS['move'].play()
         else:
-            loadImages(choice)
+            settings.put(kind, choice)
+            if kind == 'board':
+                setBoardTheme(choice)
+            else:
+                loadImages(choice)
+    return tab
+
+
+# Esc closes the window; Tab and the arrow keys switch tabs
+def settingsKey(tab, key):
+    if key == p.K_ESCAPE:
+        return None
+    if key in (p.K_TAB, p.K_LEFT, p.K_RIGHT):
+        names = [name for name, _ in SETTINGS_TABS]
+        return names[(names.index(tab) + 1) % len(names)]
+    return tab
+
+
+# the volume can't go below 0 or above 100; everything else can always be clicked
+def settingsEnabled(name):
+    if name == 'volume:-':
+        return settingValue('volume') > 0
+    if name == 'volume:+':
+        return settingValue('volume') < 100
     return True
+
+
+# what the pointer is over in the Settings window: (id, tooltip or None, clickable), like the game's pointer targets
+def settingsPointer(tab, pos):
+    for name, rect in settingsLayout(tab).items():
+        if name == 'box' or not rect.collidepoint(pos):
+            continue
+        if name.startswith('label:'):
+            return 'settings:' + name, SETTING_TIPS.get(name[len('label:'):]), False
+        return 'settings:' + name, None, settingsEnabled(name)
+    return None, None, False
 
 
 def previewImage(folder, piece):
@@ -2287,67 +3124,234 @@ def previewImage(folder, piece):
     return PREVIEW_IMAGES[(folder, piece)]
 
 
-def drawSettingsWindow(screen, mouse_pos):
-    shade = p.Surface(screen.get_size())
-    shade.set_alpha(150)
-    shade.fill(p.Color(0, 0, 0))
-    screen.blit(shade, (0, 0))
-    rects = settingsLayout()
-    box = rects['box']
-    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), box)
-    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), box, 3)
-    x = box.x + 40
-    titleObj = get_text_surface("Settings", 32, "black")
-    screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
+# one choice of a switch (or a tab): the chosen one in the accent color, the others quiet
+def drawSegment(screen, rect, text, selected, mouse_pos=(-1, -1), size=SEGMENT_LABEL_SIZE):
+    drawButton(screen, rect, text, True, mouse_pos, color=UI['accent'] if selected else UI['segment'], size=size,
+               textColor=UI['accentText'] if selected else UI['segmentText'])
 
-    chosen = {'board': settings.get('board') if settings.get('board') in BOARD_THEMES else "Green",
-              'pieces': settings.get('pieces') if settings.get('pieces') in PIECE_SETS else "Modern"}
-    screen.blit(get_text_surface("Board", 20, "black"), (x, box.y + 84))
-    screen.blit(get_text_surface("Pieces", 20, "black"), (x, box.y + 298))
-    for name, rect in rects.items():
-        if ':' not in name:
-            continue
-        kind, choice = name.split(':')
-        if kind == 'board':  # a 2x2 corner of the board in these colors
-            half = rect.width // 2
-            for r in range(2):
-                for c in range(2):
-                    p.draw.rect(screen, BOARD_THEMES[choice][(r + c) % 2], (rect.x + c * half, rect.y + r * half, half, half))
-        else:  # a white king and a black knight of this style, on the chosen board colors
-            folder = PIECE_SETS[choice]
-            for i, piece in enumerate(('wK', 'bN')):
-                square = p.Rect(rect.x + i * PREVIEW_SIZE, rect.y, PREVIEW_SIZE, PREVIEW_SIZE)
-                p.draw.rect(screen, BOARD_COLORS[i], square)
-                screen.blit(previewImage(folder, piece), square.topleft)
-        if chosen[kind] == choice:
-            p.draw.rect(screen, p.Color(MOVE_HIGHLIGHT_COLOR), rect.inflate(10, 10), 4)
-        elif rect.collidepoint(mouse_pos):
-            p.draw.rect(screen, p.Color("gray"), rect.inflate(10, 10), 2)
-        labelObj = get_text_surface(choice, 18, "black" if chosen[kind] == choice else "dimgray", chosen[kind] == choice)
-        screen.blit(labelObj, (rect.centerx - labelObj.get_width() / 2, rect.bottom + 10))
+
+def drawSettingsWindow(screen, mouse_pos, tab='board'):
+    drawShade(screen)
+    rects = settingsLayout(tab)
+    box = rects['box']
+    drawWindowBox(screen, box)
+    titleObj = get_text_surface("Settings", 32, UI['text'])
+    screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 22))
+    for name, label in SETTINGS_TABS:
+        drawSegment(screen, rects['tab:' + name], label, name == tab, mouse_pos, BUTTON_LABEL_SIZE)
+    lineY = rects['tab:board'].bottom + 16
+    p.draw.line(screen, p.Color(UI['fieldBorder']), (box.x + 24, lineY), (box.right - 25, lineY))
+
+    for row in SETTINGS_ROWS[tab]:
+        label = rects['label:' + row]
+        labelObj = get_text_surface(SETTING_LABELS[row], 20, UI['text'])
+        top = label.y + 10 if row in ('board', 'pieces') else label.centery - labelObj.get_height() / 2
+        screen.blit(labelObj, (label.x, top))
+        current = settingValue(row)
+        if row == 'volume':
+            for name in ('volume:-', 'volume:+'):
+                rect = rects[name]
+                enabled = settingsEnabled(name)
+                drawButton(screen, rect, "", enabled, mouse_pos)
+                color = p.Color(UI['buttonText'] if enabled else UI['buttonTextDisabled'])
+                p.draw.rect(screen, color, p.Rect(rect.centerx - 9, rect.centery - 1, 18, 4))  # the minus
+                if name == 'volume:+':
+                    p.draw.rect(screen, color, p.Rect(rect.centerx - 2, rect.centery - 8, 4, 18))
+            between = p.Rect(rects['volume:-'].right, rects['volume:-'].y, 90, ROW_HEIGHT)
+            soundOn = settingValue('sound')
+            valueObj = get_text_surface("%d%%" % current if soundOn else "Muted", 20,
+                                        UI['text'] if soundOn else UI['textDim'], soundOn)
+            screen.blit(valueObj, (between.centerx - valueObj.get_width() / 2, between.centery - valueObj.get_height() / 2))
+        elif row == 'uiTheme':  # a sample of each theme's panel: its background, edge and text
+            for value, text in SETTING_CHOICES[row]:
+                rect = rects['uiTheme:' + value]
+                palette = PALETTES[value]
+                p.draw.rect(screen, p.Color(palette['panel']), rect, border_radius=BUTTON_RADIUS)
+                p.draw.rect(screen, p.Color(palette['stripLine']), rect, 1, border_radius=BUTTON_RADIUS)
+                nameObj = get_text_surface(text, SEGMENT_LABEL_SIZE, palette['text'], sans=True)
+                screen.blit(nameObj, (rect.centerx - nameObj.get_width() / 2, rect.centery - nameObj.get_height() / 2 + 1))
+                if current == value:
+                    p.draw.rect(screen, p.Color(UI['accent']), rect.inflate(10, 10), 4, border_radius=BUTTON_RADIUS + 4)
+                elif rect.collidepoint(mouse_pos):
+                    p.draw.rect(screen, p.Color(UI['hoverOutline']), rect.inflate(10, 10), 2,
+                                border_radius=BUTTON_RADIUS + 4)
+        elif row in ('board', 'pieces'):
+            for choice in (BOARD_THEMES if row == 'board' else PIECE_SETS):
+                rect = rects[row + ':' + choice]
+                if row == 'board':  # a 2x2 corner of the board in these colors
+                    half = rect.width // 2
+                    for r in range(2):
+                        for c in range(2):
+                            p.draw.rect(screen, BOARD_THEMES[choice][(r + c) % 2],
+                                        (rect.x + c * half, rect.y + r * half, half, half))
+                else:  # a white king and a black knight of this style, on the chosen board colors
+                    for i, piece in enumerate(('wK', 'bN')):
+                        square = p.Rect(rect.x + i * PREVIEW_SIZE, rect.y, PREVIEW_SIZE, PREVIEW_SIZE)
+                        p.draw.rect(screen, BOARD_COLORS[i], square)
+                        screen.blit(previewImage(PIECE_SETS[choice], piece), square.topleft)
+                if current == choice:
+                    p.draw.rect(screen, p.Color(UI['accent']), rect.inflate(10, 10), 4)
+                elif rect.collidepoint(mouse_pos):
+                    p.draw.rect(screen, p.Color(UI['hoverOutline']), rect.inflate(10, 10), 2)
+                nameObj = get_text_surface(choice, 18, UI['text'] if current == choice else UI['textDim'],
+                                           current == choice)
+                screen.blit(nameObj, (rect.centerx - nameObj.get_width() / 2, rect.bottom + 9))
+        else:
+            for value, text in SETTING_CHOICES[row]:
+                drawSegment(screen, rects['%s:%s' % (row, choiceId(value))], text, current == value, mouse_pos)
 
     drawButton(screen, rects['close'], "Close", True, mouse_pos)
+
+
+# --- tooltips and the pointer's look
+
+TOOLTIP_DELAY_MS = 600  # the pointer rests on a control this long before its tooltip shows
+TOOLTIP_SIZE = 22  # sans font
+# what each panel control does; names as in panelRows()
+TOOLTIPS = {
+    'mode': "Play the computer, a friend here, or online",
+    'level': "How strong the computer plays",
+    'side': "Your color against the computer",
+    'clock': "Time for each player: minutes + seconds per move",
+    'hint': "Show a good move on the board",
+    'room': "Type the room code your friend sent",
+    'host': "Create a room and play White",
+    'join': "Join this room and play Black",
+    'rejoin': "Go back to your last room",
+    'save': "Save this game as a PGN file",
+    'load': "Open a game from a PGN file",
+    'help': "How to play (H)",
+    'resign': "Give up this game",
+    'draw': "Offer your opponent a draw",
+    'analyze': "Let the computer mark the mistakes",
+    'first': "First move", 'prev': "Previous move (Left)", 'next': "Next move (Right)", 'last': "Last move",
+    'undo': "Undo (Z)",
+    'restart': "Restart (R)",
+    'account': "Sign in to save games and get rated",
+    'menu': "More: save, load, flip board, settings, help",
+    'flip': "Turn the board around (F)",
+    'settings': "Board, pieces, theme and sound",
+}
+
+
+# the tooltip of an enabled panel control; online, Undo asks the opponent and Restart leaves the room
+def tooltipText(name, connected=False, signedIn=False):
+    if connected and name == 'undo':
+        return "Ask your opponent to undo (Z)"
+    if connected and name == 'restart':
+        return "Leave the room"
+    if signedIn and name == 'account':
+        return "Your games, record and rating"
+    return TOOLTIPS.get(name)
+
+
+# why a panel control can't be clicked right now (None when it can, or no reason applies)
+# shown as its tooltip, and in the status slot when it's clicked anyway (touch screens have no hover)
+def disabledReason(name, gameOver=False, online=False, connected=False, humanTurn=True, hintsLeft=1,
+                   hintBusy=False, prompt=False, analysis=None, moves=0, atStart=False, atEnd=False, roomCode=""):
+    if name == 'hint':
+        if gameOver:
+            return "The game is over"
+        if online:
+            return "Hints are off in online games"
+        if hintsLeft <= 0:
+            return "No hints left today"
+        if hintBusy:
+            return "Looking for a good move..."
+        if not humanTurn:
+            return "Wait for your turn"
+    elif name in ('resign', 'draw'):
+        if gameOver:
+            return "The game is over"
+        if online and not connected:
+            return "Join a room first"
+        if name == 'draw' and prompt:
+            return "Answer the open question first"
+    elif name == 'undo' and online and not connected:
+        return "No game yet"
+    elif name == 'save' and moves == 0:
+        return "Make a move first"
+    elif name == 'load' and online:
+        return "Leave online play first"
+    elif name == 'join' and not roomCode:
+        return "Type a room code first"
+    elif name == 'analyze':
+        if moves == 0:
+            return "Make a move first"
+        return "The game is already analyzed" if analysis == 'done' else "The analysis is running"
+    elif name in ('first', 'prev') and atStart:
+        return "This is the start of the game"
+    elif name in ('next', 'last') and atEnd:
+        return "This is the final position"
+    return None
+
+
+# where a tooltip for text goes with the pointer at pos: below and right of it, kept inside the screen
+def tooltipRect(text, pos, screenSize):
+    width, height = get_font(TOOLTIP_SIZE, True, True).size(text)
+    rect = p.Rect(pos[0] + 12, pos[1] + 22, width + 18, height + 12)
+    if rect.bottom > screenSize[1] - 4:
+        rect.bottom = pos[1] - 10  # above the pointer instead
+    rect.clamp_ip(p.Rect(4, 4, screenSize[0] - 8, screenSize[1] - 8))
+    return rect
+
+
+def drawTooltip(screen, text, pos):
+    rect = tooltipRect(text, pos, screen.get_size())
+    p.draw.rect(screen, p.Color(UI['tooltipBg']), rect, border_radius=6)
+    p.draw.rect(screen, p.Color(*shadeColor(UI['tooltipBg'], 40 if sum(UI['tooltipBg']) < 384 else -40)), rect, 1,
+                border_radius=6)
+    textObj = get_text_surface(text, TOOLTIP_SIZE, UI['tooltipText'], sans=True)
+    screen.blit(textObj, (rect.x + 9, rect.centery - textObj.get_height() / 2 + 1))
+    return rect
+
+
+CURSOR = ['arrow']  # the pointer's current look: 'hand' over anything clickable, else 'arrow'
+
+
+# changes the pointer's look, only when it should look different; some platforms (or pygame builds) can't
+def setCursor(kind):
+    if CURSOR[0] == kind:
+        return
+    CURSOR[0] = kind
+    try:
+        cursor = p.SYSTEM_CURSOR_HAND if kind == 'hand' else p.SYSTEM_CURSOR_ARROW
+        try:
+            p.mouse.set_cursor(cursor)
+        except TypeError:  # pygame 2.0.0 sets system cursors only through set_system_cursor
+            p.mouse.set_system_cursor(cursor)
+    except Exception:  # e.g. no cursor support (headless)
+        pass
 
 
 # a check mark at the left of a button, for the current choice in a dropdown
 def drawCheckMark(screen, rect):
     x, y = rect.x + 12, rect.centery
-    p.draw.lines(screen, p.Color('white'), False, [(x, y), (x + 6, y + 6), (x + 17, y - 7)], 3)
+    p.draw.lines(screen, p.Color(UI['buttonText']), False, [(x, y), (x + 6, y + 6), (x + 17, y - 7)], 3)
 
 
-# a gear: a ring with eight teeth, for the Settings button
-def drawGearIcon(screen, rect):
-    cx, cy = rect.center
-    white = p.Color('white')
-    for i in range(8):
-        angle = i * math.pi / 4
-        p.draw.circle(screen, white, (cx + 9 * math.cos(angle), cy + 9 * math.sin(angle)), 3)
-    p.draw.circle(screen, white, (cx, cy), 8, 4)
+# three lines, for the menu button
+def drawMenuIcon(screen, rect):
+    color = p.Color(UI['buttonText'])
+    for dy in (-7, 0, 7):
+        p.draw.rect(screen, color, p.Rect(rect.centerx - 10, rect.centery + dy - 1, 20, 3), border_radius=1)
+
+
+# the open menu's items over the panel, like dropdown options; states: which can be clicked (controlStates)
+def drawMenu(screen, menuRect, states, mouse_pos):
+    box = menuBoxRect(menuRect)
+    p.draw.rect(screen, p.Color(UI['window']), box, border_radius=BUTTON_RADIUS + 4)
+    p.draw.rect(screen, p.Color(UI['windowBorder']), box, 2, border_radius=BUTTON_RADIUS + 4)
+    rects = menuItemRects(menuRect)
+    labels = dict(MENU_ITEMS)
+    size = evenLabelSizes([list(rects)], rects, labels)[MENU_ITEMS[0][0]]
+    for name, rect in rects.items():
+        drawButton(screen, rect, labels[name], states.get(name, True), mouse_pos, size=size)
 
 
 def drawNavIcon(screen, rect, name):
     cx, cy = rect.center
-    white = p.Color('white')
+    white = p.Color(UI['buttonText'])
     if name in ('first', 'prev'):
         tip = cx - 5 if name == 'prev' else cx - 3
         p.draw.polygon(screen, white, [(tip, cy), (tip + 11, cy - 8), (tip + 11, cy + 8)])
@@ -2395,9 +3399,10 @@ async def animateMove(move, screen, board, clock, flip=False):
     # change in row, col
     deltaRow = move.endRow - move.startRow
     deltaCol = move.endCol - move.startCol
-    # how long the animation takes: longer moves a little longer (120 ms for one square, 300 ms across the
-    # board); the piece's position comes from the time passed, so the speed doesn't depend on the computer
-    duration = ANIMATION_BASE_MS + ANIMATION_MS_PER_SQUARE * max(abs(deltaRow), abs(deltaCol))
+    # the piece's position comes from the time passed, so the speed doesn't depend on the computer
+    duration = animationDuration(move)
+    if duration <= 0:  # animation is off
+        return
     start = p.time.get_ticks()
     done = False
     while not done:
@@ -2468,20 +3473,20 @@ def resultCardLayout(text, buttons):
     return titleObj, noteObj, rects
 
 
-# what the online status line says: (text, color, note for the opponent's name or None)
+# what the online status line says: (text, palette key of its color, note for the opponent's name or None)
 # role: ours; opponentSeen: server time of the opponent's latest message (None before any); serverTime: the latest
 # server time of any message in the room, ours included (we ping when quiet, so it keeps up); networkStatus: net.last_status
 def presenceStatus(role, opponentSeen, serverTime, networkStatus):
     if "HEALTHY" not in networkStatus and "READY" not in networkStatus:
-        return "Connecting to the server...", "darkorange", None
+        return "Connecting to the server...", 'warning', None
     if opponentSeen is None:
         if role == 'host':
-            return "Waiting for your opponent: share the room code", "dimgray", "not here yet"
-        return "Waiting for the host to answer...", "dimgray", "not here yet"
+            return "Waiting for your opponent: share the room code", 'textDim', "not here yet"
+        return "Waiting for the host to answer...", 'textDim', "not here yet"
     silent = serverTime - opponentSeen
     if silent <= OPPONENT_GONE_SECONDS:
-        return "Opponent connected", "darkgreen", None
-    return "Opponent silent for %d min: they may have left" % max(1, silent // 60), "firebrick", "may have left"
+        return "Opponent connected", 'success', None
+    return "Opponent silent for %d min: they may have left" % max(1, silent // 60), 'error', "may have left"
 
 
 # the result on a dark card in the middle of the board, so it reads over any position, with buttons for what's next
@@ -2497,6 +3502,26 @@ def drawEndGameText(screen, text, buttons, mouse_pos):
         drawButton(screen, rects[name], RESULT_BUTTONS[name], True, mouse_pos)
 
 
+# what the Looking back banner says while the board shows the position after ply moves of moveLog
+def lookBackText(moveLog, ply):
+    if ply == 0:
+        shown = "the start position"
+    else:
+        i = ply - 1
+        shown = "after %d.%s %s" % (i // 2 + 1, "" if i % 2 == 0 else "..", moveLog[i].san or str(moveLog[i]))
+    return "Looking back: %s  -  click here or press End to return" % shown
+
+
+# a see-through bar across the top of the board, in the theme's colors, so the pieces under it still show
+def drawLookBackBanner(screen, text):
+    rect = LOOK_BACK_BANNER
+    layer = p.Surface(rect.size, p.SRCALPHA)
+    layer.fill(UI['bannerBg'])
+    screen.blit(layer, rect.topleft)
+    textObj = get_fitting_text(text, rect.width - 24, 22, UI['bannerText'], True, sans=True)
+    screen.blit(textObj, (rect.centerx - textObj.get_width() / 2, rect.centery - textObj.get_height() / 2))
+
+
 # a separate GameState with the same moves, for searching in the background while gs stays on screen
 def copyGame(gs):
     board = GameState()
@@ -2505,6 +3530,26 @@ def copyGame(gs):
     for move in gs.moveLog:
         board.makeMove(move)
     return board
+
+
+# the moves the player (not to move in gs) could choose as a premove: those that would be legal if it were their
+# turn now. En passant is left out (the opponent's coming move decides it), and so is taking the king (when the
+# player is giving check), which can never become legal
+def premoveMoves(gs):
+    board = copyGame(gs)
+    board.whiteToMove = not board.whiteToMove
+    board.enpasantPossible = ()
+    return [move for move in board.getValidMoves() if move.pieceCaptured[1:] != 'K']
+
+
+# what becomes of a premove (start, end) once it's the player's turn: the legal move to play (a promotion stays
+# a queen), or None when it isn't legal any more and is dropped
+def resolvePremove(premove, validMoves):
+    start, end = premove
+    for move in validMoves:
+        if (move.startRow, move.startCol) == tuple(start) and (move.endRow, move.endCol) == tuple(end):
+            return move
+    return None
 
 
 # keep one position key per ply plus the start position, so an undo just truncates the list
