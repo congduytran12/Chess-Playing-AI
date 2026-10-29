@@ -94,6 +94,8 @@ PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
 # message is noticed and the side that is behind catches up; ntfy.sh allows about one message per 5s
 HEARTBEAT_MS = 15000
 SYNC_REPLY_MS = 2000  # at most one state reply to a player who is behind per this many ms
+PRESENCE_MS = 20000  # a player who has sent nothing for this long sends a 'ping', to show they're still there
+OPPONENT_GONE_SECONDS = 60  # no message from the opponent for this long (server clock): they may have left
 ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
 
 
@@ -150,10 +152,15 @@ MOVE_HIGHLIGHT_COLOR = (84, 115, 161)
 POSSIBLE_MOVE_COLOR = (255, 255, 51)
 LAST_MOVE_COLOR = (205, 210, 106)
 HINT_COLOR = (64, 160, 220)
+ARROW_COLOR = HINT_COLOR + (190,)  # hint arrows, and the better move in the analysis
+ARROW_LAYER = None  # see-through board-sized surface the arrows are drawn on, made on first use
 MOVE_MARKER_COLOR = (20, 60, 20, 90)  # dots and rings showing where the selected piece can go
 MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
 STRIP_COLOR = (222, 224, 190)
 DISABLED_COLOR = (165, 165, 165)
+CONFIRM_COLOR = (186, 72, 58)  # the action of a confirmation that can't be taken back (Resign, Leave)
+SELECTED_OPTION_COLOR = (82, 112, 54)  # the current choice in an open dropdown
+NEUTRAL_COLOR = (118, 118, 118)  # Cancel / Decline
 
 # the board's squares can be recolored in Settings (the side panel keeps the green colors above):
 # name -> (light square, dark square)
@@ -291,6 +298,12 @@ async def main():
     # initialize py game
     p.init()
     print("Main: v13.0 Loaded (Clocks, Hints, PGN)")
+    # the desktop window's title and icon (before set_mode: some systems ignore an icon set afterwards)
+    p.display.set_caption("Chess Playing AI")
+    try:
+        p.display.set_icon(p.transform.smoothscale(p.image.load("images1/wN.png"), (64, 64)))
+    except Exception as e:
+        print("Main: could not set the window icon:", e)
     screen = p.display.set_mode(
         (BOARD_WIDTH + MOVE_LOG_PANEL_WIDTH, BOARD_HEIGHT))
     if sys.platform == 'emscripten':
@@ -346,6 +359,8 @@ async def main():
     lastSyncReply = 0  # ticks when we last answered a player who is behind
     savedSession = net.load_session()  # last room and role, offered as Rejoin
     opponentInfo = None  # {'uid', 'name', 'rating'} of a signed-in online opponent
+    opponentSeen = None  # ntfy server time of the opponent's latest message, None before they have sent any
+    lastMessageSent = 0  # ticks when we last sent anything online
 
     # player account (see account.py): the account window, and saving finished games to the account
     accountView = None  # 'signin' | 'register' | 'profile' | 'games' | 'leaderboard' while the window is open
@@ -366,6 +381,8 @@ async def main():
     positionHistory = [gs.getPositionKey()]  # one position key per ply, for threefold repetition
     moveLogScroll = 0  # move log lines scrolled back from the latest
     gameResult = None  # (text, PGN result) when the game ended by resignation, agreement or time
+    resultCardHidden = False  # the player clicked beside the result card to see the final position
+    outcome = None  # (text, PGN result) once the game is over, worked out every frame
     hintMove = None  # suggested move shown on the board
     hintState = None  # 'requested' -> 'searching' -> None
     statusText = ""  # short message shown at the bottom of the board
@@ -449,7 +466,7 @@ async def main():
 
     def resetGame():
         nonlocal gs, validMoves, squareSelected, playerClicks, moveMade, animate, gameOver, moveUndone
-        nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll
+        nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll, resultCardHidden
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported
         clearReview()
@@ -470,6 +487,7 @@ async def main():
         positionHistory = [gs.getPositionKey()]
         stopAI()
         gameResult = None
+        resultCardHidden = False
         hintMove = None
         hintState = None
         pendingPrompt = None
@@ -485,6 +503,10 @@ async def main():
         clocks = {'w': startMs, 'b': startMs}
         clockHistory = [dict(clocks)]
         lastClockTick = p.time.get_ticks()
+
+    # the result card's buttons: against the computer the player can also switch sides
+    def resultButtons():
+        return ['new', 'switch'] if currentModeIndex == 0 else ['new']
 
     # Restart button / r key: a new game, and in online play leaving the room so a new one can be hosted
     def restartGame():
@@ -546,9 +568,10 @@ async def main():
     # undo plies and restore everything tied to them
     def takeBack(plies):
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
-        nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved
+        nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved, resultCardHidden
         clearReview()
         stopAI()
+        resultCardHidden = False  # when the game ends again, its result shows again
         gameSaved = False  # if the game is finished again, its saved copy is updated
         for _ in range(plies):
             gs.undoMove()
@@ -586,6 +609,8 @@ async def main():
             takeBack(1)
 
     def sendOnline(message):
+        nonlocal lastMessageSent
+        lastMessageSent = p.time.get_ticks()
         message.update({'game': onlineGame, 'version': onlineVersion, 'role': multiplayerRole, 'sender': myPlayerId})
         if account.signedIn:  # lets the opponent show our name and report the result for ratings
             message['player'] = {'uid': account.profile['id'], 'name': account.username,
@@ -630,9 +655,10 @@ async def main():
 
     def connectOnline(role):
         nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, onlineGameId, savedSession, lastStateHeard
-        nonlocal opponentInfo
+        nonlocal opponentInfo, opponentSeen
         multiplayerRole = role
         opponentInfo = None
+        opponentSeen = None
         net.set_topic(roomCode)
         print(f"DEBUG: I am {role.upper()}. Full Network Topic: [{net.topic}]")
         networkConnected = True
@@ -948,6 +974,8 @@ async def main():
             messages = [msg for msg in net.get_messages() if msg.get('sender') != myPlayerId]
             for msg in messages:
                 print(f"Main: Received message type='{msg.get('type')}' from {msg.get('role')} sender={msg.get('sender', '???')}")
+                if msg.get('role') == opponentRole and msg.get('_time') is not None:
+                    opponentSeen = max(opponentSeen or 0, msg['_time'])  # server time of their latest message
                 player = msg.get('player')
                 if msg.get('role') == opponentRole and isinstance(player, dict) and player.get('uid'):
                     try:
@@ -1022,6 +1050,10 @@ async def main():
             interval = HEARTBEAT_MS * (2 if gameOver else 1)
             if (gameOver or not humanTurn) and p.time.get_ticks() - max(lastStateSent, lastStateHeard) > interval:
                 sendState('heartbeat')
+            # a player who has sent nothing for a while (say, thinking about a move) says they're still here,
+            # so the opponent can tell them apart from a player who left
+            if p.time.get_ticks() - lastMessageSent > PRESENCE_MS:
+                sendOnline({'type': 'ping'})
 
         for e in p.event.get():
             if e.type == p.QUIT:
@@ -1203,11 +1235,21 @@ async def main():
                     if gameOver:
                         if reviewPly is not None:
                             continue  # stepping through the moves; the board isn't playable
-                        # clicking the board after the game starts a new one
-                        if multiplayerMode and networkConnected:
-                            startOnlineGame()
-                        else:
+                        if resultCardHidden:
+                            resultCardHidden = False  # another click brings the result card back
+                            continue
+                        # the result card's buttons start the next game; a click beside them hides the card
+                        _, _, cardRects = resultCardLayout(outcome[0], resultButtons())
+                        if cardRects['new'].collidepoint(location):
+                            if multiplayerMode and networkConnected:
+                                startOnlineGame()
+                            else:
+                                resetGame()
+                        elif 'switch' in cardRects and cardRects['switch'].collidepoint(location):
+                            sideIndex = 1 if playerWhiteHuman else 0  # "Play as" changes to the other color
                             resetGame()
+                        else:
+                            resultCardHidden = True
                         continue
                     col = location[0]//SQ_SIZE
                     row = location[1]//SQ_SIZE
@@ -1266,6 +1308,9 @@ async def main():
                     continue
                 if settingsOpen:
                     settingsOpen = e.key != p.K_ESCAPE
+                    continue
+                if openDropdown and e.key == p.K_ESCAPE:
+                    openDropdown = None
                     continue
                 if inputBoxActive:
                     if e.key == p.K_BACKSPACE:
@@ -1410,18 +1455,24 @@ async def main():
 
         if not gameOver and reviewPly is not None:
             clearReview()  # the game went on (e.g. an undo from the opponent)
+        # arrows: the hint, and after the game the better move instead of an analysed mistake
+        marks = moveMarks(analysis, gs.moveLog) if analysis else {}
+        arrows = []
+        if hintMove is not None and not gameOver:  # a hint is for the game in progress (it may end by resigning)
+            arrows.append(((hintMove.startRow, hintMove.startCol), (hintMove.endRow, hintMove.endCol)))
+        if gameOver and shownPly() - 1 in marks and analysis['best'][shownPly() - 1]:
+            arrows.append(codeSquares(analysis['best'][shownPly() - 1]))
         # the board shows the reviewed position while stepping through a finished game
         shownGs = reviewGs if reviewGs is not None else gs
         if reviewGs is not None:
-            drawGameState(screen, reviewGs, [], (), flip_board)
+            drawGameState(screen, reviewGs, [], (), flip_board, arrows)
         else:
-            drawGameState(screen, gs, validMoves, squareSelected, flip_board, hintMove)
+            drawGameState(screen, gs, validMoves, squareSelected, flip_board, arrows)
 
         # side panel
         layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
         stripY = min(rect.y for rect in layout.values()) - ROW_GAP - STRIP_HEIGHT
         p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), p.Rect(PANEL_X, 0, MOVE_LOG_PANEL_WIDTH, MOVE_LOG_PANEL_HEIGHT))
-        marks = moveMarks(analysis, gs.moveLog) if analysis else {}
         # below the moves: a slot for status messages, and after the game the review info under it
         infoRect = p.Rect(PANEL_X + 10, stripY - 60, MOVE_LOG_PANEL_WIDTH - 20, 54)
         statusRect = p.Rect(PANEL_X + 10, (infoRect.y if gameOver else stripY) - STATUS_HEIGHT - 4,
@@ -1430,7 +1481,7 @@ async def main():
             # the shown position, its evaluation and the analysis
             moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2,
                                                    shownPly() - 1, marks, reviewScroll)
-            drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate)
+            drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate, outcome[0])
         else:
             moveLogScroll, moveRects = drawMoveLog(screen, gs, moveLogScroll, STRIP_HEIGHT, statusRect.y - 2)
         reviewScroll = False
@@ -1438,13 +1489,17 @@ async def main():
         balance = materialBalance(shownGs.board)
         sideToMove = 'w' if shownGs.whiteToMove else 'b'
         shownClocks = clockHistory[reviewPly] if reviewPly is not None and reviewPly < len(clockHistory) else clocks
-        thinkingColor = ('w' if gs.whiteToMove else 'b') if aiSearch is not None else None
+        notes = {}  # a note after a player's name
+        if aiSearch is not None:
+            notes['w' if gs.whiteToMove else 'b'] = "thinking" + "." * (1 + p.time.get_ticks() // 400 % 3)
+        if multiplayerMode and networkConnected:
+            notes['b' if myColor() == 'w' else 'w'] = presenceStatus(multiplayerRole, opponentSeen, net.server_time,
+                                                                     net.last_status)[2]
         for color, y in ((('w' if flip_board else 'b'), 0), (('b' if flip_board else 'w'), stripY)):
             drawPlayerStrip(screen, y, color, playerName(color), taken[color],
                             balance if color == 'w' else -balance,
                             shownClocks[color] if timeControl else None,
-                            clockRunning() and sideToMove == color,
-                            "thinking" + "." * (1 + p.time.get_ticks() // 400 % 3) if color == thinkingColor else None)
+                            clockRunning() and sideToMove == color, notes.get(color))
 
         mouse_pos = p.mouse.get_pos()
         states = controlStates()
@@ -1493,10 +1548,11 @@ async def main():
                 else:
                     dot_color = p.Color('red')
                 p.draw.circle(screen, dot_color, (textLoc.x + textObj.get_width() + 15, textLoc.y + textObj.get_height() / 2), 6)
-                # Network Stats
-                stats_text = f"Game {onlineGame + 1}, change {onlineVersion} | Msgs: {net.msg_count} | Polls: {net.poll_count} | {net.last_status}"
-                statsObj = get_text_surface(stats_text, 14, "gray", False)
-                screen.blit(statsObj, (rect.centerx - statsObj.get_width() / 2, rect.y + 24))
+                # whether the opponent is there (the connection details go to the console)
+                presenceText, presenceColor = presenceStatus(multiplayerRole, opponentSeen, net.server_time,
+                                                             net.last_status)[:2]
+                presenceObj = get_fitting_text(presenceText, rect.width, 15, presenceColor, False)
+                screen.blit(presenceObj, (rect.centerx - presenceObj.get_width() / 2, rect.y + 24))
             else:
                 arrow = None
                 if name in ('mode', 'level', 'side', 'clock'):
@@ -1507,28 +1563,31 @@ async def main():
                 elif name == 'settings':
                     drawGearIcon(screen, rect)
 
-        if gameOver and reviewPly is None:
-            drawEndGameText(screen, outcome[0])
+        if gameOver and reviewPly is None and not resultCardHidden:
+            drawEndGameText(screen, outcome[0], resultButtons(), mouse_pos)
 
         # overlays: open dropdown options and the Accept / Decline prompt
         if openDropdown in layout:
             options = dropdownLabels(openDropdown)
+            current = {'mode': currentModeIndex, 'level': chessAi.LEVEL, 'side': sideIndex,
+                       'clock': clockIndex}[openDropdown]
             for i, optRect in enumerate(dropdownOptionRects(layout[openDropdown], len(options))):
-                drawButton(screen, optRect, options[i], True, mouse_pos)
+                drawButton(screen, optRect, options[i], True, mouse_pos,
+                           color=SELECTED_OPTION_COLOR if i == current else None)
+                if i == current:
+                    drawCheckMark(screen, optRect)
         if pendingPrompt:
             panel_rect, acceptBtn, denyBtn = promptRects()
-            p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), panel_rect)
-            p.draw.rect(screen, p.Color("red"), panel_rect, 2)
+            p.draw.rect(screen, p.Color(STRIP_COLOR), panel_rect)
+            p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), panel_rect, 2)
             textObj = get_fitting_text(pendingPrompt['text'], panel_rect.width - 20, 20, "black")
             screen.blit(textObj, (panel_rect.centerx - textObj.get_width() / 2, panel_rect.y + 12))
-            # a confirmation puts its action in red and the way out in green; an offer is the other way round
+            # a confirmation shows its action in red (it can't be taken back); an offer's Accept is green;
+            # the way out is a neutral gray
             confirm = pendingPrompt.get('confirm', False)
-            p.draw.rect(screen, p.Color("red" if confirm else "green"), acceptBtn)
-            tAccept = get_text_surface(pendingPrompt.get('yes', "Accept"), 20, "white", True)
-            screen.blit(tAccept, acceptBtn.move(acceptBtn.width/2 - tAccept.get_width()/2, acceptBtn.height/2 - tAccept.get_height()/2))
-            p.draw.rect(screen, p.Color("green" if confirm else "red"), denyBtn)
-            tDeny = get_text_surface(pendingPrompt.get('no', "Decline"), 20, "white", True)
-            screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, denyBtn.height/2 - tDeny.get_height()/2))
+            drawButton(screen, acceptBtn, pendingPrompt.get('yes', "Accept"), True, mouse_pos,
+                       color=CONFIRM_COLOR if confirm else DARK_SQUARE_COLOR)
+            drawButton(screen, denyBtn, pendingPrompt.get('no', "Decline"), True, mouse_pos, color=NEUTRAL_COLOR)
         if accountView:
             drawAccountWindow(screen, accountView, accountFields, accountFocus, accountMessage, accountBusy(),
                               account, accountList, mouse_pos)
@@ -1545,13 +1604,14 @@ async def main():
         await asyncio.sleep(0)
 
 
-def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None):
+# color: the button's own color instead of the panel green; it lightens under the mouse
+def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None, color=None):
     if not enabled:
         color = p.Color(DISABLED_COLOR)
     elif rect.collidepoint(mouse_pos):
-        color = p.Color(MOVE_HIGHLIGHT_COLOR)
+        color = p.Color(MOVE_HIGHLIGHT_COLOR) if color is None else p.Color(*(min(255, c + 30) for c in color))
     else:
-        color = p.Color(DARK_SQUARE_COLOR)
+        color = p.Color(color or DARK_SQUARE_COLOR)
     p.draw.rect(screen, color, rect)
     p.draw.rect(screen, p.Color('black'), rect, 1)
 
@@ -1871,7 +1931,7 @@ HELP_PAGES = [
         (None, "Save PGN and Load PGN", "Save the game to a file, or open a saved game to replay it."),
         (None, "After the game",
          "Step through the moves with the arrow keys, or click Analyze game to mark mistakes with ?!, ? and "
-         "??. Click the board to play again."),
+         "?? (an arrow shows the better move). Start the next game from the result card."),
         (None, "How to play (H)", "Opens this window. Esc closes it."),
     ]),
 ]
@@ -1963,16 +2023,14 @@ def drawHelpWindow(screen, page, mouse_pos):
         drawButton(screen, rects[name], label, enabled, mouse_pos)
 
 
-def drawGameState(screen, gs, validMoves, squareSelected, flip=False, hintMove=None):
+# arrows: (start square, end square) pairs drawn over the pieces
+def drawGameState(screen, gs, validMoves, squareSelected, flip=False, arrows=()):
     drawSquare(screen, flip)  # draw square on board
     # last move played, and the hint if one is showing
     if gs.moveLog:
         lastMove = gs.moveLog[-1]
         tintSquare(screen, lastMove.startRow, lastMove.startCol, LAST_MOVE_COLOR, 170, flip)
         tintSquare(screen, lastMove.endRow, lastMove.endCol, LAST_MOVE_COLOR, 170, flip)
-    if hintMove is not None:
-        tintSquare(screen, hintMove.startRow, hintMove.startCol, HINT_COLOR, 150, flip)
-        tintSquare(screen, hintMove.endRow, hintMove.endCol, HINT_COLOR, 150, flip)
     highlightSquares(screen, gs, squareSelected, flip)
 
     # Check/Checkmate effect: Highlight the king's square in red
@@ -1987,6 +2045,39 @@ def drawGameState(screen, gs, validMoves, squareSelected, flip=False, hintMove=N
 
     drawPieces(screen, gs.board, flip)
     drawMoveMarkers(screen, gs, validMoves, squareSelected, flip)
+    for start, end in arrows:
+        drawArrow(screen, start, end, flip)
+
+
+# ((start row, col), (end row, col)) of a move in coordinate notation, e.g. "g1f3"
+def codeSquares(code):
+    return ((Move.ranksToRows[code[1]], Move.filesToCols[code[0]]),
+            (Move.ranksToRows[code[3]], Move.filesToCols[code[2]]))
+
+
+# a see-through arrow from the center of one square to another, over the pieces (hints, the analysis's best move)
+def drawArrow(screen, start, end, flip=False):
+    global ARROW_LAYER
+    if ARROW_LAYER is None:
+        ARROW_LAYER = p.Surface((BOARD_WIDTH, BOARD_HEIGHT), p.SRCALPHA)
+    ARROW_LAYER.fill((0, 0, 0, 0))
+    (r1, c1), (r2, c2) = start, end
+    if flip:
+        r1, c1, r2, c2 = 7 - r1, 7 - c1, 7 - r2, 7 - c2
+    x1, y1 = (c1 + 0.5) * SQ_SIZE, (r1 + 0.5) * SQ_SIZE
+    x2, y2 = (c2 + 0.5) * SQ_SIZE, (r2 + 0.5) * SQ_SIZE
+    length = math.hypot(x2 - x1, y2 - y1)
+    ux, uy = (x2 - x1) / length, (y2 - y1) / length  # along the arrow
+    nx, ny = -uy, ux  # across it
+    shaft, head, headLength = SQ_SIZE * 0.09, SQ_SIZE * 0.24, SQ_SIZE * 0.42  # half widths, and the head's length
+    sx, sy = x1 + ux * SQ_SIZE * 0.2, y1 + uy * SQ_SIZE * 0.2  # starts a little off the piece's center
+    bx, by = x2 - ux * headLength, y2 - uy * headLength  # where the head begins
+    # one polygon, so the shaft and head don't overlap and darken where they meet
+    points = [(sx + nx * shaft, sy + ny * shaft), (bx + nx * shaft, by + ny * shaft), (bx + nx * head, by + ny * head),
+              (x2, y2), (bx - nx * head, by - ny * head), (bx - nx * shaft, by - ny * shaft),
+              (sx - nx * shaft, sy - ny * shaft)]
+    p.draw.polygon(ARROW_LAYER, ARROW_COLOR, points)
+    screen.blit(ARROW_LAYER, (0, 0))
 
 
 def tintSquare(screen, row, col, color, alpha, flip=False):
@@ -2122,7 +2213,8 @@ def drawMoveLog(screen, gs, scroll, top, bottom, currentPly=None, marks=None, fo
 
 
 # the shown position, its evaluation and what the analysis says about the move that led to it
-def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate):
+# result: the game's result text, shown at the final position (the result card may be hidden)
+def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, result=None):
     p.draw.rect(screen, p.Color(STRIP_COLOR), rect)
     p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), rect, 1)
     if ply == 0: 
@@ -2149,7 +2241,7 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate):
         second = "   ".join("%s ??%d ?%d ?!%d" % (name, counts[(c, "??")], counts[(c, "?")], counts[(c, "?!")])
                              for c, name in (('w', "White"), ('b', "Black")))
     else:
-        second = "Step through the moves with the arrow keys"
+        second = result if result and ply == len(moveLog) else "Step through the moves with the arrow keys"
     screen.blit(get_fitting_text(first, rect.width - 16, 17, "black", True), (rect.x + 8, rect.y + 5))
     screen.blit(get_fitting_text(second, rect.width - 16, 16, "dimgray", False), (rect.x + 8, rect.y + 29))
 
@@ -2235,6 +2327,12 @@ def drawSettingsWindow(screen, mouse_pos):
         screen.blit(labelObj, (rect.centerx - labelObj.get_width() / 2, rect.bottom + 10))
 
     drawButton(screen, rects['close'], "Close", True, mouse_pos)
+
+
+# a check mark at the left of a button, for the current choice in a dropdown
+def drawCheckMark(screen, rect):
+    x, y = rect.x + 12, rect.centery
+    p.draw.lines(screen, p.Color('white'), False, [(x, y), (x + 6, y + 6), (x + 17, y - 7)], 3)
 
 
 # a gear: a ring with eight teeth, for the Settings button
@@ -2348,20 +2446,55 @@ async def animateMove(move, screen, board, clock, flip=False):
         await asyncio.sleep(0) # Yield for browser interaction
 
 
-# the result on a dark card in the middle of the board, so it reads over any position
-def drawEndGameText(screen, text):
+# buttons on the result card, by name; which ones show depends on the mode (see resultButtons in main)
+RESULT_BUTTONS = {'new': "New game", 'switch': "Switch sides"}
+RESULT_CARD_NOTE = "Click the board to see the final position"
+
+
+# (title, note, rects) of the result card: rects has the 'card' and one rect per button name
+def resultCardLayout(text, buttons):
     titleObj = get_fitting_text(text, BOARD_WIDTH - 120, 42, "white")
-    subObj = get_text_surface("Click the board to play again", 22, (225, 225, 225), False)
-    width = max(titleObj.get_width(), subObj.get_width()) + 60
-    height = titleObj.get_height() + subObj.get_height() + 44
+    noteObj = get_text_surface(RESULT_CARD_NOTE, 17, (205, 205, 205), False)
+    buttonWidth, gap = 170, 16
+    rowWidth = len(buttons) * buttonWidth + (len(buttons) - 1) * gap
+    width = max(titleObj.get_width(), noteObj.get_width(), rowWidth) + 60
+    height = 18 + titleObj.get_height() + 4 + noteObj.get_height() + 16 + ROW_HEIGHT + 22
     card = p.Rect(0, 0, width, height)
     card.center = (BOARD_WIDTH // 2, BOARD_HEIGHT // 2)
+    rects = {'card': card}
+    x = card.centerx - rowWidth // 2
+    for i, name in enumerate(buttons):
+        rects[name] = p.Rect(x + i * (buttonWidth + gap), card.bottom - 22 - ROW_HEIGHT, buttonWidth, ROW_HEIGHT)
+    return titleObj, noteObj, rects
 
+
+# what the online status line says: (text, color, note for the opponent's name or None)
+# role: ours; opponentSeen: server time of the opponent's latest message (None before any); serverTime: the latest
+# server time of any message in the room, ours included (we ping when quiet, so it keeps up); networkStatus: net.last_status
+def presenceStatus(role, opponentSeen, serverTime, networkStatus):
+    if "HEALTHY" not in networkStatus and "READY" not in networkStatus:
+        return "Connecting to the server...", "darkorange", None
+    if opponentSeen is None:
+        if role == 'host':
+            return "Waiting for your opponent: share the room code", "dimgray", "not here yet"
+        return "Waiting for the host to answer...", "dimgray", "not here yet"
+    silent = serverTime - opponentSeen
+    if silent <= OPPONENT_GONE_SECONDS:
+        return "Opponent connected", "darkgreen", None
+    return "Opponent silent for %d min: they may have left" % max(1, silent // 60), "firebrick", "may have left"
+
+
+# the result on a dark card in the middle of the board, so it reads over any position, with buttons for what's next
+def drawEndGameText(screen, text, buttons, mouse_pos):
+    titleObj, noteObj, rects = resultCardLayout(text, buttons)
+    card = rects['card']
     shade = p.Surface(card.size, p.SRCALPHA)
     p.draw.rect(shade, (30, 30, 30, 215), shade.get_rect(), border_radius=14)
     screen.blit(shade, card.topleft)
     screen.blit(titleObj, (card.centerx - titleObj.get_width() / 2, card.y + 18))
-    screen.blit(subObj, (card.centerx - subObj.get_width() / 2, card.y + 26 + titleObj.get_height()))
+    screen.blit(noteObj, (card.centerx - noteObj.get_width() / 2, card.y + 22 + titleObj.get_height()))
+    for name in buttons:
+        drawButton(screen, rects[name], RESULT_BUTTONS[name], True, mouse_pos)
 
 
 # a separate GameState with the same moves, for searching in the background while gs stays on screen

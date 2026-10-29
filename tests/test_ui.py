@@ -62,7 +62,7 @@ class GameLoopTest(unittest.TestCase):
         """Color near the top-left corner of a square, clear of the piece drawn on it."""
         return tuple(p.display.get_surface().get_at((col * self.main.SQ_SIZE + 6, row * self.main.SQ_SIZE + 6)))[:3]
 
-    def test_fools_mate_in_a_two_player_game(self):
+    def test_fools_mate_and_the_result_card(self):
         main = self.main
         seen = {}
 
@@ -75,7 +75,14 @@ class GameLoopTest(unittest.TestCase):
                 await self.move(start, end)
             await asyncio.sleep(0.5)
             seen['king square'] = self.pixel(7, 4)
-            seen['queen'] = p.display.get_surface().get_at(self.square(4, 7))
+            seen['card'] = self.pixel(4, 2)  # c4, under the result card
+            await self.click(self.square(0, 0))  # beside the card: hides it
+            seen['card hidden'] = self.pixel(4, 2)
+            await self.click(self.square(0, 0))  # and back
+            seen['card back'] = self.pixel(4, 2)
+            newGame = main.resultCardLayout("Black wins by checkmate", ['new'])[2]['new']
+            await self.click(newGame.center, 0.5)
+            seen['after new game'] = (self.pixel(7, 4), self.pixel(4, 2))
             p.event.post(p.event.Event(p.QUIT))
             await asyncio.sleep(0.5)
 
@@ -86,6 +93,22 @@ class GameLoopTest(unittest.TestCase):
         red, green, blue = seen['king square']
         self.assertGreater(red, 150, "the mated king's square should be red")
         self.assertLess(green, 100)
+        light, dark = tuple(main.BOARD_COLORS[0]), tuple(main.BOARD_COLORS[1])
+        self.assertLess(max(seen['card']), 100, "the result card should cover the board")
+        self.assertEqual(seen['card hidden'], light)
+        self.assertLess(max(seen['card back']), 100)
+        self.assertEqual(seen['after new game'], (dark, light), "a new game: e1 no longer red, no card")
+
+    def test_presence_status(self):
+        status = self.main.presenceStatus
+        self.assertTrue(status('host', None, 500, 'SYNC HEALTHY')[0].startswith("Waiting for your opponent"))
+        self.assertTrue(status('client', None, 500, 'SYNC HEALTHY')[0].startswith("Waiting for the host"))
+        self.assertEqual(status('host', 470, 500, 'SYNC HEALTHY')[:2], ("Opponent connected", "darkgreen"))
+        self.assertIsNone(status('host', 470, 500, 'SYNC HEALTHY')[2])
+        gone = status('client', 100, 100 + 3 * 60 + 5, 'SYNC HEALTHY')
+        self.assertIn("3 min", gone[0])
+        self.assertEqual(gone[2], "may have left")
+        self.assertTrue(status('host', 470, 500, 'RETRYING')[0].startswith("Connecting"))
 
     def test_resign_and_restart_ask_first(self):
         main = self.main

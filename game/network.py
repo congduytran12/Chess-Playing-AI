@@ -78,6 +78,7 @@ class NetworkManager:
         self._lock = threading.Lock()  # the native listener thread and the game loop share the queue and ids
         self.seen_ids = set()   # Track processed message IDs to avoid duplicates
         self._seen_order = deque()  # the same ids, oldest first, so the oldest are forgotten first
+        self.server_time = 0  # latest ntfy server time of any message in the room, our own included
 
         self.server = "ntfy.sh"
         
@@ -109,6 +110,7 @@ class NetworkManager:
             self.seen_ids.clear()
             self._seen_order.clear()
             self.incoming_messages.clear()
+            self.server_time = 0
         self.msg_count = 0
         self.poll_count = 0
         self.last_since = "30m"  # wide window so late-joining clients catch all moves
@@ -236,6 +238,12 @@ class NetworkManager:
                 self._seen_order.append(msg_id)
                 if len(self._seen_order) > SEEN_IDS_KEPT:
                     self.seen_ids.discard(self._seen_order.popleft())
+            # when ntfy received it (server clock, seconds), so players can tell how recently the other sent
+            # something without trusting each other's clocks; also replaces any '_time' the sender put in
+            server_time = msg.get('time')
+            content['_time'] = server_time if isinstance(server_time, (int, float)) else None
+            if content['_time'] is not None:
+                self.server_time = max(self.server_time, server_time)
             self.incoming_messages.append(content)
         return True
 

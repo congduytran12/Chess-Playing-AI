@@ -13,8 +13,11 @@ from engine import GameState
 from network import NetworkManager, roomName
 
 
-def event(msgId, body):
-    return {'id': msgId, 'event': 'message', 'message': body}
+def event(msgId, body, serverTime=None):
+    msg = {'id': msgId, 'event': 'message', 'message': body}
+    if serverTime is not None:
+        msg['time'] = serverTime
+    return msg
 
 
 class NetworkTest(unittest.TestCase):
@@ -26,7 +29,7 @@ class NetworkTest(unittest.TestCase):
         for i, body in enumerate(('123', '[]', '"text"', 'not json', None)):
             self.assertFalse(self.net._accept(event('bad%d' % i, body)), body)
         self.assertTrue(self.net._accept(event('ok', json.dumps({'type': 'state'}))))
-        self.assertEqual(self.net.get_messages(), [{'type': 'state'}])
+        self.assertEqual(self.net.get_messages(), [{'type': 'state', '_time': None}])  # no server time given
         self.assertEqual(self.net.get_messages(), [])
 
     def test_duplicates_and_old_listeners_are_ignored(self):
@@ -40,6 +43,14 @@ class NetworkTest(unittest.TestCase):
         self.assertEqual(len(self.net.seen_ids), network.SEEN_IDS_KEPT)
         self.assertNotIn('id0000', self.net.seen_ids)
         self.assertIn('id%04d' % (network.SEEN_IDS_KEPT + 49), self.net.seen_ids)
+
+    def test_messages_carry_the_server_time(self):
+        # the sender can't fake '_time': it is always ntfy's time of receipt
+        self.net._accept(event('a', json.dumps({'type': 'ping', '_time': 5}), serverTime=1000))
+        self.net._accept(event('b', json.dumps({'type': 'ping'}), serverTime=900))  # an older one, replayed
+        self.net._accept(event('c', json.dumps({'type': 'ping'})))
+        self.assertEqual([m['_time'] for m in self.net.get_messages()], [1000, 900, None])
+        self.assertEqual(self.net.server_time, 1000)
 
     def test_room_names_fit_ntfy_topics(self):
         self.assertEqual(roomName(' ab c/1é_- '), 'ABC1_-')
