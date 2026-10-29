@@ -49,6 +49,8 @@ MAX_FPS = 30
 IMAGES = {}
 SMALL_IMAGES = {}  # piece icons for the captured pieces row
 SMALL_PIECE_SIZE = 22
+HELP_IMAGES = {}  # piece icons for the How to play window
+HELP_ICON_SIZE = 40
 UI_CACHE = {}
 FONT_CACHE = {}
 # Liberation Serif, metric-compatible with Times New Roman (SIL Open Font License, see fonts/)
@@ -173,6 +175,8 @@ def loadImages():
             original_image, (SQ_SIZE, SQ_SIZE))
         SMALL_IMAGES[piece] = p.transform.smoothscale(
             original_image, (SMALL_PIECE_SIZE, SMALL_PIECE_SIZE))
+        HELP_IMAGES[piece] = p.transform.smoothscale(
+            original_image, (HELP_ICON_SIZE, HELP_ICON_SIZE))
 
 
 # color is the side promoting ('w' or 'b'); returns 'Q', 'R', 'B' or 'N'
@@ -226,7 +230,7 @@ def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
             rows.append(['rejoin'])
     else:  # Online, in a room
         rows = [['mode'], ['roomInfo']]
-    rows.append(['save', 'load'])
+    rows.append(['save', 'load', 'help'])
     if reviewing:  # after the game: analysis and stepping through the moves
         rows += [['analyze'], ['first', 'prev', 'next', 'last']]
     else:
@@ -329,6 +333,7 @@ async def main():
 
     # player account (see account.py): the account window, and saving finished games to the account
     accountView = None  # 'signin' | 'register' | 'profile' | 'games' | 'leaderboard' while the window is open
+    helpPage = None  # page of the How to play window (index into HELP_PAGES) while it's open
     accountFields = {'username': "", 'email': "", 'login': "", 'password': ""}  # login: email or username, to sign in
     accountFocus = 'login'  # the form field being typed into
     accountMessage = ""  # error or notice shown in the account window
@@ -985,6 +990,9 @@ async def main():
                 if accountView:  # the account window takes every click while it's open
                     handleAccountClick(location)
                     continue
+                if helpPage is not None:  # and so does the How to play window
+                    helpPage = helpClick(helpPage, location)
+                    continue
                 layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
 
                 # an open dropdown takes the click: choose an option or close it
@@ -1098,6 +1106,8 @@ async def main():
                         showStatus("Draw offer sent")
                 elif clicked == 'account':
                     openAccountView('profile' if account.signedIn else 'signin')
+                elif clicked == 'help':
+                    helpPage = 0
                 elif clicked == 'save':
                     savePgnFile()
                 elif clicked == 'load':
@@ -1194,6 +1204,9 @@ async def main():
                 if accountView:
                     handleAccountKey(e)
                     continue
+                if helpPage is not None:
+                    helpPage = helpKey(helpPage, e.key)
+                    continue
                 if inputBoxActive:
                     if e.key == p.K_BACKSPACE:
                         roomCode = roomCode[:-1]
@@ -1216,6 +1229,9 @@ async def main():
                         reviewTo(len(gs.moveLog))
                     continue
 
+                if e.key in (p.K_h, p.K_F1):  # How to play
+                    helpPage = 0
+                    continue
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
                         sendOnline({'type': 'undo_request'})
@@ -1364,6 +1380,7 @@ async def main():
             'host': "Host (White)",
             'join': "Join (Black)",
             'save': "Save PGN",
+            'help': "How to play",
             'load': "Load PGN",
             'resign': "Resign",
             'draw': "Offer Draw",
@@ -1433,6 +1450,8 @@ async def main():
         if accountView:
             drawAccountWindow(screen, accountView, accountFields, accountFocus, accountMessage, accountBusy(),
                               account, accountList, mouse_pos)
+        if helpPage is not None:
+            drawHelpWindow(screen, helpPage, mouse_pos)
         if statusText and p.time.get_ticks() < statusUntil:
             drawStatus(screen, statusText)
 
@@ -1690,6 +1709,163 @@ def gameRowResult(row):
     if color not in ('w', 'b'):
         return "White won" if result == '1-0' else "Black won"
     return "Won" if (result == '1-0') == (color == 'w') else "Lost"
+
+
+# --- How to play window, drawn over the board like the account window
+
+# (title, items); an item is (piece icon or None, heading, text)
+HELP_PAGES = [
+    ("The goal", [
+        (None, "Checkmate wins",
+         "Attack the opponent's king so that it has no way to escape. You may never leave your own king "
+         "under attack."),
+        (None, "Taking turns",
+         "White moves first, then the players take turns, one move each. Click one of your pieces to see "
+         "where it can go, then click one of the highlighted squares."),
+        (None, "Capturing",
+         "Move onto an opponent's piece to take it. The pieces each side has taken, and who is ahead in "
+         "material, are shown next to the players' names."),
+        (None, "Draws",
+         "No legal move while not in check (stalemate), the same position three times, 50 moves each without "
+         "a capture or pawn move, too few pieces left to checkmate, or a draw both players agree to."),
+    ]),
+    ("How the pieces move", [
+        ('wK', "King", "One square in any direction."),
+        ('wQ', "Queen", "Any number of squares in a straight line: along a row, a column or a diagonal."),
+        ('wR', "Rook", "Any number of squares along a row or a column."),
+        ('wB', "Bishop", "Any number of squares along a diagonal."),
+        ('wN', "Knight", "In an L: two squares one way, then one square to the side. It jumps over other pieces."),
+        ('wp', "Pawn",
+         "One square forward, or two from its starting square. It captures one square diagonally forward."),
+    ]),
+    ("Special moves", [
+        (None, "Check",
+         "When your king is attacked, move it, block the attack or take the attacker. The king's square turns "
+         "red, and only moves that get out of check are allowed."),
+        (None, "Castling",
+         "Click the king, then the square two steps toward a rook: the rook jumps to the king's other side. "
+         "Neither piece may have moved, the squares between must be empty, and the king can't be in check or "
+         "cross an attacked square."),
+        (None, "Promotion",
+         "A pawn that reaches the far side becomes a queen, rook, bishop or knight. Pick one in the window "
+         "that opens."),
+        (None, "En passant",
+         "A pawn that moves two squares can be taken by an enemy pawn beside it, as if it had moved only one, "
+         "but only on the very next move."),
+    ]),
+    ("Game modes", [
+        (None, "Local vs AI",
+         "Play the computer. Choose its level, from Easy to Impossible, and whether you play White, Black or "
+         "a random side."),
+        (None, "Local 2-Player", "Two players take turns on the same screen."),
+        (None, "Online Multiplayer",
+         "Click Host to create a room and send its code to a friend, who types it in the room box and clicks "
+         "Join. Rejoin takes you back to your last room."),
+        (None, "Clock",
+         "Pick a time control before the game. 3+2 means three minutes each, plus two seconds for every "
+         "move. Running out of time loses."),
+        (None, "Account", "Sign in to keep your finished games, see your record and get an online rating."),
+    ]),
+    ("Buttons and keys", [
+        (None, "Hint", "Shows a good move on the board, up to 5 times a day."),
+        (None, "Undo (Z) and Restart (R)",
+         "Undo takes back your last move (and the computer's reply). Online, your opponent must accept it, "
+         "and Restart leaves the room."),
+        (None, "Resign and Offer Draw",
+         "Give up the game, or offer a draw. The computer only accepts a draw when it is losing."),
+        (None, "Save PGN and Load PGN", "Save the game to a file, or open a saved game to replay it."),
+        (None, "After the game",
+         "Step through the moves with the arrow keys, or click Analyze game to mark mistakes with ?!, ? and "
+         "??. Click the board to play again."),
+        (None, "How to play (H)", "Opens this window. Esc closes it."),
+    ]),
+]
+
+
+def helpLayout():
+    box = ACCOUNT_BOX
+    x, width = box.x + 40, box.width - 80
+    buttonWidth = (width - 20) // 3
+    y = box.bottom - 24 - ROW_HEIGHT
+    return {'box': box,
+            'prev': p.Rect(x, y, buttonWidth, ROW_HEIGHT),
+            'close': p.Rect(x + buttonWidth + 10, y, buttonWidth, ROW_HEIGHT),
+            'next': p.Rect(x + 2 * (buttonWidth + 10), y, buttonWidth, ROW_HEIGHT)}
+
+
+# returns the page to show after the click, or None to close the window
+def helpClick(page, location):
+    rects = helpLayout()
+    if rects['close'].collidepoint(location):
+        return None
+    if rects['prev'].collidepoint(location):
+        return max(page - 1, 0)
+    if rects['next'].collidepoint(location):
+        return min(page + 1, len(HELP_PAGES) - 1)
+    return page
+
+
+def helpKey(page, key):
+    if key in (p.K_ESCAPE, p.K_h, p.K_F1):
+        return None
+    if key in (p.K_LEFT, p.K_UP):
+        return max(page - 1, 0)
+    if key in (p.K_RIGHT, p.K_DOWN):
+        return min(page + 1, len(HELP_PAGES) - 1)
+    return page
+
+
+# splits text into lines that fit in maxWidth
+def wrapText(text, font, maxWidth):
+    lines = []
+    line = ""
+    for word in text.split():
+        candidate = (line + " " + word).strip()
+        if line and font.size(candidate)[0] > maxWidth:
+            lines.append(line)
+            line = word
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    return lines
+
+
+def drawHelpWindow(screen, page, mouse_pos):
+    shade = p.Surface(screen.get_size())
+    shade.set_alpha(150)
+    shade.fill(p.Color(0, 0, 0))
+    screen.blit(shade, (0, 0))
+    rects = helpLayout()
+    box = rects['box']
+    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), box)
+    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), box, 3)
+    x, width = box.x + 40, box.width - 80
+
+    title, items = HELP_PAGES[page]
+    titleObj = get_fitting_text(title, width - 60, 32, "black")
+    screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
+    pageObj = get_text_surface("%d / %d" % (page + 1, len(HELP_PAGES)), 16, "dimgray", False)
+    screen.blit(pageObj, (box.right - 16 - pageObj.get_width(), box.y + 14))
+
+    textFont = get_font(17, False)
+    y = box.y + 82
+    for icon, heading, text in items:
+        top = y
+        textX = x
+        if icon:
+            screen.blit(HELP_IMAGES[icon], (x, y))
+            textX = x + HELP_ICON_SIZE + 12
+        screen.blit(get_text_surface(heading, 19, "black", True), (textX, y))
+        y += 24
+        for line in wrapText(text, textFont, x + width - textX):
+            screen.blit(textFont.render(line, True, p.Color(60, 60, 60)), (textX, y))
+            y += 20
+        y = max(y, top + (HELP_ICON_SIZE if icon else 0)) + 12
+
+    buttons = {'prev': ("Back", page > 0), 'close': ("Close", True), 'next': ("Next", page < len(HELP_PAGES) - 1)}
+    for name, (label, enabled) in buttons.items():
+        drawButton(screen, rects[name], label, enabled, mouse_pos)
 
 
 def drawGameState(screen, gs, validMoves, squareSelected, flip=False, hintMove=None):
