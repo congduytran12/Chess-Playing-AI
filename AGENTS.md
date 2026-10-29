@@ -24,18 +24,25 @@ npm run build
 
 The build pins pygbag 0.9.3. It also downloads the pygbag runtime JS files locally and uses `sed` to rewrite `index.html` so the page loads them from the local copies instead of the CDN. Keep those versions in sync if you change one.
 
-There is no test suite or linter configured.
+Run the tests from the repository root (standard library `unittest`, no extra packages; the account API tests need `flask` and `requests`, and the UI tests need `pygame`):
+
+```bash
+python -m unittest discover -s tests
+```
+
+They cover move generation (perft counts), the AI search, PGN, network message handling, the hint and settings storage, the account API against an in-memory Supabase stand-in, and the game loop itself, run headless with scripted clicks. There is no linter configured.
 
 ## Architecture
 
 - `game/engine.py`: rules engine. `GameState` holds an 8×8 board of two-character strings (`'wK'`, `'bp'`, `'--'` for empty). It handles move generation with pin/check detection (`checkForPinsAndChecks`), castling rights, en passant, and draw detection (50-move rule, insufficient material, position keys for threefold repetition). `Move` stores a move, including its `promotionChoice`. Game moves go through `makeMoveWithSan`, which records standard algebraic notation in `move.san`; `findMoveBySan` parses it back. The AI search calls plain `makeMove`. Every state change in `makeMove` must be reversed in `undoMove`, because the AI search depends on make/undo.
 - `game/chessAi.py`: the AI.
-  - **Search:** `searchPosition()` runs NegaMax with alpha-beta pruning by iterative deepening until a time budget runs out, then returns the best move of the last finished depth. It adds quiescence search over captures and promotions, check extensions, a transposition table keyed by `GameState.getPositionKey()`, and repetition detection against the game's position history.
+  - **Search:** `searchPosition()` runs NegaMax with alpha-beta pruning by iterative deepening until a time budget runs out, then returns the best move of the last finished depth. It adds quiescence search over captures and promotions, check extensions, a transposition table keyed by `GameState.getPositionKey()`, killer and history move ordering, null move pruning (`makeNullMove` passes the turn, and must be undone even on a timeout), late move reductions, and repetition detection against the game's position history. A depth cut off by the clock still contributes the best move it found so far.
   - **Levels:** `findBestMove()` plays from the opening book (`BOOK_LINES`, built on first use) while it can. After that it searches with the settings in `LEVELS[LEVEL]`: time, depth cap, and root noise that makes the lower levels beatable. `main.py` sets `chessAi.LEVEL` from the difficulty dropdown.
   - **Responsiveness:** the search raises `SearchTimeout` when time runs out, and the caller undoes back to the root. It yields to the browser every `YIELD_SECONDS`.
   - **Evaluation:** `scoreBoard()` counts material plus piece-square tables, with a king table that switches for the endgame. It returns a score in pawns, positive when White is better.
 - `game/main.py`: Pygame UI and the game loop (`async def main()`), covering rendering, the move log, the promotion popup, the mode toggle (vs AI / local 2-player / online), clocks, hints, resign and draw offers, review and analysis after the game, and online sync (see below). `panelLayout()` defines the side panel's controls, and both click handling and drawing use it. Nested helpers inside `main()` own the shared state changes: `resetGame`, `playMove` (every move of the game goes through it), and `takeBack`. All three call `clearReview()`, which leaves the review of a finished game and cancels its analysis. After the game, `reviewTo(ply)` replays the moves onto `reviewGs` for display. `analyzeGame()` runs as a background asyncio task on its own `GameState`, searching each position for `ANALYSIS_SECONDS`. `moveMarks()` turns the score drops into `??`/`?`/`?!` marks.
 - `game/pgn.py`: PGN export and parsing, and saving and loading files. Desktop uses a tkinter file dialog and falls back to a `saved_games/` folder. In the browser, `js.eval` helpers trigger a download or a file picker, and the picked file's text is polled each frame.
+- `game/settings.py`: the player's preferences (board colors `BOARD_THEMES` and piece style `PIECE_SETS` in `main.py`), stored like the hint count. The Settings window (gear button) is drawn by `drawSettingsWindow()`.
 - `game/hints.py`: the daily hint limit (`HINTS_PER_DAY`), counted per device in `localStorage` or `~/.chess-playing-ai-hints.json` and reset at local midnight. `main.py` counts a hint with `hints.use()` once it is shown.
 - `game/network.py`: the `net` singleton (`NetworkManager`). It relays messages over public ntfy.sh topics named `chess_app_multiplayer_<ROOMCODE>`. It uses one of two transports:
   - **Native:** a background thread streams from ntfy, and sends go through `urllib` on daemon threads.

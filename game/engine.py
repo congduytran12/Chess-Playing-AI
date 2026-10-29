@@ -211,7 +211,7 @@ class GameState():
                         capturesChecker = moves[i].isEnpassantMove and (
                             moves[i].startRow, moves[i].endCol) == (checkRow, checkCol)
                         if not (moves[i].endRow, moves[i].endCol) in validSquares and not capturesChecker:
-                            moves.remove(moves[i])  # remove the moves
+                            del moves[i]  # remove the move (by index: remove() would compare it with every move)
                     '''
                         till know we will be able to find check and can move piece to block check but we are doing nothing about the pin so it will allow us to moved the pin pieced 
                         what if we move the king and is in the position of pinned we would still be able to move the pinned piece and let king be in check

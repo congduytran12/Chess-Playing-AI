@@ -8,6 +8,7 @@
 # Responsible for handling user input and displaying the current Gamestate object
 
 import sys
+import math
 import ctypes
 
 # Fix Pygame resolution blurriness on Windows by telling the OS this app is high DPI aware
@@ -25,6 +26,7 @@ import asyncio
 from network import net
 import pgn
 import hints
+import settings
 from account import account, AccountError
 import random
 import string
@@ -71,6 +73,7 @@ ROW_HEIGHT = 40
 ROW_GAP = 8
 STRIP_HEIGHT = 52
 STATUS_HEIGHT = 46  # the status message slot above the lower player strip
+CONTROL_WEIGHTS = {'settings': 0.45}  # share of a row's width, against 1 for other controls (the gear is an icon)
 
 MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
 LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
@@ -152,30 +155,26 @@ MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
 STRIP_COLOR = (222, 224, 190)
 DISABLED_COLOR = (165, 165, 165)
 
-# 2 Brown
-
-'''
-LIGHT_SQUARE_COLOR = (240, 217, 181)
-DARK_SQUARE_COLOR = (181, 136, 99)
-MOVE_HIGHLIGHT_COLOR = (84, 115, 161)
-POSSIBLE_MOVE_COLOR = (255, 255, 51)
-'''
-
-# 3 Gray
-
-'''
-LIGHT_SQUARE_COLOR = (220,220,220)
-DARK_SQUARE_COLOR = (170,170,170)
-MOVE_HIGHLIGHT_COLOR = (84, 115, 161)
-POSSIBLE_MOVE_COLOR = (164,184,196)
-'''
+# the board's squares can be recolored in Settings (the side panel keeps the green colors above):
+# name -> (light square, dark square)
+BOARD_THEMES = {"Green": (LIGHT_SQUARE_COLOR, DARK_SQUARE_COLOR),
+                "Brown": ((240, 217, 181), (181, 136, 99)),
+                "Gray": ((220, 220, 220), (170, 170, 170))}
+BOARD_COLORS = list(BOARD_THEMES["Green"])  # light and dark squares of the chosen theme
+# piece styles: name -> image folder
+PIECE_SETS = {"Modern": "images1", "Classic": "images"}
+PIECES = ['bR', 'bN', 'bB', 'bQ', 'bK', 'bp', 'wR', 'wN', 'wB', 'wQ', 'wK', 'wp']
 
 
-def loadImages():
-    pieces = ['bR', 'bN', 'bB', 'bQ', 'bK',
-              'bp', 'wR', 'wN', 'wB', 'wQ', 'wK', 'wp']
-    for piece in pieces:
-        image_path = "images1/" + piece + ".png"
+def setBoardTheme(name):
+    BOARD_COLORS[:] = BOARD_THEMES.get(name, BOARD_THEMES["Green"])
+
+
+# loads the pieces of a style from PIECE_SETS (the saved one when none is given)
+def loadImages(pieceSet=None):
+    folder = PIECE_SETS.get(pieceSet or settings.get('pieces'), PIECE_SETS["Modern"])
+    for piece in PIECES:
+        image_path = folder + "/" + piece + ".png"
         original_image = p.image.load(image_path)
         # p.transform.smoothscale is bit slower than p.transform.scale, using this to reduce pixelation and better visual quality for scaling images to larger sizes
         IMAGES[piece] = p.transform.smoothscale(
@@ -247,18 +246,20 @@ def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False):
         rows += [['analyze'], ['first', 'prev', 'next', 'last']]
     else:
         rows.append(['resign', 'draw'])
-    rows.append(['undo', 'restart', 'account'])
+    rows.append(['undo', 'restart', 'account', 'settings'])
 
     rects = {}
     y = BOARD_HEIGHT - PANEL_PADDING - len(rows) * ROW_HEIGHT - (len(rows) - 1) * ROW_GAP
     for row in rows:
-        # controls share the row width, 10px apart
-        width = (CONTROL_WIDTH - 10 * (len(row) - 1)) // len(row)
+        # controls share the row width, 10px apart; CONTROL_WEIGHTS makes some narrower
+        unit = (CONTROL_WIDTH - 10 * (len(row) - 1)) / sum(CONTROL_WEIGHTS.get(name, 1) for name in row)
+        x = PANEL_X + PANEL_PADDING
         for i, name in enumerate(row):
-            x = PANEL_X + PANEL_PADDING + i * (width + 10)
+            width = round(unit * CONTROL_WEIGHTS.get(name, 1))
             if i == len(row) - 1:
                 width = PANEL_X + MOVE_LOG_PANEL_WIDTH - PANEL_PADDING - x  # last one absorbs rounding
             rects[name] = p.Rect(x, y, width, ROW_HEIGHT)
+            x += width + 10
         y += ROW_HEIGHT + ROW_GAP
     return rects
 
@@ -311,6 +312,7 @@ async def main():
     validMoves = gs.getValidMoves()
     moveMade = False  # if user makes a valid moves and the gamestate changes then we should generate new set of valid move
     animate = False  # flag var for when we should animate a move
+    setBoardTheme(settings.get('board'))  # the board colors and pieces chosen in Settings last time
     loadImages()
     running = True
     squareSelected = ()  # keep tracks of last click
@@ -348,6 +350,7 @@ async def main():
     # player account (see account.py): the account window, and saving finished games to the account
     accountView = None  # 'signin' | 'register' | 'profile' | 'games' | 'leaderboard' while the window is open
     helpPage = None  # page of the How to play window (index into HELP_PAGES) while it's open
+    settingsOpen = False  # the Settings window is showing
     accountFields = {'username': "", 'email': "", 'login': "", 'password': ""}  # login: email or username, to sign in
     accountFocus = 'login'  # the form field being typed into
     accountMessage = ""  # error or notice shown in the account window
@@ -482,6 +485,28 @@ async def main():
         clocks = {'w': startMs, 'b': startMs}
         clockHistory = [dict(clocks)]
         lastClockTick = p.time.get_ticks()
+
+    # Restart button / r key: a new game, and in online play leaving the room so a new one can be hosted
+    def restartGame():
+        nonlocal roomCode, networkConnected, multiplayerRole
+        if multiplayerMode:
+            net.running = False
+            roomCode = ""
+            networkConnected = False
+            multiplayerRole = None
+        resetGame()
+
+    # asks first when that would throw away a game in progress or leave an online room
+    def askToRestart():
+        nonlocal pendingPrompt
+        if multiplayerMode and networkConnected:
+            pendingPrompt = {'kind': 'restart', 'text': "Leave this room?", 'yes': "Leave", 'no': "Stay",
+                             'confirm': True}
+        elif gs.moveLog and not gameOver:
+            pendingPrompt = {'kind': 'restart', 'text': "Start a new game?", 'yes': "Restart", 'no': "Cancel",
+                             'confirm': True}
+        else:
+            restartGame()
 
     # clocks run from the first move until the game ends
     def clockRunning():
@@ -1015,6 +1040,9 @@ async def main():
                 if helpPage is not None:  # and so does the How to play window
                     helpPage = helpClick(helpPage, location)
                     continue
+                if settingsOpen:  # and the Settings window
+                    settingsOpen = settingsClick(location)
+                    continue
                 layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver)
 
                 # an open dropdown takes the click: choose an option or close it
@@ -1076,6 +1104,12 @@ async def main():
                                 gameResult = ('Draw by agreement', '1/2-1/2')
                             else:
                                 showStatus("Draw declined")
+                        elif kind == 'resign' and accepted and not gameOver:
+                            gameResult = resignationResult(myColor())
+                            if multiplayerMode and networkConnected:
+                                publishChange('resign')
+                        elif kind == 'restart' and accepted:
+                            restartGame()
                         continue
 
                 clicked = None
@@ -1098,21 +1132,14 @@ async def main():
                     else:
                         playerUndo()
                 elif clicked == 'restart':
-                    # In multiplayer, reset network state so a fresh game can be hosted
-                    if multiplayerMode:
-                        net.running = False
-                        roomCode = ""
-                        networkConnected = False
-                        multiplayerRole = None
-                    resetGame()
+                    askToRestart()
                 elif clicked == 'hint':
                     hintState = 'requested'
                     showStatus("Looking for a good move...", 10000)
                 elif clicked == 'resign':
-                    gameResult = resignationResult(myColor())
-                    pendingPrompt = None
-                    if multiplayerMode and networkConnected:
-                        publishChange('resign')
+                    # one click would lose the game, so it asks first
+                    pendingPrompt = {'kind': 'resign', 'text': "Resign this game?", 'yes': "Resign", 'no': "Cancel",
+                                     'confirm': True}
                 elif clicked == 'draw':
                     if currentModeIndex == 0:
                         aiSign = 1 if playerBlackHuman else -1  # scoreBoard is positive when White is better
@@ -1130,6 +1157,8 @@ async def main():
                     openAccountView('profile' if account.signedIn else 'signin')
                 elif clicked == 'help':
                     helpPage = 0
+                elif clicked == 'settings':
+                    settingsOpen = True
                 elif clicked == 'save':
                     savePgnFile()
                 elif clicked == 'load':
@@ -1235,6 +1264,9 @@ async def main():
                 if helpPage is not None:
                     helpPage = helpKey(helpPage, e.key)
                     continue
+                if settingsOpen:
+                    settingsOpen = e.key != p.K_ESCAPE
+                    continue
                 if inputBoxActive:
                     if e.key == p.K_BACKSPACE:
                         roomCode = roomCode[:-1]
@@ -1271,7 +1303,7 @@ async def main():
                         # a local reset would desync the online game (and the host's would win the sync)
                         showStatus("Click the board after the game for a new one, or Restart to leave the room")
                         continue
-                    resetGame()
+                    askToRestart()
 
         # clocks: charge the side to move and check for a flag fall
         chargeClock()
@@ -1344,8 +1376,8 @@ async def main():
 
         outcome = getOutcome(gs, positionHistory, gameResult)
         gameOver = outcome is not None
-        if gameOver and pendingPrompt and pendingPrompt['kind'] != 'undo':
-            pendingPrompt = None
+        if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
+            pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
 
         # account requests that finished since the last frame
         for entry in [entry for entry in accountRequests if entry[0].done()]:
@@ -1426,6 +1458,7 @@ async def main():
             'join': "Join (Black)",
             'save': "Save PGN",
             'help': "How to play",
+            'settings': "",  # drawn as a gear
             'load': "Load PGN",
             'resign': "Resign",
             'draw': "Offer Draw",
@@ -1471,6 +1504,8 @@ async def main():
                 drawButton(screen, rect, labels[name], states.get(name, True), mouse_pos, arrow)
                 if name in ('first', 'prev', 'next', 'last'):
                     drawNavIcon(screen, rect, name)
+                elif name == 'settings':
+                    drawGearIcon(screen, rect)
 
         if gameOver and reviewPly is None:
             drawEndGameText(screen, outcome[0])
@@ -1486,17 +1521,21 @@ async def main():
             p.draw.rect(screen, p.Color("red"), panel_rect, 2)
             textObj = get_fitting_text(pendingPrompt['text'], panel_rect.width - 20, 20, "black")
             screen.blit(textObj, (panel_rect.centerx - textObj.get_width() / 2, panel_rect.y + 12))
-            p.draw.rect(screen, p.Color("green"), acceptBtn)
-            tAccept = get_text_surface("Accept", 20, "white", True)
+            # a confirmation puts its action in red and the way out in green; an offer is the other way round
+            confirm = pendingPrompt.get('confirm', False)
+            p.draw.rect(screen, p.Color("red" if confirm else "green"), acceptBtn)
+            tAccept = get_text_surface(pendingPrompt.get('yes', "Accept"), 20, "white", True)
             screen.blit(tAccept, acceptBtn.move(acceptBtn.width/2 - tAccept.get_width()/2, acceptBtn.height/2 - tAccept.get_height()/2))
-            p.draw.rect(screen, p.Color("red"), denyBtn)
-            tDeny = get_text_surface("Decline", 20, "white", True)
+            p.draw.rect(screen, p.Color("green" if confirm else "red"), denyBtn)
+            tDeny = get_text_surface(pendingPrompt.get('no', "Decline"), 20, "white", True)
             screen.blit(tDeny, denyBtn.move(denyBtn.width/2 - tDeny.get_width()/2, denyBtn.height/2 - tDeny.get_height()/2))
         if accountView:
             drawAccountWindow(screen, accountView, accountFields, accountFocus, accountMessage, accountBusy(),
                               account, accountList, mouse_pos)
         if helpPage is not None:
             drawHelpWindow(screen, helpPage, mouse_pos)
+        if settingsOpen:
+            drawSettingsWindow(screen, mouse_pos)
         if statusText and p.time.get_ticks() < statusUntil:
             drawStatus(screen, statusRect, statusText)
 
@@ -1820,6 +1859,7 @@ HELP_PAGES = [
          "Pick a time control before the game. 3+2 means three minutes each, plus two seconds for every "
          "move. Running out of time loses."),
         (None, "Account", "Sign in to keep your finished games, see your record and get an online rating."),
+        (None, "Settings (gear button)", "Choose the board colors and the style of the pieces."),
     ]),
     ("Buttons and keys", [
         (None, "Hint", "Shows a good move on the board, up to 5 times a day."),
@@ -1960,7 +2000,7 @@ def tintSquare(screen, row, col, color, alpha, flip=False):
 
 def drawSquare(screen, flip=False):
     global colors
-    colors = [p.Color(LIGHT_SQUARE_COLOR), p.Color(DARK_SQUARE_COLOR)]
+    colors = [p.Color(BOARD_COLORS[0]), p.Color(BOARD_COLORS[1])]
     for row in range(DIMENSION):
         for col in range(DIMENSION):
             color = colors[((row + col) % 2)]
@@ -1972,7 +2012,7 @@ def drawSquare(screen, flip=False):
         # Draw rank labels (1 to 8 from bottom, or 8 to 1 when flipped)
         rank_num = (row + 1) if flip else (8 - row)
         rank_text = str(rank_num)
-        text_color = DARK_SQUARE_COLOR if row % 2 == 0 else LIGHT_SQUARE_COLOR
+        text_color = BOARD_COLORS[1] if row % 2 == 0 else BOARD_COLORS[0]
         text_obj = get_text_surface(rank_text, 15, text_color, True)
         text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(4, 2)
         screen.blit(text_obj, text_loc)
@@ -1981,7 +2021,7 @@ def drawSquare(screen, flip=False):
         # Draw file labels (a-h left to right, or h-a when flipped)
         file_char = chr(ord('h') - col) if flip else chr(ord('a') + col)
         file_text = file_char
-        text_color = DARK_SQUARE_COLOR if (7 + col) % 2 == 0 else LIGHT_SQUARE_COLOR
+        text_color = BOARD_COLORS[1] if (7 + col) % 2 == 0 else BOARD_COLORS[0]
         text_obj = get_text_surface(file_text, 15, text_color, True)
         text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 4, SQ_SIZE - text_obj.get_height() - 2)
         screen.blit(text_obj, text_loc)
@@ -2112,6 +2152,99 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate):
         second = "Step through the moves with the arrow keys"
     screen.blit(get_fitting_text(first, rect.width - 16, 17, "black", True), (rect.x + 8, rect.y + 5))
     screen.blit(get_fitting_text(second, rect.width - 16, 16, "dimgray", False), (rect.x + 8, rect.y + 29))
+
+
+# --- Settings window: board colors and piece style, drawn over the board like the other windows
+
+PREVIEW_SIZE = 100  # piece previews in the Settings window
+PREVIEW_IMAGES = {}  # (folder, piece) -> image, loaded on first use
+
+
+def settingsLayout():
+    box = ACCOUNT_BOX
+    x = box.x + 40
+    rects = {'box': box}
+    for i, name in enumerate(BOARD_THEMES):
+        rects['board:' + name] = p.Rect(x + i * 160, box.y + 116, 120, 120)
+    for i, name in enumerate(PIECE_SETS):
+        rects['pieces:' + name] = p.Rect(x + i * 240, box.y + 330, 2 * PREVIEW_SIZE, PREVIEW_SIZE)
+    rects['close'] = p.Rect(x, box.bottom - 24 - ROW_HEIGHT, box.width - 80, ROW_HEIGHT)
+    return rects
+
+
+# applies the choice clicked in the Settings window and remembers it; returns False when the window closes
+def settingsClick(location):
+    for name, rect in settingsLayout().items():
+        if name == 'box' or not rect.collidepoint(location):
+            continue
+        if name == 'close':
+            return False
+        kind, choice = name.split(':')
+        settings.put(kind, choice)
+        if kind == 'board':
+            setBoardTheme(choice)
+        else:
+            loadImages(choice)
+    return True
+
+
+def previewImage(folder, piece):
+    if (folder, piece) not in PREVIEW_IMAGES:
+        PREVIEW_IMAGES[(folder, piece)] = p.transform.smoothscale(
+            p.image.load(folder + "/" + piece + ".png"), (PREVIEW_SIZE, PREVIEW_SIZE))
+    return PREVIEW_IMAGES[(folder, piece)]
+
+
+def drawSettingsWindow(screen, mouse_pos):
+    shade = p.Surface(screen.get_size())
+    shade.set_alpha(150)
+    shade.fill(p.Color(0, 0, 0))
+    screen.blit(shade, (0, 0))
+    rects = settingsLayout()
+    box = rects['box']
+    p.draw.rect(screen, p.Color(LIGHT_SQUARE_COLOR), box)
+    p.draw.rect(screen, p.Color(DARK_SQUARE_COLOR), box, 3)
+    x = box.x + 40
+    titleObj = get_text_surface("Settings", 32, "black")
+    screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
+
+    chosen = {'board': settings.get('board') if settings.get('board') in BOARD_THEMES else "Green",
+              'pieces': settings.get('pieces') if settings.get('pieces') in PIECE_SETS else "Modern"}
+    screen.blit(get_text_surface("Board", 20, "black"), (x, box.y + 84))
+    screen.blit(get_text_surface("Pieces", 20, "black"), (x, box.y + 298))
+    for name, rect in rects.items():
+        if ':' not in name:
+            continue
+        kind, choice = name.split(':')
+        if kind == 'board':  # a 2x2 corner of the board in these colors
+            half = rect.width // 2
+            for r in range(2):
+                for c in range(2):
+                    p.draw.rect(screen, BOARD_THEMES[choice][(r + c) % 2], (rect.x + c * half, rect.y + r * half, half, half))
+        else:  # a white king and a black knight of this style, on the chosen board colors
+            folder = PIECE_SETS[choice]
+            for i, piece in enumerate(('wK', 'bN')):
+                square = p.Rect(rect.x + i * PREVIEW_SIZE, rect.y, PREVIEW_SIZE, PREVIEW_SIZE)
+                p.draw.rect(screen, BOARD_COLORS[i], square)
+                screen.blit(previewImage(folder, piece), square.topleft)
+        if chosen[kind] == choice:
+            p.draw.rect(screen, p.Color(MOVE_HIGHLIGHT_COLOR), rect.inflate(10, 10), 4)
+        elif rect.collidepoint(mouse_pos):
+            p.draw.rect(screen, p.Color("gray"), rect.inflate(10, 10), 2)
+        labelObj = get_text_surface(choice, 18, "black" if chosen[kind] == choice else "dimgray", chosen[kind] == choice)
+        screen.blit(labelObj, (rect.centerx - labelObj.get_width() / 2, rect.bottom + 10))
+
+    drawButton(screen, rects['close'], "Close", True, mouse_pos)
+
+
+# a gear: a ring with eight teeth, for the Settings button
+def drawGearIcon(screen, rect):
+    cx, cy = rect.center
+    white = p.Color('white')
+    for i in range(8):
+        angle = i * math.pi / 4
+        p.draw.circle(screen, white, (cx + 9 * math.cos(angle), cy + 9 * math.sin(angle)), 3)
+    p.draw.circle(screen, white, (cx, cy), 8, 4)
 
 
 def drawNavIcon(screen, rect, name):

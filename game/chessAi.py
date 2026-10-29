@@ -6,6 +6,8 @@
       until the position is quiet, so trades aren't misjudged at the edge of the search
     - transposition table: positions already searched keep their score and best move, which is
       tried first the next time (by far the biggest help to alpha-beta)
+    - move ordering by killer moves and history, null move pruning and late move reductions, so the
+      same time reaches deeper; a depth cut off by the clock still contributes its best move so far
     - opening book: the first moves come from common opening lines, picked at random
     - LEVEL (0-4) picks the time budget, depth limit and randomness from LEVELS
 '''
@@ -113,6 +115,10 @@ LEVELS = [("Easy", 0.3, 1, 1.5),
 LEVEL = 1  # index into LEVELS, set from the difficulty dropdown
 
 MAX_QUIESCENCE_DEPTH = 8
+NULL_MOVE_MIN_DEPTH = 3  # null move pruning from this depth...
+NULL_MOVE_REDUCTION = 2  # ...searching the null move this much shallower
+LMR_MIN_DEPTH = 3  # late move reductions from this depth, for quiet moves after the first LMR_MIN_INDEX
+LMR_MIN_INDEX = 3
 YIELD_SECONDS = 0.03  # give the browser a turn at least this often while searching
 TT_MAX_ENTRIES = 200000
 
@@ -135,6 +141,8 @@ async def findBestMove(gs, validMoves, level=None, history=(), useBook=True):
     if not validMoves:
         return None
     name, seconds, maxDepth, noise = LEVELS[LEVEL if level is None else level]
+    if len(validMoves) == 1:
+        return validMoves[0]  # nothing to think about
     if useBook:
         move = bookMove(gs, validMoves)
         if move is not None:
@@ -164,12 +172,14 @@ async def searchPosition(gs, validMoves, seconds, maxDepth=None, noise=0, histor
         except SearchTimeout:
             while len(gs.moveLog) > startLength:
                 gs.undoMove()
+            if search.rootBestMove is not None:
+                # the unfinished depth searched the previous best move first, so the best move it found so
+                # far is at least as good: the time spent on it isn't wasted
+                bestScore, bestMove = search.rootBestScore, search.rootBestMove
             break
         bestScore, bestMove, depth = score, move, depth + 1
         if abs(score) > MATE_THRESHOLD:
             break  # a forced mate was found, searching deeper won't change it
-        if time.time() - start > seconds * 0.5:
-            break  # the next depth takes several times longer and wouldn't finish
     gs.getValidMoves()  # the search leaves check and pin flags from deeper positions behind
     return bestScore, bestMove, depth
 
@@ -183,6 +193,10 @@ class Search:
         self.maxExtendedPly = 0
         self.nodes = 0
         self.lastYield = time.time()
+        self.rootBestScore, self.rootBestMove = -INFINITY, None  # best so far in the depth being searched
+        self.killers = {}  # ply -> ids of the two latest quiet moves that caused a cutoff there
+        self.historyScores = {}  # (piece, end row, end col) -> how often and how deep such quiet moves cut off
+        self.nullSaved = []  # en passant squares put aside by null moves
 
     async def tick(self):
         self.nodes += 1
@@ -207,6 +221,7 @@ class Search:
         self.maxExtendedPly = 2 * depth + 2  # stops a long run of checks from extending forever
         alpha = -INFINITY
         bestScore, bestMove = -INFINITY, None
+        self.rootBestScore, self.rootBestMove = -INFINITY, None
         for move in moves:
             gs.makeMove(move)
             if noise:
@@ -217,13 +232,14 @@ class Search:
             gs.undoMove()
             if score > bestScore:
                 bestScore, bestMove = score, move
+                self.rootBestScore, self.rootBestMove = score, move
             if score > alpha:
                 alpha = score
         if not noise:
             storeEntry(rootKey, depth, toTableScore(bestScore, 0), EXACT, bestMove.moveID)
         return bestScore, bestMove
 
-    async def negamax(self, depth, ply, alpha, beta):
+    async def negamax(self, depth, ply, alpha, beta, allowNull=True):
         await self.tick()
         gs = self.gs
         key = gs.getPositionKey()
@@ -233,7 +249,8 @@ class Search:
         if not moves:
             # being mated later is less bad, so the winning side goes for the quickest mate
             return -(CHECKMATE - ply) if gs.inCheck else STALEMATE
-        if gs.inCheck and ply < self.maxExtendedPly:
+        inCheck = gs.inCheck  # gs.inCheck changes as soon as a reply is searched
+        if inCheck and ply < self.maxExtendedPly:
             depth += 1  # check extension: forcing lines (like mating attacks) are followed further
         if depth <= 0:
             return await self.quiesce(alpha, beta, ply, moves, 0)
@@ -247,19 +264,45 @@ class Search:
                 if bound == EXACT or (bound == LOWER and score >= beta) or (bound == UPPER and score <= alpha):
                     return score
 
-        orderMoves(moves, tableMoveId)
+        self.path.append(key)
+        # null move: let the opponent move twice; if we are still above beta, a real move surely is too, so
+        # this line is cut off after a much shallower search (not in check, and not with only king and pawns,
+        # where passing can be the better choice - zugzwang)
+        if (allowNull and depth >= NULL_MOVE_MIN_DEPTH and not inCheck and beta < MATE_THRESHOLD
+                and hasPieces(gs)):
+            self.makeNullMove()
+            try:
+                score = -await self.negamax(depth - 1 - NULL_MOVE_REDUCTION, ply + 1, -beta, -beta + 1, False)
+            finally:
+                self.undoNullMove()
+            if score >= beta:
+                self.path.pop()
+                return beta
+
+        killers = self.killers.get(ply, ())
+        orderMoves(moves, tableMoveId, killers, self.historyScores)
         alphaOriginal = alpha
         bestScore, bestMoveId = -INFINITY, None
-        self.path.append(key)
-        for move in moves:
+        for index, move in enumerate(moves):
+            quiet = not move.isCapture and not move.isPawnPromotion
             gs.makeMove(move)
-            score = -await self.negamax(depth - 1, ply + 1, -beta, -alpha)
+            if (index >= LMR_MIN_INDEX and depth >= LMR_MIN_DEPTH and quiet and not inCheck
+                    and move.moveID not in killers):
+                # late move reduction: quiet moves this far down the ordering rarely matter, so they get
+                # a shallower search first, and a full one only if they turn out better than expected
+                score = -await self.negamax(depth - 2, ply + 1, -alpha - 1, -alpha)
+                if score > alpha:
+                    score = -await self.negamax(depth - 1, ply + 1, -beta, -alpha)
+            else:
+                score = -await self.negamax(depth - 1, ply + 1, -beta, -alpha)
             gs.undoMove()
             if score > bestScore:
                 bestScore, bestMoveId = score, move.moveID
             if score > alpha:
                 alpha = score
             if alpha >= beta:
+                if quiet:
+                    self.rememberCutoff(move, ply, depth)
                 break  # the opponent won't allow this line
         self.path.pop()
 
@@ -271,6 +314,29 @@ class Search:
             bound = EXACT
         storeEntry(key, depth, toTableScore(bestScore, ply), bound, bestMoveId)
         return bestScore
+
+    # a quiet move that caused a cutoff is likely to do so again: in sibling positions (killer moves) and
+    # anywhere the same piece goes to the same square (history)
+    def rememberCutoff(self, move, ply, depth):
+        killers = self.killers.setdefault(ply, [None, None])
+        if killers[0] != move.moveID:
+            killers[1], killers[0] = killers[0], move.moveID
+        key = (move.pieceMoved, move.endRow, move.endCol)
+        self.historyScores[key] = self.historyScores.get(key, 0) + depth * depth
+
+    # passing the turn, for the null move search; it must be undone even when the search times out
+    def makeNullMove(self):
+        gs = self.gs
+        self.nullSaved.append(gs.enpasantPossible)
+        gs.whiteToMove = not gs.whiteToMove
+        gs.enpasantPossible = ()
+        gs.enpasantPossibleLog.append(())  # what undoMove restores in the positions after it
+
+    def undoNullMove(self):
+        gs = self.gs
+        gs.whiteToMove = not gs.whiteToMove
+        gs.enpasantPossibleLog.pop()
+        gs.enpasantPossible = self.nullSaved.pop()
 
     # follows captures and promotions until the position is quiet; moves are the legal moves here
     async def quiesce(self, alpha, beta, ply, moves, qdepth):
@@ -312,18 +378,32 @@ class Search:
 
 
 # best move from the table first, then captures of the most valuable piece by the least valuable one,
-# then promotions; good ordering lets alpha-beta skip most of the tree
-def orderMoves(moves, firstMoveId):
+# then promotions, then the quiet moves that caused cutoffs before (killers, then by history);
+# good ordering lets alpha-beta skip most of the tree
+def orderMoves(moves, firstMoveId, killers=(), historyScores=None):
     def priority(move):
         if move.moveID == firstMoveId:
-            return -1000
-        score = 0
+            return -100000
         if move.pieceCaptured != '--':
-            score -= 10 * pieceScore[move.pieceCaptured[1]] - pieceScore[move.pieceMoved[1]] + 1
+            return -10000 - (10 * pieceScore[move.pieceCaptured[1]] - pieceScore[move.pieceMoved[1]])
         if move.isPawnPromotion:
-            score -= 80
-        return score
+            return -9000
+        if move.moveID in killers:
+            return -8000
+        if historyScores:
+            return -min(historyScores.get((move.pieceMoved, move.endRow, move.endCol), 0), 7000)
+        return 0
     moves.sort(key=priority)
+
+
+# True when the side to move has a piece other than its king and pawns (null moves are unsafe without)
+def hasPieces(gs):
+    color = 'w' if gs.whiteToMove else 'b'
+    for row in gs.board:
+        for square in row:
+            if square[0] == color and square[1] not in 'Kp':
+                return True
+    return False
 
 
 # mate scores are stored relative to the position, not the root, so they stay right in other lines
