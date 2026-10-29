@@ -65,7 +65,7 @@ Server tests aren't in the repo. The account API was tested against an in-memory
 
 ## Constraints
 
-- **Browser compatibility:** everything in the game loop is async. Long-running work must `await asyncio.sleep(0)` regularly, as the main loop, animations, the promotion popup, and the AI search (every 500 nodes) already do. Without this, the browser tab freezes. Don't add blocking calls, threads, or synchronous network I/O on the WASM path.
+- **Browser compatibility:** everything in the game loop is async. Long-running work must `await asyncio.sleep(0)` regularly, as the main loop, animations, the promotion popup, and the AI search (at least every `YIELD_SECONDS`) already do. Without this, the browser tab freezes. Don't add blocking calls, threads, or synchronous network I/O on the WASM path.
 - `asyncio.run(main())` at the bottom of `main.py` is the entry point that pygbag requires.
 - Sound files are `.ogg` so they work in the browser.
 - `game/build/` is committed to git (Vercel rebuilds it). `__pycache__/` and `.pyc` files are ignored by `.gitignore`.
