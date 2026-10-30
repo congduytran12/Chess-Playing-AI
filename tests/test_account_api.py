@@ -165,6 +165,16 @@ class AccountApiTest(unittest.TestCase):
                 if status in (401, 403):
                     self.assertEqual(caught.exception.message, api.RESET_LINK_EXPIRED)
 
+    def test_admin_accounts(self):
+        self.assertIs(api.getProfile('U1')['admin'], False)
+        saved = api.ADMIN_USERNAMES
+        api.ADMIN_USERNAMES = {'duy_t'}  # matched whatever the case
+        try:
+            self.assertIs(api.getProfile('U1')['admin'], True)
+        finally:
+            api.ADMIN_USERNAMES = saved
+        self.assertIn('congduytran12', api.ADMIN_USERNAMES)
+
     def test_new_actions_are_routed(self):
         self.assertIs(api.ACTIONS['recover'], api.recover)
         self.assertIs(api.ACTIONS['set_password'], api.setPassword)

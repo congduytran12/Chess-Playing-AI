@@ -1453,7 +1453,7 @@ async def main():
         online = currentModeIndex == 2
         return {
             'hint': (inProgress and humanTurn and (not online or networkConnected) and hintState is None
-                     and hints.remaining() > 0),
+                     and hintsLeft() > 0),
             'resign': inProgress and (not online or networkConnected),
             'draw': inProgress and (not online or networkConnected) and pendingPrompt is None,
             'undo': not online or networkConnected,
@@ -1473,7 +1473,7 @@ async def main():
 
     def reasonDisabled(name):
         return disabledReason(name, gameOver=gameOver, online=currentModeIndex == 2, connected=networkConnected,
-                              humanTurn=humanTurn, hintsLeft=hints.remaining(), hintBusy=hintState is not None,
+                              humanTurn=humanTurn, hintsLeft=hintsLeft(), hintBusy=hintState is not None,
                               prompt=pendingPrompt is not None,
                               analysis=None if analysis is None else 'done' if analysis['done'] else 'running',
                               moves=len(gs.moveLog), atStart=shownPly() == 0, atEnd=shownPly() == len(gs.moveLog),
@@ -2724,8 +2724,12 @@ async def main():
                 if suggestion is None:
                     suggestion = findRandomMoves(validMoves)
                 hintMove = suggestion
-                hints.use()
-                showStatus("Hint: %s (%d left today)" % (gs.getSan(suggestion, validMoves), hints.remaining()), 4000)
+                san = gs.getSan(suggestion, validMoves)
+                if account.isAdmin:
+                    showStatus("Hint: %s" % san, 4000)
+                else:
+                    hints.use()
+                    showStatus("Hint: %s (%d left today)" % (san, hints.remaining()), 4000)
 
         # genetare new set of valid move if valid move is made
         if moveMade:
@@ -2861,7 +2865,7 @@ async def main():
             'level': "AI: " + LEVEL_OPTIONS[chessAi.LEVEL],
             'side': "Play as: " + SIDE_OPTIONS[sideIndex],
             'clock': "Clock: " + CLOCK_OPTIONS[clockIndex][0],
-            'hint': "Hint (%d left)" % hints.remaining(),
+            'hint': "Hint" if account.isAdmin else "Hint (%d left)" % hints.remaining(),
             'host': "Host (White)",
             'join': "Join (Black)",
             'menu': "",  # drawn as three lines
@@ -4769,6 +4773,11 @@ def tooltipText(name, connected=False, signedIn=False):
     if signedIn and name == 'account':
         return "Your games, record and rating"
     return TOOLTIPS.get(name)
+
+
+# hints left today; an admin account (account.isAdmin) has no limit
+def hintsLeft():
+    return math.inf if account.isAdmin else hints.remaining()
 
 
 # why a panel control can't be clicked right now (None when it can, or no reason applies)

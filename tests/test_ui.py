@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import math
 import os
 import tempfile
 import unittest
@@ -651,6 +652,43 @@ class GameLoopTest(unittest.TestCase):
         self.assertIn("No hints left today", shown['tooltip'])
         self.assertIn("No hints left today", shown['status'])
         self.assertNotIn("Looking for a good move...", shown['status'])
+
+    def test_admin_has_unlimited_hints(self):
+        main = self.main
+        import hints
+        from account import account
+        for _ in range(hints.HINTS_PER_DAY):
+            hints.use()
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            hint = main.panelLayout(0, False)['hint'].center
+            await self.click(hint, 2.5)
+            seen['first'] = any(text.startswith("Hint: ") for text in shown['status'])
+            await self.move((6, 4), (4, 4), 3.0)  # the computer answers
+            shown['status'].clear()
+            await self.click(hint, 2.5)
+            seen['second'] = any(text.startswith("Hint: ") for text in shown['status'])
+            seen['left'] = hints.remaining()
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        shown, restore = self.recordShown()
+        account.profile = {'id': 'A', 'username': 'congduytran12', 'rating': 1200, 'rated_games': 0, 'admin': True}
+        try:
+            self.assertTrue(account.isAdmin)
+            self.assertEqual(main.hintsLeft(), math.inf)
+            self.runGame(script)
+        finally:
+            account.profile = None
+            restore()
+            hints._store({})
+            hints._saved = None
+        self.assertTrue(seen['first'] and seen['second'], "two hints")
+        self.assertNotIn("No hints left today", shown['status'])
+        self.assertEqual(seen['left'], 0, "the day's count is left alone")
+        self.assertFalse(account.isAdmin, "signed out")
 
     # --- step 3: the menu, Flip board, no Resign / Draw before an online game
 

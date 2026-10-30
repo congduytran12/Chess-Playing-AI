@@ -64,6 +64,11 @@ class Account:
     def username(self):
         return self.profile['username'] if self.profile else None
 
+    @property
+    def isAdmin(self):
+        """An admin account (the server says so in the profile): unlimited hints."""
+        return bool(self.profile and self.profile.get('admin') is True)
+
     # --- requests
 
     async def _post(self, payload):

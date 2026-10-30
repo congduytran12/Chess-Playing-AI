@@ -31,6 +31,7 @@ RESET_LINK_EXPIRED = 'This reset link has expired, ask for a new one'
 RESULTS = ('1-0', '0-1', '1/2-1/2')
 MIN_RATED_PLIES = 4  # shorter online games don't change ratings
 MOVE_PATTERN = re.compile(r'^[a-h][1-8][a-h][1-8][qrbn]?$')  # Move.getCode in the game
+ADMIN_USERNAMES = {'congduytran12'}  # lower case; their profiles say 'admin' (the game gives them unlimited hints)
 CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -106,7 +107,9 @@ def getProfile(userId):
     rows = rest('GET', 'profiles', params={'id': 'eq.' + userId, 'select': 'id,username,rating,rated_games'})
     if not rows:
         raise ApiError('This account has no profile', 404)
-    return rows[0]
+    profile = rows[0]
+    profile['admin'] = str(profile.get('username', '')).lower() in ADMIN_USERNAMES
+    return profile
 
 
 def signedIn(session):
