@@ -157,6 +157,22 @@ class Account:
         self._signedInWith(data)
         await self.loadStats()
 
+    async def recover(self, email, redirectTo=None):
+        """Asks for a password reset link by email (the answer is the same whether or not the email has an account)."""
+        payload = {'action': 'recover', 'email': email}
+        if redirectTo:
+            payload['redirect_to'] = redirectTo
+        await self._post(payload)
+
+    async def setPassword(self, token, password, refreshToken=None):
+        """Saves a new password with the access token from a reset link, then signs in with the link's refresh token."""
+        await self._post({'action': 'set_password', 'token': token, 'password': password})
+        if refreshToken:
+            self._session += 1
+            self.refreshToken = refreshToken
+            await self._refresh()
+            await self.loadStats()
+
     def signOut(self):
         self._session += 1
         self.token = self.refreshToken = self.profile = None

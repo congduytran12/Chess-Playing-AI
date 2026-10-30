@@ -31,9 +31,11 @@ class GameLoopTest(unittest.TestCase):
             setattr(module, name, os.path.join(cls.folder.name, module.__name__ + '.json'))
         hints._saved = None
         settings._values = None
+        settings.put('seenHelp', True)  # How to play opens by itself only on the first visit (its own tests)
         cls.settings = settings
         import main
         cls.main = main
+        p.init()  # fonts and the display, for the tests that draw without running the game
         cls.mouse = [(0, 0)]
         cls.realGetPos = p.mouse.get_pos
         p.mouse.get_pos = lambda: cls.mouse[0]  # the game reads the mouse position, not the event's
@@ -272,14 +274,94 @@ class GameLoopTest(unittest.TestCase):
         box, buttonsTop = main.ACCOUNT_BOX, main.helpLayout()['prev'].y
         x, width = box.x + 40, box.width - 80
         font = main.get_font(17, False)
-        for title, items in main.HELP_PAGES:
+        diagrams = 0
+        for page, (title, items) in enumerate(main.HELP_PAGES):
+            layout = main.helpPageLayout(page)
+            self.assertEqual(len(layout), len(items))
             y = box.y + 82
-            for icon, heading, text in items:
+            for item, placed in zip(items, layout):
+                icon, heading, text = item[:3]
                 textX = x + (main.HELP_ICON_SIZE + 12 if icon else 0)
-                top = y
-                y += 24 + 20 * len(main.wrapText(text, font, x + width - textX))
-                y = max(y, top + (main.HELP_ICON_SIZE if icon else 0)) + 12
+                self.assertEqual((placed['top'], placed['textX']), (y, textX), title)
+                right = x + width
+                diagram = placed['diagram']
+                if len(item) > 3:  # a diagram at the right, beside the text and clear of everything else
+                    diagrams += 1
+                    self.assertEqual(diagram.size, main.diagramSize(item[3]))
+                    self.assertEqual(diagram.right, x + width, heading)
+                    self.assertGreaterEqual(diagram.y, y, heading)
+                    self.assertLessEqual(diagram.bottom, placed['bottom'], heading)
+                    right = diagram.x - main.HELP_DIAGRAM_GAP
+                else:
+                    self.assertIsNone(diagram)
+                self.assertEqual(placed['lines'], main.wrapText(text, font, right - textX))
+                self.assertEqual(" ".join(placed['lines']), " ".join(text.split()), "no word is lost")
+                for line in placed['lines']:
+                    self.assertLessEqual(textX + font.size(line)[0], right, heading)
+                self.assertLessEqual(textX + main.get_font(19, True).size(heading)[0], right, heading)
+                self.assertGreaterEqual(placed['bottom'], y + 24 + 20 * len(placed['lines']))
+                y = placed['bottom'] + 12
             self.assertLessEqual(y - 12, buttonsTop - 6, title)
+        self.assertEqual(diagrams, 4, "castling, en passant, promotion and check")
+
+    def test_help_diagrams_name_real_squares_and_pieces(self):
+        main = self.main
+        for name in ('CHECK_DIAGRAM', 'PROMOTION_DIAGRAM', 'CASTLING_DIAGRAM', 'EN_PASSANT_DIAGRAM'):
+            diagram = getattr(main, name)
+            files, ranks = diagram['files'], diagram['ranks']
+            squares = (list(diagram['pieces']) + list(diagram.get('ghosts', {})) + list(diagram.get('rings', ()))
+                       + list(diagram.get('tints', ())) + ([diagram['check']] if diagram.get('check') else [])
+                       + [square for arrow in diagram.get('arrows', ()) for square in arrow[:2]])
+            for square in squares:
+                self.assertIn(square[0], files, name)
+                self.assertIn(square[1], ranks, name)
+            for piece in list(diagram['pieces'].values()) + list(diagram.get('ghosts', {}).values()):
+                self.assertIn(piece, main.PIECES, name)
+            if diagram.get('check'):
+                self.assertEqual(diagram['pieces'][diagram['check']][1], 'K', "the king is the one in check")
+
+    def test_help_diagram_uses_the_board_colors_and_pieces(self):
+        main = self.main
+        diagram = main.EN_PASSANT_DIAGRAM  # files d-f, ranks 7-5: d7 tinted, d5 / e5 pawns, e5 -> d6 arrow
+        sq = main.HELP_DIAGRAM_SQ
+        main.loadImages()
+        try:
+            for board in main.BOARD_THEMES:
+                main.setBoardTheme(board)
+                surface = p.Surface(main.diagramSize(diagram))
+                surface.fill((1, 2, 3))
+                main.drawMiniBoard(surface, (0, 0), diagram)
+                left = main.HELP_DIAGRAM_LABEL
+                light, dark = main.BOARD_THEMES[board]
+                # f7 is light, f6 dark (a1 is dark); corners stay clear of pieces and arrows
+                self.assertEqual(tuple(surface.get_at((left + 2 * sq + 3, 3)))[:3], tuple(light), board)
+                self.assertEqual(tuple(surface.get_at((left + 2 * sq + 3, sq + 3)))[:3], tuple(dark), board)
+                self.assertNotEqual(tuple(surface.get_at((left + 3, 3)))[:3], tuple(light), "d7 shows the last move")
+                # the white pawn on e5 is drawn in the middle of its square
+                self.assertNotIn(tuple(surface.get_at((left + sq + sq // 2, 2 * sq + sq // 2 + 6)))[:3],
+                                 (tuple(light), tuple(dark)))
+        finally:
+            main.setBoardTheme(self.settings.get('board'))
+
+    def test_help_window_draws_its_diagrams(self):
+        main = self.main
+        drawn = []
+        realMini = main.drawMiniBoard
+
+        def record(screen, pos, diagram):
+            drawn.append((tuple(pos), diagram))
+            return realMini(screen, pos, diagram)
+        main.drawMiniBoard = record
+        main.loadImages()
+        try:
+            for page, (title, items) in enumerate(main.HELP_PAGES):
+                del drawn[:]
+                main.drawHelpWindow(p.Surface((main.WINDOW_SIZE)), page, (-1, -1))
+                expected = [(tuple(placed['diagram'].topleft), item[3])
+                            for item, placed in zip(items, main.helpPageLayout(page)) if len(item) > 3]
+                self.assertEqual(drawn, expected, title)
+        finally:
+            main.drawMiniBoard = realMini
 
     def test_promotion_picker(self):
         main = self.main
@@ -496,6 +578,37 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['empty square'], 'arrow')
         self.assertEqual(seen['own pawn'], 'hand')
         self.assertEqual(seen['their pawn'], 'arrow')
+
+    def test_a_tap_shows_no_tooltip(self):
+        """A touch screen's tap lands and clicks in the same frame: the tapped control's tooltip stays hidden."""
+        main = self.main
+        shown, restore = self.recordShown()
+        seen = {}
+        undo = main.panelLayout(0, False)['undo'].center
+
+        async def script():
+            await asyncio.sleep(1.0)
+            self.mouse[0] = self.square(4, 4)
+            await asyncio.sleep(0.2)
+            await self.tap(undo, 1.0)  # nothing to take back yet: the tap changes nothing
+            seen['after the tap'] = list(shown['tooltip'])
+            self.mouse[0] = self.square(4, 4)
+            await asyncio.sleep(0.2)
+            self.mouse[0] = undo
+            await asyncio.sleep(0.9)
+            seen['resting on it'] = list(shown['tooltip'])
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        async def run():
+            await asyncio.gather(main.main(), script())
+
+        try:
+            asyncio.run(run())
+        finally:
+            restore()
+        self.assertEqual(seen['after the tap'], [], "no tooltip after a tap")
+        self.assertIn(main.tooltipText('undo'), seen['resting on it'], "the pointer resting on it still shows it")
 
     def test_disabled_hint_says_why(self):
         main = self.main
@@ -750,6 +863,13 @@ class GameLoopTest(unittest.TestCase):
         await asyncio.sleep(wait)
         p.key.set_mods(0)
 
+    async def tap(self, pos, wait=0.3):
+        """A full click: the button goes down and up at pos (the move list selects on release)."""
+        self.mouse[0] = pos
+        p.event.post(p.event.Event(p.MOUSEBUTTONDOWN, button=1, pos=pos))
+        p.event.post(p.event.Event(p.MOUSEBUTTONUP, button=1, pos=pos))
+        await asyncio.sleep(wait)
+
     def emptySquare(self, row, col):
         sample = self.squareSample(p.display.get_surface(), row, col)
         return len(set(sample)) == 1
@@ -921,7 +1041,7 @@ class GameLoopTest(unittest.TestCase):
             await asyncio.gather(main.main(), script())
 
         asyncio.run(run())
-        light, dark = tuple(main.BOARD_COLORS[0]), tuple(main.BOARD_COLORS[1])
+        light = tuple(main.BOARD_COLORS[0])
         self.assertEqual(seen['before'], (light, light))
         ring, arrow = seen['green']
         self.assertTrue(ring[1] > ring[0] and ring[1] > ring[2], "a green ring on e4: %s" % (ring,))
@@ -1001,7 +1121,6 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(main.resolvePremove(((1, 0), (0, 0)), gs.getValidMoves()).getCode(), "a7a8q")
 
     def test_premove_is_played_when_the_computer_replies(self):
-        main = self.main
         seen = {}
 
         async def script():
@@ -1151,8 +1270,8 @@ class GameLoopTest(unittest.TestCase):
             await self.click(self.square(6, 3))  # a click on the board returns, and plays nothing
             seen['clicked'] = (frames[-1][0], self.emptySquare(4, 4), at(bannerPixel))
             await self.click(self.square(6, 3))  # now it selects d2 as usual
-            # clicking the first move in the log shows the position after it
-            await self.click((main.PANEL_X + 60, main.STRIP_HEIGHT + 18))
+            # clicking the first move in the log shows the position after it (on release: a drag would scroll)
+            await self.tap(main.moveListLayout(2, main.STRIP_HEIGHT, 400)['cells'][0][0].center)
             seen['log click'] = frames[-1][0]
             await self.key(p.K_END)
             seen['End'] = frames[-1][0]
@@ -1376,6 +1495,7 @@ class GameLoopTest(unittest.TestCase):
         self.assertFalse(arrived(0, False, 0, 1, False), "the player's own move")
         self.assertFalse(arrived(0, True, 2, 0, False), "a new game or an undo")
         self.assertFalse(arrived(0, True, 1, 2, True), "the game is over")
+
     def test_online_sounds_and_your_move_alert(self):
         main = self.main
         import network
@@ -1403,11 +1523,12 @@ class GameLoopTest(unittest.TestCase):
             modeRect = main.panelLayout(0, False)['mode']
             await self.click(modeRect.center)
             await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
-            del plays[:]
+            seen['online mode'] = list(plays)  # no room yet, so no game
             await self.click(main.panelLayout(2, False)['host'].center, 0.5)  # the host plays White
             seen['hosted'] = list(plays)
             await self.move((6, 4), (4, 4), 0.5)
             p.event.post(p.event.Event(main.WINDOW_FOCUS_LOST))  # the host looks at another window
+            await asyncio.sleep(0.2)
             del plays[:]
             state = opponentState()
             net.incoming_messages.append(opponentState(version=state['version'] + 1, moves="e2e4 e7e5"))
@@ -1431,8 +1552,10 @@ class GameLoopTest(unittest.TestCase):
                                                        gid="nextgame"))
             await asyncio.sleep(0.5)
             seen['next game'] = list(plays)
+            del plays[:]
             await self.click(main.panelLayout(2, True)['restart'].center)  # leave the room
             await self.click(main.promptRects()[1].center, 0.3)
+            seen['left'] = list(plays)
             p.event.post(p.event.Event(p.QUIT))
             await asyncio.sleep(0.5)
 
@@ -1446,11 +1569,1571 @@ class GameLoopTest(unittest.TestCase):
             net.running = False
             if os.path.exists(network.SESSION_FILE):
                 os.remove(network.SESSION_FILE)  # no Rejoin row for the other tests
-        self.assertEqual(seen['hosted'], ['game-start'])
+        self.assertEqual(seen['online mode'], [])
+        self.assertEqual(seen['hosted'], ['game-start'], "hosting a room starts a game")
         self.assertEqual(seen['their move'], (main.YOUR_MOVE_TITLE, ['move', 'notify']))
         self.assertEqual(seen['back'], main.GAME_TITLE)
         self.assertEqual(seen['resigned'], ['game-end'], "an online result is heard once")
         self.assertEqual(seen['next game'], ['game-start'])
+        self.assertEqual(seen['left'], [], "leaving the room starts no game")
+
+    def test_joining_a_room_plays_the_start_once(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+        realSetTopic, realSend = net.set_topic, net.send
+
+        def fakeSetTopic(topic):
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+
+        async def fakeSend(data):
+            pass
+
+        def hostState(game, version, moves):
+            return {'type': 'state', 'game': game, 'version': version, 'role': 'host', 'sender': 'host-of-test',
+                    'gid': "game%d" % game, 'moves': moves, 'tc': None, 'clocks': None, 'result': None}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['room'].center)
+            for letter in "ab12":
+                await self.key(getattr(p, 'K_' + letter), letter, 0.05)
+            del plays[:]
+            await self.click(main.panelLayout(2, False)['join'].center, 0.3)
+            seen['joined'] = list(plays)
+            # the host is already on its third game, with no moves yet: catching up with it isn't another start
+            net.incoming_messages.append(hostState(2, 0, ""))
+            await asyncio.sleep(0.5)
+            seen['caught up'] = list(plays)
+            del plays[:]
+            net.incoming_messages.append(hostState(3, 0, ""))  # the host starts the next game
+            await asyncio.sleep(0.5)
+            seen['next game'] = list(plays)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        plays, restore = self.fakeSounds()
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)  # no Rejoin row for the other tests
+        self.assertEqual(seen['joined'], ['game-start'], "joining a room starts a game")
+        self.assertEqual(seen['caught up'], ['game-start'], "and catching up doesn't play it again")
+        self.assertEqual(seen['next game'], ['game-start'])
+
+
+    # --- step D: the move list, figurines, the evaluation graph and the analysis summary
+
+    def longGamePgn(self, plies=70):
+        """PGN text of a made-up game of plies random moves that isn't over, and its final GameState."""
+        import random
+        import pgn
+        main = self.main
+        for seed in range(100):
+            rng = random.Random(seed)
+            gs = support.GameState()
+            moves = gs.getValidMoves()
+            history = [gs.getPositionKey()]
+            for _ in range(plies):
+                if not moves:
+                    break
+                moves = gs.makeMoveWithSan(rng.choice(moves), moves)
+                main.updatePositionHistory(gs, history)
+            if len(gs.moveLog) == plies and moves and main.getOutcome(gs, history, None) is None:
+                return pgn.buildPgn(gs.moveLog, [("White", "A"), ("Black", "B"), ("Result", "*")], '*'), gs
+        self.fail("no unfinished random game")
+
+    def test_move_list_layout(self):
+        main = self.main
+        top = main.STRIP_HEIGHT
+        layout = main.moveListLayout(5, top, 600)
+        self.assertEqual((layout['rows'], layout['first'], layout['track']), (3, 0, None), "all fits: no scrollbar")
+        cells = dict((ply, rect) for rect, ply in layout['cells'])
+        self.assertEqual(sorted(cells), [0, 1, 2, 3, 4])
+        for ply, rect in cells.items():  # one row per move number: White's move left, Black's right
+            self.assertEqual(rect.x, main.MOVE_COLUMNS[ply % 2], ply)
+            self.assertEqual(rect.y, top + main.MOVE_LIST_PADDING + ply // 2 * main.MOVE_ROW_HEIGHT, ply)
+            self.assertEqual(main.moveListPly(layout, rect.center), ply)
+        self.assertEqual([number for number, _ in layout['numbers']], [1, 2, 3])
+        self.assertIsNone(main.moveListPly(layout, (main.MOVE_COLUMNS[1] + 10, cells[4].centery)), "no 3... yet")
+        self.assertIsNone(main.moveListPly(layout, (main.PANEL_X + 10, cells[0].centery)), "the move number")
+        # a long game: newest rows at the bottom, scrolled back from there, and following the shown move
+        bottom = top + main.MOVE_LIST_PADDING + 5 * main.MOVE_ROW_HEIGHT
+        newest = main.moveListLayout(70, top, bottom)
+        self.assertEqual((newest['rows'], newest['visible'], newest['first'], newest['scroll']), (35, 5, 30, 0))
+        self.assertEqual(newest['cells'][-1][1], 69)
+        self.assertEqual(main.moveListLayout(70, top, bottom, 4)['first'], 26)
+        self.assertEqual(main.moveListLayout(70, top, bottom, 99)['scroll'], 30, "clamped")
+        self.assertEqual(main.moveListLayout(70, top, bottom, -3)['scroll'], 0)
+        self.assertEqual(main.moveListLayout(70, top, bottom, 0, follow=0)['first'], 0)
+        self.assertEqual(main.moveListLayout(70, top, bottom, 0, follow=-1)['first'], 0, "the start position")
+        self.assertEqual(main.moveListLayout(70, top, bottom, 30, follow=69)['first'], 30)
+        self.assertEqual(main.moveListLayout(70, top, bottom, 10, follow=41)['first'], 20, "already in view")
+        self.assertEqual(main.moveListLayout(70, top, bottom, 10, follow=51)['first'], 21, "scrolls just enough")
+
+    def test_scrollbar_geometry(self):
+        main = self.main
+        top = main.STRIP_HEIGHT
+        bottom = top + main.MOVE_LIST_PADDING + 8 * main.MOVE_ROW_HEIGHT
+        newest = main.moveListLayout(80, top, bottom)  # 40 rows, 8 shown
+        track, thumb = newest['track'], newest['thumb']
+        self.assertTrue(track.right <= main.PANEL_X + main.MOVE_LOG_PANEL_WIDTH - 8 and track.width <= 8, "thin")
+        self.assertTrue(track.contains(thumb))
+        self.assertAlmostEqual(thumb.height, track.height * 8 / 40, delta=1)
+        self.assertEqual(thumb.bottom, track.bottom, "the newest rows: the thumb at the bottom")
+        self.assertEqual(main.moveListLayout(80, top, bottom, 32)['thumb'].top, track.top)
+        for scroll in range(33):  # dragging the thumb to where it is keeps the scroll
+            layout = main.moveListLayout(80, top, bottom, scroll)
+            self.assertEqual(main.scrollForThumb(layout, layout['thumb'].y), scroll)
+        self.assertEqual(main.scrollForThumb(newest, -500), 32)
+        self.assertEqual(main.scrollForThumb(newest, 5000), 0)
+        middle = main.moveListLayout(80, top, bottom, 16)
+        thumb = middle['thumb']
+        self.assertEqual(main.scrollbarPart(middle, thumb.center), 'thumb')
+        self.assertEqual(main.scrollbarPart(middle, (thumb.centerx + 6, thumb.centery)), 'thumb', "a wider grip")
+        self.assertEqual(main.scrollbarPart(middle, (thumb.centerx, thumb.top - 3)), 'before')
+        self.assertEqual(main.scrollbarPart(middle, (thumb.centerx, thumb.bottom + 3)), 'after')
+        self.assertIsNone(main.scrollbarPart(middle, (thumb.centerx - 40, thumb.centery)))
+        self.assertIsNone(main.scrollbarPart(main.moveListLayout(6, top, bottom), (thumb.centerx, thumb.centery)))
+        self.assertEqual(main.scrollForPage(middle, 'before'), 24, "a page of older moves")
+        self.assertEqual(main.scrollForPage(middle, 'after'), 8)
+        self.assertEqual(main.scrollForListDrag(5, 2 * main.MOVE_ROW_HEIGHT + 3), 7, "down: older moves")
+        self.assertEqual(main.scrollForListDrag(5, -main.MOVE_ROW_HEIGHT), 4)
+
+    def test_move_list_scrolls_with_the_wheel_thumb_track_and_drags(self):
+        main = self.main
+        import pgn
+        text, final = self.longGamePgn(70)
+        lists = []
+        realDraw = main.drawMoveList
+        seen = {}
+
+        def record(screen, layout, *args, **kwargs):
+            lists.append(layout)
+            return realDraw(screen, layout, *args, **kwargs)
+
+        async def wheel(steps):
+            self.mouse[0] = (main.PANEL_X + 150, 200)
+            for _ in range(abs(steps)):
+                p.event.post(p.event.Event(p.MOUSEWHEEL, x=0, y=1 if steps > 0 else -1, flipped=False))
+            await asyncio.sleep(0.3)
+
+        async def pressDrag(start, end, steps=6):
+            self.mouse[0] = start
+            p.event.post(p.event.Event(p.MOUSEBUTTONDOWN, button=1, pos=start))
+            await asyncio.sleep(0.1)
+            for i in range(1, steps + 1):
+                pos = (round(start[0] + (end[0] - start[0]) * i / steps),
+                       round(start[1] + (end[1] - start[1]) * i / steps))
+                self.mouse[0] = pos
+                p.event.post(p.event.Event(p.MOUSEMOTION, pos=pos, rel=(0, 0), buttons=(1, 0, 0)))
+                await asyncio.sleep(0.04)
+            p.event.post(p.event.Event(p.MOUSEBUTTONUP, button=1, pos=end))
+            await asyncio.sleep(0.3)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.chooseTwoPlayers()
+            pgn._loadedText = text
+            await asyncio.sleep(0.6)
+            seen['loaded'] = (lists[-1]['rows'], lists[-1]['first'] + lists[-1]['visible'],
+                              lists[-1]['track'] is not None)
+            first = lists[-1]['first']
+            await wheel(3)
+            seen['wheel'] = first - lists[-1]['first']
+            thumb = lists[-1]['thumb']
+            await pressDrag(thumb.center, (thumb.centerx, 0))
+            seen['thumb'] = lists[-1]['first']
+            track = lists[-1]['track']
+            await self.tap((track.centerx, track.bottom - 2))
+            seen['page'] = (lists[-1]['first'], lists[-1]['visible'])
+            before = lists[-1]['first']
+            await pressDrag((main.PANEL_X + 150, 200), (main.PANEL_X + 150, 200 - 2 * main.MOVE_ROW_HEIGHT - 4))
+            seen['list drag'] = (lists[-1]['first'] - before, len(frames[-1][0]))
+            rect, ply = lists[-1]['cells'][3]
+            await self.tap(rect.center)
+            seen['tap'] = (len(frames[-1][0]), ply + 1)
+            await self.key(p.K_END)
+            await wheel(2)
+            before = lists[-1]['first']
+            move = next(m for m in final.getValidMoves() if not m.isPawnPromotion)
+            await self.move((move.startRow, move.startCol), (move.endRow, move.endCol))
+            seen['new move'] = (len(frames[-1][0]), before, lists[-1]['first'])
+            await wheel(-5)
+            seen['back down'] = lists[-1]['first'] + lists[-1]['visible']
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restore = self.recordBoards()
+        main.drawMoveList = record
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            main.drawMoveList = realDraw
+        self.assertEqual(seen['loaded'], (35, 35, True), "the newest row shows, with a scrollbar")
+        self.assertEqual(seen['wheel'], 3)
+        self.assertEqual(seen['thumb'], 0, "the thumb dragged to the top: the first moves")
+        self.assertEqual(seen['page'][0], seen['page'][1], "a click below the thumb pages down")
+        self.assertEqual(seen['list drag'], (2, 70), "dragging the list up shows newer moves and selects nothing")
+        self.assertEqual(seen['tap'][0], seen['tap'][1], "a tap on a move shows the position after it")
+        self.assertEqual(seen['new move'][0], 71)
+        self.assertEqual(seen['new move'][1], seen['new move'][2], "scrolled back, a new row leaves the view alone")
+        self.assertEqual(seen['back down'], 36, "and scrolled down again, the newest row shows")
+
+    def test_figurine_notation(self):
+        main, settings = self.main, self.settings
+        p.init()
+        main.loadImages()
+        self.assertEqual(main.sanParts("Nf3"), [('piece', 'N'), ('text', "f3")])
+        self.assertEqual(main.sanParts("Bxb7+"), [('piece', 'B'), ('text', "xb7+")])
+        self.assertEqual(main.sanParts("exd8=Q#"), [('text', "exd8="), ('piece', 'Q'), ('text', "#")])
+        self.assertEqual(main.sanParts("O-O-O"), [('text', "O-O-O")])
+        black = (0, 0, 0)
+
+        def bright(surface):  # pixels of a white piece's light body (the text is black)
+            w, h = surface.get_size()
+            return sum(1 for x in range(w) for y in range(h)
+                       if surface.get_at((x, y))[3] > 200 and min(surface.get_at((x, y))[:3]) > 200)
+
+        letters = main.sanSurface("Nf3", 'w', 19, black, figurines=False)
+        self.assertIs(letters, main.get_text_surface("Nf3", 19, black, False))
+        figure = main.sanSurface("Nf3", 'w', 19, black, figurines=True)
+        self.assertIs(figure, main.sanSurface("Nf3", 'w', 19, black, figurines=True), "cached")
+        self.assertGreater(bright(figure), 10, "a white knight is drawn")
+        self.assertEqual(bright(letters), 0)
+        self.assertEqual(bright(main.sanSurface("Nf3", 'b', 19, black, figurines=True)), 0, "a black one for Black")
+        self.assertGreater(bright(main.sanSurface("e8=Q", 'w', 19, black, figurines=True)), 10, "the promotion piece")
+        self.assertIs(main.sanSurface("e4", 'w', 19, black, figurines=True),
+                      main.get_text_surface("e4", 19, black, False), "a pawn move has no piece letter")
+        # the move list follows the Notation switch
+        gs = support.GameState()
+        moves = gs.getValidMoves()
+        gs.makeMoveWithSan(gs.findMoveBySan("Nf3", moves), moves)
+        layout = main.moveListLayout(1, main.STRIP_HEIGHT, 400)
+        cell = layout['cells'][0][0]
+        saved = dict(main.UI)
+        try:
+            main.UI['text'] = black
+            for value in (False, True):
+                settings.put('figurines', value)
+                surface = p.Surface((main.BOARD_WIDTH + main.MOVE_LOG_PANEL_WIDTH, main.BOARD_HEIGHT))
+                main.drawMoveList(surface, layout, gs.moveLog)
+                self.assertEqual(bright(surface.subsurface(cell)) > 10, value, value)
+        finally:
+            settings.put('figurines', settings.DEFAULTS['figurines'])
+            main.UI.clear()
+            main.UI.update(saved)
+
+    def test_eval_graph_geometry_and_panel_rows(self):
+        main = self.main
+        rows = main.panelRows(0, False, reviewing=True)
+        graphRows = main.panelRows(0, False, reviewing=True, graph=True)
+        self.assertEqual(rows[3], ['analyze'])
+        self.assertEqual(graphRows[3], ['graph'], "the graph takes the Analyze game row's place")
+        self.assertEqual(rows[:3] + rows[4:], graphRows[:3] + graphRows[4:])
+        before, after = main.panelLayout(0, False, False, True), main.panelLayout(0, False, False, True, True)
+        graph = after['graph']
+        self.assertEqual((graph.height, graph.width), (main.GRAPH_HEIGHT, main.CONTROL_WIDTH))
+        self.assertGreaterEqual(main.GRAPH_HEIGHT, 2 * main.ROW_HEIGHT)
+        for name in ('first', 'undo', 'menu'):
+            self.assertEqual(before[name], after[name], name)
+        self.assertEqual(before['mode'].y - after['mode'].y, main.GRAPH_HEIGHT - main.ROW_HEIGHT)
+        self.assertEqual(graph.bottom + main.ROW_GAP, after['first'].y)
+        self.assertTrue(main.tooltipText('graph'))
+        chart = main.graphChart(graph)
+        self.assertTrue(graph.contains(chart))
+        plies = 41
+        xs = [main.graphX(graph, ply, plies) for ply in range(plies + 1)]
+        self.assertEqual((xs[0], xs[-1]), (chart.x, chart.right - 1))
+        self.assertEqual(xs, sorted(xs))
+        for ply, x in enumerate(xs):
+            self.assertEqual(main.graphPly(graph, plies, x), ply)
+        self.assertEqual(main.graphPly(graph, plies, graph.x - 50), 0)
+        self.assertEqual(main.graphPly(graph, plies, graph.right + 50), plies)
+        self.assertEqual(main.graphPly(graph, 0, graph.centerx), 0)
+        self.assertAlmostEqual(main.graphY(graph, 0), chart.centery, delta=1)
+        self.assertEqual(main.graphY(graph, 500), chart.y, "capped: a mate is the top")
+        self.assertEqual(main.graphY(graph, main.EVAL_CAP), chart.y)
+        self.assertEqual(main.graphY(graph, -main.EVAL_CAP - 3), chart.bottom - 1)
+        ys = [main.graphY(graph, score / 2) for score in range(-24, 25)]
+        self.assertEqual(ys, sorted(ys, reverse=True), "White's advantage is up")
+        self.assertLess(main.graphY(graph, 1), main.graphY(graph, 0) - 5, "a pawn up shows")
+
+    def test_eval_graph_fills_in_and_a_click_shows_that_move(self):
+        main = self.main
+        seen = {}
+        graphs = []
+        realGraph = main.drawEvalGraph
+        savedSeconds = main.ANALYSIS_SECONDS
+
+        def record(screen, rect, evals, plies, marks, shownPly, done=True):
+            graphs.append((len(evals), plies, shownPly, done))
+            return realGraph(screen, rect, evals, plies, marks, shownPly, done)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.chooseTwoPlayers()
+            for start, end in (((6, 5), (5, 5)), ((1, 4), (3, 4)), ((6, 6), (4, 6)), ((0, 3), (4, 7))):
+                await self.move(start, end)
+            await asyncio.sleep(0.3)
+            seen['before'] = len(graphs)
+            await self.tap(main.panelLayout(1, False, False, True)['analyze'].center, 0.05)
+            seen['first frame'] = graphs[0] if graphs else None
+            for _ in range(100):
+                if graphs and graphs[-1][3]:
+                    break
+                await asyncio.sleep(0.1)
+            seen['done'] = graphs[-1]
+            rect = main.panelLayout(1, False, False, True, True)['graph']
+            await self.tap((main.graphX(rect, 1, 4), rect.centery))
+            seen['click'] = (frames[-1][0], graphs[-1][2])
+            start = (main.graphX(rect, 1, 4), rect.centery)
+            self.mouse[0] = start
+            p.event.post(p.event.Event(p.MOUSEBUTTONDOWN, button=1, pos=start))
+            await asyncio.sleep(0.1)
+            for ply in (2, 3):
+                self.mouse[0] = (main.graphX(rect, ply, 4), rect.centery + 30)  # below the graph still follows x
+                p.event.post(p.event.Event(p.MOUSEMOTION, pos=self.mouse[0], rel=(0, 0), buttons=(1, 0, 0)))
+                await asyncio.sleep(0.1)
+            seen['drag'] = len(frames[-1][0])
+            p.event.post(p.event.Event(p.MOUSEBUTTONUP, button=1, pos=self.mouse[0]))
+            await asyncio.sleep(0.1)
+            self.mouse[0] = (main.graphX(rect, 0, 4), rect.centery)
+            p.event.post(p.event.Event(p.MOUSEMOTION, pos=self.mouse[0], rel=(0, 0), buttons=(0, 0, 0)))
+            await asyncio.sleep(0.2)
+            seen['released'] = len(frames[-1][0])
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restore = self.recordBoards()
+        main.drawEvalGraph = record
+        main.ANALYSIS_SECONDS = 0.05
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            main.drawEvalGraph = realGraph
+            main.ANALYSIS_SECONDS = savedSeconds
+        self.assertEqual(seen['before'], 0, "no graph before Analyze game")
+        self.assertIsNotNone(seen['first frame'])
+        self.assertFalse(seen['first frame'][3], "the graph shows while the analysis runs")
+        self.assertLess(seen['first frame'][0], 5)
+        self.assertEqual(seen['done'][:2], (5, 4))
+        self.assertEqual(seen['click'], (["f2f3"], 1), "a click shows the position at that point")
+        self.assertEqual(seen['drag'], 3, "dragging follows the pointer")
+        self.assertEqual(seen['released'], 3, "and stops when the button is let go")
+
+    def test_analysis_summary(self):
+        main = self.main
+        self.assertEqual(main.analysisSummary({}), "No mistakes found")
+        marks = {0: ("??", 3.2), 2: ("?", 1.6), 4: ("?", 2.0), 3: ("?!", 0.9)}
+        self.assertEqual(main.analysisSummary(marks), "White: 1 blunder, 2 mistakes · Black: 1 inaccuracy")
+        self.assertEqual(main.analysisSummary({1: ("?!", 1.0), 5: ("?!", 0.8), 7: ("??", 4.0)}),
+                         "White: no mistakes · Black: 1 blunder, 2 inaccuracies")
+        self.assertEqual(main.analysisSummary(marks, compact=True), "White 1??, 2? · Black 1?!")
+        self.assertEqual(main.analysisSummary({1: ("?", 2.0)}, compact=True), "White none · Black 1?")
+
+
+    # --- step 7: text fields, paste, the account window, forgot password
+
+    def recordAccountWindow(self):
+        """Records drawAccountWindow's view, message, scroll and form fields each frame; returns (frames, restore)."""
+        main = self.main
+        frames = []
+        real = main.drawAccountWindow
+
+        def record(screen, view, fields, focus, message, busy, account, rows, mouse_pos, tone='error', scroll=0,
+                   showPassword=False, thumbHeld=False):
+            frames.append({'view': view, 'message': message, 'tone': tone, 'scroll': scroll, 'rows': len(rows),
+                           'focus': focus, 'values': {name: field.value for name, field in fields.items()},
+                           'caret': fields[focus].caret if focus in fields else None, 'shown': showPassword})
+            return real(screen, view, fields, focus, message, busy, account, rows, mouse_pos, tone, scroll,
+                        showPassword, thumbHeld)
+
+        def restore():
+            main.drawAccountWindow = real
+        main.drawAccountWindow = record
+        return frames, restore
+
+    def fakeAccount(self, **methods):
+        """Replaces account methods with the given functions until the returned restore() is called."""
+        from account import account
+        saved = {name: getattr(account, name) for name in methods}
+        saved.update(profile=account.profile, stats=account.stats)
+        for name, function in methods.items():
+            setattr(account, name, function)
+
+        def restore():
+            for name in methods:
+                delattr(account, name)  # back to the class's method
+            account.profile, account.stats = saved['profile'], saved['stats']
+        return account, restore
+
+    async def typeText(self, text, wait=0.02):
+        for ch in text:
+            await self.key(ord(ch.lower()) if ch.isalpha() else ord(ch), ch, wait)
+        await asyncio.sleep(0.1)
+
+    def test_room_code_from_pasted_text(self):
+        main = self.main
+        self.assertEqual(main.roomCodeFromText("https://chess-playing-ai.vercel.app/?room=AB12CD"), "AB12CD")
+        self.assertEqual(main.roomCodeFromText("Join me! https://x.app/?lang=en&room=qx7rt2#top"), "QX7RT2")
+        self.assertEqual(main.roomCodeFromText("  ab-12 cd\n"), "AB-12CD")
+        self.assertEqual(main.roomCodeFromText("https://example.com/somewhere"), "", "a link without a room")
+        self.assertEqual(main.roomCodeFromText("x" * 30), "X" * main.ROOM_CODE_LENGTH)
+        from textfield import TextField
+        field = TextField("ZZ", maxLength=main.ROOM_CODE_LENGTH, allowed=main.ROOM_CODE_CHARACTERS,
+                          transform=str.upper, onPaste=main.pasteRoomCode)
+        field.paste("https://chess-playing-ai.vercel.app/?room=AB12CD")
+        self.assertEqual(field.value, "AB12CD", "an invite link replaces the box's text with its code")
+        field.moveCaret(2)
+        field.paste("x y")
+        self.assertEqual((field.value, field.caret), ("ABXY12CD", 4), "a plain code goes in at the caret")
+
+    def test_reset_link_from_hash(self):
+        main = self.main
+        self.assertEqual(main.resetLinkFromHash("#access_token=a.b.c&expires_in=3600&refresh_token=r1"
+                                                "&token_type=bearer&type=recovery"),
+                         {'token': 'a.b.c', 'refresh': 'r1'})
+        self.assertIsNone(main.resetLinkFromHash("access_token=a&refresh_token=r&type=signup"))
+        self.assertIsNone(main.resetLinkFromHash(""))
+        expired = main.resetLinkFromHash("error=access_denied&error_code=otp_expired&error_description=Email+link")
+        self.assertIn("expired", expired['error'])
+
+    def test_account_windows_fit_their_content(self):
+        main = self.main
+        for view in main.ACCOUNT_FORMS + ('profile', 'games', 'leaderboard'):
+            with self.subTest(view=view):
+                rects = main.accountLayout(view, 5)
+                box = rects['box']
+                self.assertTrue(p.Rect(0, 0, main.BOARD_WIDTH, main.BOARD_HEIGHT).contains(box), "over the board")
+                controls = {name: rect for name, rect in rects.items() if name not in ('box', 'close', 'signOut')
+                            and not name.startswith('toggle:')}
+                for name, rect in controls.items():
+                    self.assertTrue(box.contains(rect), name)
+                above = max(rect.bottom for rect in controls.values())
+                self.assertLessEqual(rects['close'].top - above, 3 * main.ROW_GAP, "no empty gap above Close")
+                self.assertEqual(box.bottom - rects['close'].bottom, 24)
+        signin = main.accountLayout('signin')
+        self.assertLess(signin['box'].height, 500, "the sign-in form is shorter than the old fixed window")
+        self.assertTrue(signin['field:password'].contains(signin['toggle:password']), "Show sits in the field")
+        self.assertGreater(signin['forgot'].top, signin['switch'].bottom, "Forgot password? under the form")
+        self.assertEqual(main.accountLayout('profile', 1)['box'].height + 4 * main.ACCOUNT_STAT_ROW,
+                         main.accountLayout('profile', 5)['box'].height, "the profile grows with its results")
+
+    def test_saved_games_list_geometry(self):
+        main = self.main
+        visible = main.ACCOUNT_LIST_ROWS['games']
+        top = main.accountListLayout('games', 50, 0)
+        self.assertEqual((top['first'], len(top['cells'])), (0, visible))
+        self.assertTrue(top['track'].contains(top['thumb']) and top['thumb'].top == top['track'].top)
+        bottom = main.accountListLayout('games', 50, 999)
+        self.assertEqual(bottom['first'], 50 - visible, "clamped to the last page")
+        self.assertEqual(bottom['thumb'].bottom, bottom['track'].bottom)
+        for scroll in range(0, 50 - visible + 1):  # dragging the thumb to where it is keeps the scroll
+            layout = main.accountListLayout('games', 50, scroll)
+            self.assertEqual(main.firstRowForThumb(layout, layout['thumb'].y), scroll)
+        few = main.accountListLayout('games', 3, 5)
+        self.assertEqual((few['first'], few['track'], len(few['cells'])), (0, None, 3))
+        rects = main.accountLayout('games', 50, 10)
+        self.assertIn('row:10', rects)
+        self.assertNotIn('row:9', rects)
+
+    def test_sign_in_fields_caret_show_password_and_paste(self):
+        main = self.main
+        import browser
+        seen = {}
+        realClipboard = browser.clipboardText
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.panelLayout(0, False)['account'].center, 0.3)
+            seen['view'] = frames[-1]['view']
+            await self.typeText("duy@example.com")
+            login = main.accountLayout('signin')['field:login']
+            font = main.get_font(main.FIELD_TEXT_SIZE, False)
+            await self.click((login.x + main.FIELD_PADDING + font.size("duy")[0] + 1, login.centery), 0.1)
+            await self.typeText("_t")
+            seen['caret'] = (frames[-1]['values']['login'], frames[-1]['caret'])
+            p.event.post(p.event.Event(p.KEYDOWN, key=p.K_TAB, unicode="\t", mod=0, scancode=0))
+            browser.clipboardText = lambda: "pass word\n"
+            p.event.post(p.event.Event(p.KEYDOWN, key=p.K_v, unicode="\x16", mod=p.KMOD_LCTRL, scancode=0))
+            await asyncio.sleep(0.3)
+            seen['paste'] = (frames[-1]['focus'], frames[-1]['values']['password'], frames[-1]['shown'])
+            self.mouse[0] = main.accountLayout('signin')['field:login'].center
+            await asyncio.sleep(0.2)
+            seen['ibeam'] = main.CURSOR[0]
+            await self.click(main.accountLayout('signin')['toggle:password'].center, 0.2)
+            seen['shown'] = frames[-1]['shown']
+            seen['toggle cursor'] = main.CURSOR[0]
+            await self.key(p.K_ESCAPE)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restore = self.recordAccountWindow()
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            browser.clipboardText = realClipboard
+        self.assertEqual(seen['view'], 'signin')
+        self.assertEqual(seen['caret'], ("duy_t@example.com", 5), "a click put the caret after 'duy'")
+        self.assertEqual(seen['paste'], ('password', "pass word", False), "Ctrl+V pasted into the focused field")
+        self.assertEqual(seen['ibeam'], 'ibeam')
+        self.assertTrue(seen['shown'], "Show reveals the password")
+        self.assertEqual(seen['toggle cursor'], 'hand', "Show is a button in the field")
+
+    def test_forgot_password_view(self):
+        main = self.main
+        import browser
+        calls = []
+        seen = {}
+
+        async def recover(email, redirectTo=None):
+            calls.append((email, redirectTo))
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.panelLayout(0, False)['account'].center, 0.3)
+            await self.typeText("someone@")
+            await self.click(main.accountLayout('signin')['forgot'].center, 0.3)
+            seen['open'] = (frames[-1]['view'], frames[-1]['values']['email'])
+            await self.key(p.K_RETURN, "\r")
+            seen['invalid'] = (frames[-1]['message'], list(calls))
+            await self.typeText("someone@example.com")
+            seen['typing clears it'] = frames[-1]['message']
+            await self.click(main.accountLayout('forgot')['submit'].center, 0.4)
+            seen['sent'] = (frames[-1]['message'], frames[-1]['tone'], list(calls))
+            await self.click(main.accountLayout('forgot')['switch'].center, 0.3)
+            seen['back'] = frames[-1]['view']
+            await self.key(p.K_ESCAPE)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restore = self.recordAccountWindow()
+        account, restoreAccount = self.fakeAccount(recover=recover)
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreAccount()
+        self.assertEqual(seen['open'], ('forgot', ""), "a login without a full email isn't copied over")
+        self.assertEqual(seen['invalid'], ("That doesn't look like an email address", []))
+        self.assertEqual(seen['typing clears it'], "")
+        self.assertEqual(seen['sent'], (main.RESET_LINK_SENT, 'success',
+                                        [("someone@example.com", browser.siteUrl())]))
+        self.assertEqual(seen['back'], 'signin')
+
+    def test_reset_link_opens_the_new_password_view(self):
+        import browser
+        calls = []
+        cleared = []
+        seen = {}
+        realHash, realClear = browser.locationHash, browser.clearLocationHash
+
+        async def setPassword(token, password, refresh=None):
+            calls.append((token, password, refresh))
+            account.profile = {'id': 'U1', 'username': 'Duy_T', 'rating': 1200, 'rated_games': 0}
+
+        async def loadStats():
+            pass
+
+        async def script():
+            await asyncio.sleep(1.0)
+            seen['start'] = frames[-1]['view']
+            await self.typeText("short")
+            await self.key(p.K_RETURN, "\r")
+            seen['short'] = (frames[-1]['message'], list(calls))
+            await self.typeText("-but-ok")
+            await self.key(p.K_RETURN, "\r", 0.5)
+            seen['saved'] = (frames[-1]['view'], list(calls), list(cleared))
+            await self.key(p.K_ESCAPE)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        browser.locationHash = lambda: "access_token=tok&refresh_token=ref&type=recovery"
+        browser.clearLocationHash = lambda: cleared.append(True)
+        frames, restore = self.recordAccountWindow()
+        account, restoreAccount = self.fakeAccount(setPassword=setPassword, loadStats=loadStats)
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreAccount()
+            browser.locationHash, browser.clearLocationHash = realHash, realClear
+        self.assertEqual(seen['start'], 'newPassword', "the page opened from the reset email asks for the password")
+        self.assertEqual(seen['short'], ("Passwords need at least 8 characters", []))
+        self.assertEqual(seen['saved'], ('profile', [("tok", "short-but-ok", "ref")], [True]),
+                         "saved, signed in, and the link left the address bar")
+
+    def test_saved_games_scroll_and_open(self):
+        main = self.main
+        seen = {}
+        opened = []
+        windowFrames = []  # frames drawn with the account window open, per frame of the game
+        rows = [{'id': i, 'played_at': '2026-10-01', 'mode': 'local', 'result': '1-0', 'color': None,
+                 'opponent': 'Game %d' % i} for i in range(50)]
+
+        async def listGames():
+            return rows
+
+        async def loadStats():
+            pass
+
+        async def loadGame(gameId):
+            opened.append(gameId)
+            return '[Result "*"]\n\n1. e4 *\n'
+
+        async def wheel(steps):
+            for _ in range(abs(steps)):
+                p.event.post(p.event.Event(p.MOUSEWHEEL, x=0, y=1 if steps > 0 else -1, flipped=False))
+            await asyncio.sleep(0.3)
+
+        async def pressDrag(start, end, steps=8):
+            self.mouse[0] = start
+            p.event.post(p.event.Event(p.MOUSEBUTTONDOWN, button=1, pos=start))
+            await asyncio.sleep(0.1)
+            for i in range(1, steps + 1):
+                self.mouse[0] = (round(start[0] + (end[0] - start[0]) * i / steps),
+                                 round(start[1] + (end[1] - start[1]) * i / steps))
+                p.event.post(p.event.Event(p.MOUSEMOTION, pos=self.mouse[0], rel=(0, 0), buttons=(1, 0, 0)))
+                await asyncio.sleep(0.03)
+            p.event.post(p.event.Event(p.MOUSEBUTTONUP, button=1, pos=end))
+            await asyncio.sleep(0.3)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.panelLayout(0, False)['account'].center, 0.3)
+            await self.tap(main.accountLayout('profile', 0)['games'].center, 0.4)
+            seen['open'] = (frames[-1]['view'], frames[-1]['rows'], frames[-1]['scroll'])
+            self.mouse[0] = main.accountLayout('games', 50)['list'].center
+            await wheel(-3)
+            seen['wheel'] = frames[-1]['scroll']
+            await wheel(10)
+            seen['wheel back'] = frames[-1]['scroll']
+            layout = main.accountListLayout('games', 50, 0)
+            thumb = layout['thumb']
+            await pressDrag(thumb.center, (thumb.centerx, layout['track'].bottom + 40))
+            seen['thumb'] = frames[-1]['scroll']
+            # dragging the list down shows newer games and opens nothing
+            start = main.accountListLayout('games', 50, seen['thumb'])['cells'][2][0].center
+            await pressDrag(start, (start[0], start[1] + 4 * main.ACCOUNT_ROW_HEIGHT))
+            seen['list drag'] = (frames[-1]['scroll'], list(opened))
+            rect, index = main.accountListLayout('games', 50, frames[-1]['scroll'])['cells'][0]
+            await self.tap(rect.center, 0.5)
+            seen['tap'] = (index, list(opened), windowFrames[-1])
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restore = self.recordAccountWindow()
+        account, restoreAccount = self.fakeAccount(listGames=listGames, loadStats=loadStats, loadGame=loadGame)
+        account.profile = {'id': 'U1', 'username': 'Duy_T', 'rating': 1200, 'rated_games': 0}
+        account.stats = {}
+        realFrame = main.drawGameState
+        counted = [0]
+
+        def countFrames(*args, **kwargs):  # whether the window was drawn since the last board
+            windowFrames.append(len(frames) != counted[0])
+            counted[0] = len(frames)
+            return realFrame(*args, **kwargs)
+        main.drawGameState = countFrames
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreAccount()
+            main.drawGameState = realFrame
+        visible = main.ACCOUNT_LIST_ROWS['games']
+        self.assertEqual(seen['open'], ('games', 50, 0))
+        self.assertEqual(seen['wheel'], 3 * main.ACCOUNT_LIST_WHEEL, "the wheel scrolls down to older games")
+        self.assertEqual(seen['wheel back'], 0, "and back up, stopping at the newest")
+        self.assertEqual(seen['thumb'], 50 - visible, "the thumb dragged to the bottom: the oldest games")
+        self.assertEqual(seen['list drag'], (50 - visible - 4, []), "dragging scrolled and opened nothing")
+        self.assertEqual(seen['tap'][:2], (50 - visible - 4, [50 - visible - 4]), "a tap opens that game")
+        self.assertFalse(seen['tap'][2], "and the window closed")
+
+    def test_room_box_typing_caret_and_pasted_invite_link(self):
+        main = self.main
+        import browser
+        import network
+        net = network.net
+        seen = {}
+        values = []
+        topics = []
+        realDraw = main.drawTextField
+        realClipboard = browser.clipboardText
+        realSetTopic, realSend = net.set_topic, net.send
+
+        def record(screen, rect, field, focused, *args, **kwargs):
+            if kwargs.get('placeholder'):
+                values.append((field.value, field.caret, focused))
+            return realDraw(screen, rect, field, focused, *args, **kwargs)
+
+        def fakeSetTopic(topic):
+            topics.append(topic)
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+
+        async def fakeSend(data):
+            pass
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            room = main.panelLayout(2, False)['room']
+            self.mouse[0] = room.center
+            await asyncio.sleep(0.2)
+            seen['cursor'] = main.CURSOR[0]
+            await self.click(room.center, 0.2)
+            await self.typeText("ab-1 2!")
+            seen['typed'] = values[-1]
+            await self.key(p.K_HOME)
+            await self.typeText("z")
+            seen['home'] = values[-1]
+            browser.clipboardText = lambda: "https://chess-playing-ai.vercel.app/?room=QX7RT2"
+            p.event.post(p.event.Event(p.KEYDOWN, key=p.K_v, unicode="\x16", mod=p.KMOD_CTRL, scancode=0))
+            await asyncio.sleep(0.3)
+            seen['pasted'] = values[-1]
+            await self.key(p.K_RETURN, "\r")
+            seen['enter'] = values[-1]
+            await self.click(main.panelLayout(2, False)['join'].center, 0.3)
+            await self.click(main.panelLayout(2, True)['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        main.drawTextField = record
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        try:
+            self.runGame(script)
+        finally:
+            main.drawTextField = realDraw
+            browser.clipboardText = realClipboard
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)  # no Rejoin row for the other tests
+        self.assertEqual(seen['cursor'], 'ibeam')
+        self.assertEqual(seen['typed'], ("AB-12", 5, True), "uppercase, only room code characters")
+        self.assertEqual(seen['home'], ("ZAB-12", 1, True), "typed at the caret")
+        self.assertEqual(seen['pasted'][:2], ("QX7RT2", 6), "the invite link's code replaced the text")
+        self.assertFalse(seen['enter'][2], "Enter leaves the box")
+        self.assertEqual(topics, ["QX7RT2"], "Join used the pasted code")
+
+    # --- step 8: invite links, joining from a link, quick chat
+
+    def offlineRoom(self):
+        """Replaces ntfy with a room only this test talks to; returns (sent, topics, restore)."""
+        import network
+        net = network.net
+        sent, topics = [], []
+        realSetTopic, realSend = net.set_topic, net.send
+
+        def fakeSetTopic(topic):
+            topics.append(topic)
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+            net.server_time = 0
+
+        async def fakeSend(data):
+            sent.append(dict(data))
+
+        def restore():
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)  # no Rejoin row for the other tests
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        return sent, topics, restore
+
+    def openedWithRoomParam(self, value):
+        """Makes the game start as if the page's address had ?room=value; returns (removed, restore)."""
+        import browser
+        params = {'room': value}
+        removed = []
+        realQuery, realRemove = browser.queryParam, browser.removeQueryParam
+
+        def removeQueryParam(name):
+            removed.append(name)
+            params.pop(name, None)
+        browser.queryParam = lambda name: params.get(name)
+        browser.removeQueryParam = removeQueryParam
+
+        def restore():
+            browser.queryParam, browser.removeQueryParam = realQuery, realRemove
+        return removed, restore
+
+    def test_invite_url_is_built_and_read_back(self):
+        main = self.main
+        import browser
+        site = "https://chess-playing-ai.vercel.app/"
+        self.assertEqual(main.inviteUrl(site, "AB12CD"), "https://chess-playing-ai.vercel.app/?room=AB12CD")
+        self.assertEqual(main.inviteUrl("http://127.0.0.1:8870/index.html", "x-_9"),
+                         "http://127.0.0.1:8870/index.html?room=x-_9")
+        self.assertEqual(main.inviteUrl("https://a.app/?lang=en", "Q1"), "https://a.app/?lang=en&room=Q1")
+        for code in ("AB12CD", "QX7-RT_2", "Z" * main.ROOM_CODE_LENGTH):
+            self.assertEqual(main.roomCodeFromText(main.inviteUrl(site, code)), code)
+        self.assertEqual(browser.siteUrl(), browser.SITE_URL, "on desktop the link points at the public site")
+        self.assertEqual(browser.paramFromUrl(main.inviteUrl(site, "AB12CD"), 'room'), "AB12CD")
+
+    def test_incoming_chat_filter(self):
+        main = self.main
+        chat = main.incomingChat
+
+        def msg(**changes):
+            message = {'type': 'chat', 'id': 2, 'role': 'client', '_time': 1000}
+            message.update(changes)
+            return message
+        self.assertEqual(chat(msg(), 'client', 1000), 2)
+        self.assertEqual(chat(msg(), 'client', 1000 + main.CHAT_FRESH_SECONDS), 2, "30 s old still shows")
+        self.assertIsNone(chat(msg(), 'client', 1001 + main.CHAT_FRESH_SECONDS), "history replayed on joining")
+        self.assertIsNone(chat(msg(), 'host', 1000), "our own role")
+        self.assertIsNone(chat(msg(role=None), 'client', 1000))
+        self.assertIsNone(chat(msg(type='ping'), 'client', 1000))
+        for bad in (-1, len(main.QUICK_CHAT), "2", 2.0, True, None):
+            self.assertIsNone(chat(msg(id=bad), 'client', 1000), bad)
+        self.assertEqual(chat(msg(id=len(main.QUICK_CHAT) - 1), 'client', 1000), len(main.QUICK_CHAT) - 1)
+        self.assertIsNone(chat(msg(_time=None), 'client', 1000), "no server time: can't tell how old it is")
+        self.assertIsNone(chat(msg(), 'client', None))
+
+    def test_chat_rate_limit_and_bubble_layout(self):
+        main = self.main
+        p.font.init()  # the bubble is measured in its font
+        self.assertTrue(main.chatReady(500, None), "nothing sent yet")
+        self.assertFalse(main.chatReady(10000, 10000))
+        self.assertFalse(main.chatReady(10000 + main.CHAT_INTERVAL_MS - 1, 10000))
+        self.assertTrue(main.chatReady(10000 + main.CHAT_INTERVAL_MS, 10000))
+        self.assertEqual(main.disabledReason('chat', chatWait=True), "Wait a moment")
+        self.assertIsNone(main.disabledReason('chat'))
+        panel = p.Rect(main.PANEL_X, 0, main.MOVE_LOG_PANEL_WIDTH, main.BOARD_HEIGHT)
+        stripY = 450
+        for text in main.QUICK_CHAT:
+            top, tail = main.chatBubbleLayout(text, 0, True)
+            self.assertTrue(panel.contains(top), "never over the board")
+            self.assertGreater(top.top, main.STRIP_HEIGHT, "below the upper strip")
+            self.assertTrue(all(y >= main.STRIP_HEIGHT - 1 for _, y in tail), "its tail reaches up to the strip")
+            bottom, tail = main.chatBubbleLayout(text, stripY, False)
+            self.assertTrue(panel.contains(bottom))
+            self.assertLess(bottom.bottom, stripY, "above the lower strip")
+            self.assertTrue(all(y <= stripY for _, y in tail))
+            fits = main.get_font(main.CHAT_TEXT_SIZE, True, True).size(text)[0] <= bottom.width - 28
+            self.assertTrue(fits, text)
+            lifted, _ = main.chatBubbleLayout(text, stripY, False, lift=50)
+            self.assertEqual(lifted.bottom, bottom.bottom - 50, "it rises above a status message")
+        host = main.panelLayout(2, True)
+        self.assertIn('invite', host)
+        guest = main.panelLayout(2, True, guest=True)
+        self.assertNotIn('invite', guest, "only the host invites")
+        self.assertEqual(guest['chat'].width, main.CONTROL_WIDTH)
+        for layout in (host, guest):
+            for rect in main.chatItemRects(layout['chat']).values():
+                self.assertTrue(panel.contains(rect), "the chat list stays in the panel")
+                self.assertLess(rect.bottom, layout['chat'].top)
+        self.assertTrue(main.tooltipText('invite') and main.tooltipText('chat'))
+
+    def test_invite_link_opens_the_join_prompt(self):
+        main = self.main
+        texts = []
+        seen = {}
+        realFitting = main.get_fitting_text
+
+        def recordText(text, *args, **kwargs):
+            texts.append(text)
+            return realFitting(text, *args, **kwargs)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            seen['start'] = ("Join room TEST12 as Black?" in texts, list(removed), list(topics))
+            _, join, _ = main.promptRects()
+            self.mouse[0] = join.center
+            await asyncio.sleep(0.2)
+            seen['cursor'] = main.CURSOR[0]
+            await self.click(join.center, 0.5)
+            seen['joined'] = (list(topics), [m['role'] for m in sent if m.get('type') == 'sync_request'])
+            await self.click(main.panelLayout(2, True, guest=True)['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        removed, restoreParam = self.openedWithRoomParam("test12")
+        main.get_fitting_text = recordText
+        try:
+            self.runGame(script)
+        finally:
+            main.get_fitting_text = realFitting
+            restoreParam()
+            restoreRoom()
+        self.assertEqual(seen['start'], (True, ['room'], []), "the prompt asks first; the link left the address")
+        self.assertEqual(seen['cursor'], 'hand')
+        self.assertEqual(seen['joined'], (["TEST12"], ['client']), "Join connects as the guest")
+
+    def test_invite_link_prompt_cancel_keeps_the_code(self):
+        main = self.main
+        values = []
+        seen = {}
+        realDraw = main.drawTextField
+
+        def record(screen, rect, field, focused, *args, **kwargs):
+            values.append(field.value)
+            return realDraw(screen, rect, field, focused, *args, **kwargs)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.promptRects()[2].center, 0.4)  # Cancel
+            seen['cancelled'] = (values[-1], list(topics))
+            await self.click(main.panelLayout(2, False)['join'].center, 0.4)  # the code is there to join with
+            seen['joined'] = list(topics)
+            await self.click(main.panelLayout(2, True, guest=True)['restart'].center)
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        removed, restoreParam = self.openedWithRoomParam("https://example.app/?room=ab-12")
+        main.drawTextField = record
+        try:
+            self.runGame(script)
+        finally:
+            main.drawTextField = realDraw
+            restoreParam()
+            restoreRoom()
+        self.assertEqual(seen['cancelled'], ("AB-12", []), "online setup with the room box filled in")
+        self.assertEqual(seen['joined'], ["AB-12"])
+
+    def test_copy_link_and_quick_chat(self):
+        main = self.main
+        import browser
+        import network
+        net = network.net
+        seen = {}
+        copied = []
+        copyWorks = [True]
+        bubbles = []  # (ticks, text, below) of every bubble drawn
+        realCopy, realBubble = browser.copyText, main.drawChatBubble
+        saved = (main.CHAT_BUBBLE_MS, main.CHAT_INTERVAL_MS)
+
+        def fakeCopy(text):
+            copied.append(text)
+            return copyWorks[0]
+
+        def recordBubble(screen, text, stripY, below, age=0, lift=0, span=None):
+            bubbles.append((p.time.get_ticks(), text, below))
+            return realBubble(screen, text, stripY, below, age, lift, span)
+
+        def bubblesSince(ticks):
+            return sorted({(text, below) for at, text, below in bubbles if at >= ticks})
+
+        def opponentChat(index, sentAt):
+            message = {'type': 'chat', 'id': index, 'role': 'client', 'sender': 'guest', 'game': 0, 'version': 0,
+                       '_time': sentAt}
+            net.server_time = max(net.server_time, sentAt)
+            net.incoming_messages.append(message)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            layout = main.panelLayout(2, True)
+            await self.click(layout['invite'].center, 0.3)
+            copyWorks[0] = False
+            await self.click(layout['invite'].center, 0.3)
+            seen['copied'] = list(copied)
+            seen['room'] = topics[-1]
+            await self.click(layout['chat'].center, 0.3)
+            await self.click(main.chatItemRects(layout['chat'])[1].center, 0.3)
+            seen['sent'] = [(m['id'], m['role']) for m in sent if m.get('type') == 'chat']
+            seen['own'] = bubblesSince(p.time.get_ticks() - 200)
+            await self.click(layout['chat'].center, 0.3)  # too soon: it says why, and sends nothing
+            await self.click(main.chatItemRects(layout['chat'])[2].center, 0.3)
+            seen['too soon'] = len([m for m in sent if m.get('type') == 'chat'])
+            opponentChat(4, 1000)
+            opponentChat(2, 900)  # older than 30 s: the room's history
+            await asyncio.sleep(0.3)
+            seen['both'] = bubblesSince(p.time.get_ticks() - 150)
+            await asyncio.sleep(main.CHAT_BUBBLE_MS / 1000 + 0.2)
+            seen['gone'] = bubblesSince(p.time.get_ticks() - 150)
+            await self.click(layout['chat'].center, 0.3)  # ready again
+            await self.click(main.chatItemRects(layout['chat'])[6].center, 0.3)
+            seen['again'] = [m['id'] for m in sent if m.get('type') == 'chat']
+            await self.click(layout['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        shown, restoreShown = self.recordShown()
+        browser.copyText, main.drawChatBubble = fakeCopy, recordBubble
+        main.CHAT_BUBBLE_MS, main.CHAT_INTERVAL_MS = 2000, 2500
+        try:
+            self.runGame(script)
+        finally:
+            browser.copyText, main.drawChatBubble = realCopy, realBubble
+            main.CHAT_BUBBLE_MS, main.CHAT_INTERVAL_MS = saved
+            restoreShown()
+            restoreRoom()
+        link = main.inviteUrl(browser.SITE_URL, seen['room'])
+        self.assertEqual(seen['copied'], [link, link])
+        self.assertIn("Invite link copied: send it to your friend", shown['status'])
+        self.assertIn("Couldn't copy the link: share the room code", shown['status'])
+        self.assertEqual(seen['sent'], [(1, 'host')])
+        self.assertEqual(seen['own'], [("Good luck!", False)], "by our own strip, at the bottom")
+        self.assertIn("Wait a moment", shown['status'])
+        self.assertEqual(seen['too soon'], 1)
+        self.assertEqual(seen['both'], [("Good luck!", False), ("Well played!", True)],
+                         "the opponent's by their strip at the top; the old one isn't shown")
+        self.assertEqual(seen['gone'], [], "the bubbles time out")
+        self.assertEqual(seen['again'], [1, 6])
+
+    # --- step 9: How to play on the first visit, captured pieces readable in both themes, the desktop window
+
+    def recordHelpPages(self):
+        """Records the page drawHelpWindow shows each frame (None when the window is closed); returns (pages, restore)."""
+        main = self.main
+        pages = []
+        realHelp, realDraw = main.drawHelpWindow, main.drawGameState
+
+        def recordHelp(screen, page, mouse_pos):
+            pages[-1] = page
+            return realHelp(screen, page, mouse_pos)
+
+        def recordFrame(*args, **kwargs):  # every frame draws the board first
+            pages.append(None)
+            return realDraw(*args, **kwargs)
+        main.drawHelpWindow, main.drawGameState = recordHelp, recordFrame
+
+        def restore():
+            main.drawHelpWindow, main.drawGameState = realHelp, realDraw
+        return pages, restore
+
+    def test_how_to_play_opens_on_the_first_visit(self):
+        main = self.main
+        seen = {}
+
+        async def firstVisit():
+            await asyncio.sleep(0.8)
+            seen['opened'] = (pages[-1], self.settings.get('seenHelp'))
+            await self.key(p.K_RIGHT)
+            await self.click(main.helpLayout()['close'].center, 0.4)  # closing it in any way
+            seen['closed'] = (pages[-1], self.settings.get('seenHelp'))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        async def nextVisit():
+            await asyncio.sleep(0.8)
+            seen['next'] = [page for page in pages if page is not None]
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        async def escape():
+            await asyncio.sleep(0.8)
+            await self.key(p.K_ESCAPE)
+            seen['escaped'] = (pages[-1], self.settings.get('seenHelp'))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        pages, restore = self.recordHelpPages()
+        try:
+            self.settings.put('seenHelp', False)
+            self.runGame(firstVisit)
+            self.settings._values = None  # as on the next start
+            del pages[:]
+            self.runGame(nextVisit)
+            self.settings.put('seenHelp', False)
+            self.runGame(escape)
+        finally:
+            restore()
+            self.settings.put('seenHelp', True)
+        self.assertEqual(seen['opened'], (0, False), "How to play opens by itself, on its first page")
+        self.assertEqual(seen['closed'], (None, True), "closing it marks it seen")
+        self.assertEqual(seen['next'], [], "and it doesn't open again")
+        self.assertEqual(seen['escaped'], (None, True), "Esc counts as closing too")
+
+    def test_first_visit_help_waits_for_the_invite_prompt(self):
+        main = self.main
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(0.8)
+            seen['prompt'] = ([page for page in pages if page is not None], self.settings.get('seenHelp'))
+            await self.click(main.promptRects()[2].center, 0.4)  # Cancel
+            seen['after'] = pages[-1]
+            await self.key(p.K_ESCAPE)
+            seen['closed'] = self.settings.get('seenHelp')
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        pages, restore = self.recordHelpPages()
+        sent, topics, restoreRoom = self.offlineRoom()
+        removed, restoreParam = self.openedWithRoomParam("test12")
+        try:
+            self.settings.put('seenHelp', False)
+            self.runGame(script)
+        finally:
+            restore()
+            restoreParam()
+            restoreRoom()
+            self.settings.put('seenHelp', True)
+        self.assertEqual(seen['prompt'], ([], False), "the Join prompt comes first")
+        self.assertEqual(seen['after'], 0, "How to play opens once it is answered")
+        self.assertTrue(seen['closed'])
+
+    def test_first_visit_help_skips_a_password_reset(self):
+        import browser
+        seen = {}
+        realHash, realClear = browser.locationHash, browser.clearLocationHash
+
+        async def script():
+            await asyncio.sleep(0.8)
+            seen['view'] = frames[-1]['view']
+            await self.key(p.K_ESCAPE)
+            await asyncio.sleep(0.3)
+            seen['help'] = [page for page in pages if page is not None]
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        browser.locationHash = lambda: "access_token=tok&refresh_token=ref&type=recovery"
+        browser.clearLocationHash = lambda: None
+        frames, restoreAccount = self.recordAccountWindow()
+        pages, restore = self.recordHelpPages()
+        try:
+            self.settings.put('seenHelp', False)
+            self.runGame(script)
+            seen['seen'] = self.settings.get('seenHelp')
+        finally:
+            restore()
+            restoreAccount()
+            browser.locationHash, browser.clearLocationHash = realHash, realClear
+            self.settings.put('seenHelp', True)
+        self.assertEqual(seen['view'], 'newPassword')
+        self.assertEqual(seen['help'], [], "How to play doesn't follow the password reset")
+        self.assertFalse(seen['seen'], "it waits for a later visit")
+
+    def test_captured_pieces_have_a_halo_for_the_dark_theme(self):
+        main = self.main
+        main.loadImages()
+        try:
+            for theme in ('light', 'dark'):
+                main.setUiTheme(theme)
+                halo = tuple(main.UI['capturedHalo'])
+                for piece in ('bQ', 'bp', 'wQ', 'wp'):
+                    icon = main.capturedIcon(piece)
+                    self.assertEqual(icon.get_size(), (main.SMALL_PIECE_SIZE + 2,) * 2)
+                    colors = {tuple(icon.get_at((x, y))) for x in range(icon.get_width()) for y in range(icon.get_height())}
+                    self.assertEqual(halo + (255,) in colors, piece[0] == 'b', (theme, piece))
+                self.assertIs(main.capturedIcon('bQ'), main.capturedIcon('bQ'), "made once")
+            # on the dark theme's strip, Black's pieces stand out by their halo
+            strip = main.PALETTES['dark']['strip']
+            icon = main.capturedIcon('bp')
+            edge = [tuple(icon.get_at((x, y)))[:3] for x in range(icon.get_width()) for y in range(icon.get_height())
+                    if icon.get_at((x, y))[3] == 255]
+            lightest = max(sum(color) for color in edge)
+            self.assertGreater(lightest - sum(strip), 200)
+        finally:
+            main.setUiTheme(self.settings.get('uiTheme'))
+
+    def test_player_strip_draws_captured_pieces_with_their_halo(self):
+        main = self.main
+        main.loadImages()
+        try:
+            main.setUiTheme('dark')
+            screen = p.Surface(main.WINDOW_SIZE)
+            main.drawPlayerStrip(screen, 0, 'w', "White", ['bQ'], 9, None, False)
+            x0, y0 = main.PANEL_X + 10 - 1, 26
+            halo = tuple(main.UI['capturedHalo'])
+            area = {tuple(screen.get_at((x, y)))[:3] for x in range(x0, x0 + main.SMALL_PIECE_SIZE + 2)
+                    for y in range(y0, y0 + main.SMALL_PIECE_SIZE + 2)}
+            self.assertIn(halo, area)
+        finally:
+            main.setUiTheme(self.settings.get('uiTheme'))
+
+    def test_starting_window_size(self):
+        main = self.main
+        size = main.WINDOW_SIZE
+        frame = (22, 56)
+        self.assertEqual(main.startingWindowSize(size, (1920, 1040), frame), size, "fits: as it is")
+        self.assertEqual(main.startingWindowSize(size, (2880, 1620), frame), (2 * size[0], 2 * size[1]),
+                         "a large screen: the largest whole scale, so it stays crisp")
+        self.assertEqual(main.startingWindowSize(size, (2880, 1560), frame), size,
+                         "twice as large plus the frame wouldn't fit")
+        small = main.startingWindowSize(size, (1366, 728), frame)
+        self.assertEqual(small, (1000, 672), "a laptop: smaller, frame included, same shape")
+        self.assertLessEqual(small[1] + frame[1], 728)
+        narrow = main.startingWindowSize(size, (1024, 1000), frame)
+        self.assertLessEqual(narrow[0] + frame[0], 1024)
+        self.assertAlmostEqual(narrow[0] / narrow[1], size[0] / size[1], places=2)
+        tiny = main.startingWindowSize(size, (400, 300), frame)
+        self.assertEqual(tiny, (round(size[0] * main.WINDOW_MIN_SCALE), round(size[1] * main.WINDOW_MIN_SCALE)),
+                         "never smaller than the smallest the window can be made")
+
+    def test_open_window_keeps_the_plain_window_headless(self):
+        main = self.main
+        p.display.init()
+        self.assertEqual(p.display.get_driver(), 'dummy')
+        screen = main.openWindow()
+        self.assertEqual(screen.get_size(), main.WINDOW_SIZE)
+        self.assertFalse(screen.get_flags() & p.SCALED, "the tests' dummy driver keeps the plain window")
+
+
+    # --- step 10: the portrait layout (a browser window taller than wide)
+
+    def portrait(self, viewport=(390, 844)):
+        """Makes the game start in portrait as in a browser window of viewport; returns restore()."""
+        import browser
+        main = self.main
+        real = browser.viewportSize
+        size = [viewport]
+        browser.viewportSize = lambda: size[0]
+
+        def restore():
+            browser.viewportSize = real
+            main.setLayout('landscape')
+        self.viewport = size  # a test can turn the window: self.viewport[0] = (w, h)
+        return restore
+
+    def boardPoint(self, row, col):
+        """The canvas point at the middle of a square in the live layout (White at the bottom)."""
+        board, SQ = self.main.LAYOUT.board, self.main.SQ_SIZE
+        return (board.x + col * SQ + SQ // 2, board.y + row * SQ + SQ // 2)
+
+    def test_layout_follows_the_window_shape(self):
+        main = self.main
+        self.assertEqual(main.layoutFor(None), ('landscape', None), "desktop")
+        self.assertEqual(main.layoutFor((1280, 800)), ('landscape', None))
+        self.assertEqual(main.layoutFor((844, 390)), ('landscape', None), "a phone held sideways")
+        self.assertEqual(main.layoutFor((600, 600)), ('landscape', None), "square: landscape")
+        self.assertEqual(main.layoutFor((390, 844)), ('portrait', round(768 * 844 / 390)))
+        self.assertEqual(main.layoutFor((412, 915)), ('portrait', main.PORTRAIT_HEIGHTS[1]), "clamped")
+        self.assertEqual(main.layoutFor((768, 1024)), ('portrait', main.PORTRAIT_HEIGHTS[0]), "a tablet: clamped")
+
+    def test_landscape_layout_keeps_the_old_geometry(self):
+        main = self.main
+        layout = main.Layout()
+        self.assertIs(main.LAYOUT.kind, 'landscape')
+        self.assertEqual(layout.size, main.WINDOW_SIZE)
+        self.assertEqual(layout.board, p.Rect(0, 0, main.BOARD_WIDTH, main.BOARD_HEIGHT))
+        self.assertEqual(layout.panel, p.Rect(main.PANEL_X, 0, main.MOVE_LOG_PANEL_WIDTH, main.MOVE_LOG_PANEL_HEIGHT))
+        self.assertEqual((layout.controlsX, layout.controlsWidth, layout.controlsBottom),
+                         (main.PANEL_X + main.PANEL_PADDING, main.CONTROL_WIDTH, main.BOARD_HEIGHT - main.PANEL_PADDING))
+        self.assertEqual((layout.rowHeight, layout.rowGap, layout.graphHeight, layout.stripHeight),
+                         (main.ROW_HEIGHT, main.ROW_GAP, main.GRAPH_HEIGHT, main.STRIP_HEIGHT))
+        self.assertEqual((layout.labelSize, layout.labelMin), (main.BUTTON_LABEL_SIZE, main.BUTTON_LABEL_MIN))
+        self.assertEqual((layout.moveRow, layout.moveText, layout.movePadding),
+                         (main.MOVE_ROW_HEIGHT, main.MOVE_TEXT_SIZE, main.MOVE_LIST_PADDING))
+        self.assertEqual(layout.moveColumns, main.MOVE_COLUMNS)
+        self.assertEqual((layout.moveNumberRight, layout.scrollbarX), (main.MOVE_NUMBER_RIGHT, main.SCROLLBAR_X))
+        self.assertEqual(layout.banner, main.LOOK_BACK_BANNER)
+        self.assertEqual(main.windowTransform(main.ACCOUNT_BOX), (1, (0, 0)), "windows as laid out")
+        # the panel's parts as the game loop placed them before there were layouts
+        controlsTop = 500
+        stripY = controlsTop - main.ROW_GAP - main.STRIP_HEIGHT
+        for gameOver in (False, True):
+            areas = main.panelAreas(controlsTop, gameOver)
+            info = p.Rect(main.PANEL_X + 10, stripY - 60, main.MOVE_LOG_PANEL_WIDTH - 20, 54)
+            status = p.Rect(main.PANEL_X + 10, (info.y if gameOver else stripY) - main.STATUS_HEIGHT - 4,
+                            main.MOVE_LOG_PANEL_WIDTH - 20, main.STATUS_HEIGHT)
+            self.assertEqual(areas['bottomStrip'].y, stripY)
+            self.assertEqual(areas['topStrip'].y, 0)
+            self.assertEqual(areas['status'], status)
+            self.assertEqual(areas['info'], info)
+            self.assertEqual(areas['list'], (main.STRIP_HEIGHT, status.y - 2))
+
+    def allPanelLayouts(self):
+        """(arguments, rects) of every panel the game can show."""
+        main = self.main
+        found = []
+        for mode in (0, 1, 2):
+            for connected in ((False, True) if mode == 2 else (False,)):
+                for canRejoin in ((False, True) if mode == 2 and not connected else (False,)):
+                    for reviewing, graph in ((False, False), (True, False), (True, True)):
+                        for guest in ((False, True) if connected else (False,)):
+                            if reviewing and mode == 2 and not connected:
+                                continue  # online without a room there is no game to review
+                            args = (mode, connected, canRejoin, reviewing, graph, guest)
+                            found.append((args, main.panelLayout(*args)))
+        return found
+
+    def test_portrait_layouts_fit_the_canvas(self):
+        main = self.main
+        try:
+            for height in (main.PORTRAIT_HEIGHTS[0], 1500, 1662, main.PORTRAIT_HEIGHTS[1]):
+                layout = main.setLayout('portrait', height)
+                canvas = p.Rect((0, 0), layout.size)
+                self.assertEqual(layout.size, (main.PORTRAIT_WIDTH, height))
+                self.assertGreaterEqual(layout.scale, main.PORTRAIT_SCALES[0])
+                self.assertLessEqual(layout.scale, main.PORTRAIT_SCALES[1])
+                self.assertTrue(canvas.contains(layout.board))
+                self.assertEqual(layout.board.width, main.BOARD_WIDTH, "the board keeps its size")
+                for fill in layout.panelFill:
+                    self.assertFalse(fill.colliderect(layout.board), "the panel's background leaves the board")
+                for args, rects in self.allPanelLayouts():
+                    where = (height, args)
+                    reviewing = args[3]
+                    top = min(rect.y for rect in rects.values())
+                    areas = main.panelAreas(top, reviewing)
+                    strips = [areas['topStrip'], areas['bottomStrip']]
+                    self.assertEqual(areas['topStrip'].bottom, layout.board.top, where)
+                    self.assertEqual(areas['bottomStrip'].top, layout.board.bottom, where)
+                    listTop, listBottom = areas['list']
+                    rows = (listBottom - listTop - layout.movePadding) // layout.moveRow
+                    self.assertGreaterEqual(rows, main.PORTRAIT_MIN_LIST_ROWS if height >= 1500 else 1, where)
+                    self.assertGreaterEqual(listTop, areas['status'].bottom, where)
+                    if reviewing:
+                        self.assertGreaterEqual(areas['info'].y, listBottom, where)
+                        self.assertLess(areas['info'].bottom, top, where)
+                    for name, rect in rects.items():
+                        self.assertTrue(canvas.contains(rect), (where, name))
+                        self.assertGreaterEqual(rect.height, main.ROW_HEIGHT, (where, name, "touch-sized"))
+                        for other in [layout.board, areas['status']] + strips:
+                            self.assertFalse(rect.colliderect(other), (where, name))
+                        for otherName, other in rects.items():
+                            if otherName != name:
+                                self.assertFalse(rect.colliderect(other), (where, name, otherName))
+                    # what opens from the controls stays on the canvas
+                    for name in main.DROPDOWNS:
+                        if name in rects:
+                            for option in main.dropdownOptionRects(rects[name], len(main.dropdownLabels(name))):
+                                self.assertTrue(canvas.contains(option), (where, name))
+                    self.assertTrue(canvas.contains(main.menuBoxRect(rects['menu'])), where)
+                    if 'chat' in rects:
+                        self.assertTrue(canvas.contains(main.popupBoxRect(main.chatItemRects(rects['chat']))), where)
+                prompt, yes, no = main.promptRects()
+                self.assertTrue(canvas.contains(prompt))
+                self.assertFalse(prompt.colliderect(layout.board), "the prompt doesn't cover the board")
+                self.assertTrue(prompt.contains(yes) and prompt.contains(no))
+                card = main.resultCardLayout("Black wins by checkmate", ['new', 'switch'])[2]
+                self.assertTrue(layout.board.contains(card['card']))
+                self.assertEqual(card['card'].center, layout.board.center)
+                # the windows are shown larger, inside the canvas; a point maps back into the same control
+                boxes = [main.helpLayout(), main.settingsLayout('board'), main.settingsLayout('game')]
+                boxes += [main.accountLayout(view, 5) for view in ('signin', 'register', 'forgot', 'profile', 'games')]
+                for rects in boxes:
+                    box = rects['box']
+                    shown = main.fromWindow(box, box)
+                    self.assertTrue(canvas.contains(shown), (height, box))
+                    self.assertGreater(shown.width, box.width, "scaled up")
+                    for name, rect in rects.items():
+                        self.assertTrue(rect.collidepoint(main.toWindow(main.fromWindow(rect, box).center, box)),
+                                        (height, name))
+                self.assertGreater(main.LAYOUT.labelSize, main.BUTTON_LABEL_SIZE if height >= 1500 else 0)
+        finally:
+            main.setLayout('landscape')
+        self.assertEqual(main.LAYOUT.size, main.WINDOW_SIZE)
+
+    def test_portrait_move_list_and_strip(self):
+        main = self.main
+        main.loadImages()
+        try:
+            layout = main.setLayout('portrait', 1662)
+            moves = main.moveListLayout(70, 1000, 1300)
+            for rect, _ in moves['cells']:
+                self.assertTrue(layout.panel.contains(rect))
+                self.assertEqual(rect.height, layout.moveRow - 2)
+            self.assertEqual(moves['area'].width, layout.panel.width)
+            self.assertIsNotNone(moves['track'], "70 plies don't fit: the scrollbar shows")
+            self.assertLessEqual(moves['track'].right, layout.panel.right)
+            self.assertEqual(main.scrollForListDrag(0, 3 * layout.moveRow), 3)
+            # the strip spans the canvas, its clock at the right edge
+            screen = p.Surface(layout.size)
+            screen.fill((1, 2, 3))
+            main.drawPlayerStrip(screen, 0, 'w', "White", [], 0, 60000, True)
+            self.assertNotEqual(tuple(screen.get_at((layout.size[0] - main.scaled(12) - 5, main.scaled(20))))[:3],
+                                (1, 2, 3))
+            self.assertEqual(tuple(screen.get_at((5, layout.stripHeight + 2)))[:3], (1, 2, 3), "no taller than its strip")
+        finally:
+            main.setLayout('landscape')
+
+    def test_portrait_chat_bubbles_stay_in_the_strips(self):
+        main = self.main
+        main.loadImages()
+        try:
+            layout = main.setLayout('portrait', 1662)
+            screen = p.Surface(layout.size)
+            top = p.Rect(0, 0, layout.size[0], layout.stripHeight)
+            bottom = p.Rect(0, layout.board.bottom, layout.size[0], layout.stripHeight)
+            for strip, name, note, clock in ((top, "Opponent", "may have left", 60000), (top, "Opponent", None, None),
+                                             (bottom, "You", None, 60000)):
+                span = main.drawPlayerStrip(screen, strip.y, 'w', name, [], 0, clock, False, note)
+                nameObj = main.get_text_surface(name, main.scaled(18), (0, 0, 0))
+                self.assertGreaterEqual(span[0], strip.x + main.scaled(32) + nameObj.get_width(), "after the name")
+                self.assertLess(span[1], strip.right)
+                for text in main.QUICK_CHAT:
+                    where = (name, note, clock, text)
+                    rect, tail = main.chatBubbleLayout(text, strip.y, strip is top, span=span)
+                    self.assertTrue(strip.contains(rect), where)
+                    self.assertFalse(rect.colliderect(layout.board), (where, "never over the board"))
+                    self.assertGreaterEqual(min(x for x, _ in tail), span[0], (where, "its tail stops short of the name"))
+                    self.assertLessEqual(rect.right, span[1], (where, "it leaves the clock alone"))
+                    textWidth = main.get_font(main.scaled(main.CHAT_TEXT_SIZE), True, True).size(text)[0]
+                    self.assertLessEqual(textWidth, rect.width - main.scaled(28), (where, "the text fits"))
+                    drawn = main.drawChatBubble(screen, text, strip.y, strip is top, span=span)
+                    self.assertEqual(drawn, rect)
+        finally:
+            main.setLayout('landscape')
+
+    def test_promotion_picker_on_the_board_surface(self):
+        main = self.main
+        main.loadImages()
+        try:
+            layout = main.setLayout('portrait', 1662)
+            screen = p.display.set_mode(layout.size)
+            board = screen.subsurface(layout.board)
+            SQ = main.SQ_SIZE
+
+            async def pick(clickAt):
+                async def clicker():
+                    await asyncio.sleep(0.1)
+                    await self.click(clickAt, 0)
+                choice, _ = await asyncio.gather(main.pawnPromotionPopup(board, 'w', 0, 2, False), clicker())
+                return choice
+            # the rook is the second square down the c-file, on the canvas below the top strip
+            self.assertEqual(asyncio.run(pick((layout.board.x + 2 * SQ + 5, layout.board.y + SQ + 5))), 'R')
+            self.assertIsNone(asyncio.run(pick((2 * SQ + 5, 5))), "the strip above the board is outside the picker")
+        finally:
+            main.setLayout('landscape')
+            p.display.set_mode(main.WINDOW_SIZE)
+
+    def test_portrait_game_loop(self):
+        main = self.main
+        restore = self.portrait()
+        seen = {}
+
+        def at(pos):
+            return tuple(p.display.get_surface().get_at(pos))[:3]
+
+        async def script():
+            await asyncio.sleep(1.0)
+            layout = main.LAYOUT
+            seen['size'] = p.display.get_surface().get_size()
+            seen['kind'] = layout.kind
+            # e2-e4 by two taps on the board under the top strip
+            await self.tap(self.boardPoint(6, 4), 0.1)
+            await self.tap(self.boardPoint(4, 4), 1.5)
+            seen['moves'] = list(gameMoves)
+            # the menu opens upwards from its button, and its Settings item opens the scaled-up window
+            rects = main.panelLayout(0, False)
+            await self.tap(rects['menu'].center, 0.3)
+            await self.tap(main.menuItemRects(rects['menu'])['settings'].center, 0.4)
+            box = main.SETTINGS_BOX
+            await self.tap(main.fromWindow(main.settingsLayout('board')['tab:game'], box).center, 0.3)
+            await self.tap(main.fromWindow(main.settingsLayout('game')['uiTheme:dark'], box).center, 0.3)
+            seen['theme'] = self.settings.get('uiTheme')
+            await self.tap(main.fromWindow(main.settingsLayout('game')['uiTheme:light'], box).center, 0.3)
+            await self.tap(main.fromWindow(main.settingsLayout('game')['close'], box).center, 0.3)
+            # How to play: Next, then Close, by their places on the canvas
+            await self.key(p.K_h, 'h')
+            help = main.helpLayout()
+            await self.tap(main.fromWindow(help['next'], help['box']).center, 0.3)
+            seen['help page'] = pages[-1]
+            await self.tap(main.fromWindow(help['close'], help['box']).center, 0.3)
+            seen['help closed'] = pages[-1]
+            # resign: the prompt under the player's strip, then the result card on the board
+            await self.tap(rects['resign'].center, 0.3)
+            await self.tap(main.promptRects()[1].center, 0.6)
+            cardRects = main.resultCardLayout("Black wins by resignation", ['new', 'switch'])[2]
+            seen['card'] = max(at((cardRects['card'].x + 8, cardRects['card'].centery)))
+            newGame = cardRects['new']
+            await self.tap(newGame.center, 0.6)
+            seen['after new game'] = len(gameMoves)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        gameMoves = []
+        realDraw = main.drawGameState
+
+        def record(screen, gs, *args, **kwargs):
+            gameMoves[:] = [m.getCode() for m in gs.moveLog]
+            return realDraw(screen, gs, *args, **kwargs)
+        main.drawGameState = record
+        pages, restorePages = self.recordHelpPages()  # around record
+        try:
+            self.runGame(script)
+        finally:
+            restorePages()
+            main.drawGameState = realDraw
+            restore()
+        self.assertEqual(seen['kind'], 'portrait')
+        self.assertEqual(seen['size'], (main.PORTRAIT_WIDTH, round(768 * 844 / 390)))
+        self.assertEqual(seen['moves'][:1], ['e2e4'], "the taps played the move (the computer may have replied)")
+        self.assertEqual(seen['theme'], 'dark', "the scaled-up Settings window took the tap")
+        self.assertEqual((seen['help page'], seen['help closed']), (1, None))
+        self.assertLess(seen['card'], 100, "the result card is on the board's middle")
+        self.assertEqual(seen['after new game'], 0)
+
+    def test_portrait_drag_and_turning_the_window(self):
+        main = self.main
+        restore = self.portrait((412, 915))
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            seen['height'] = main.LAYOUT.size[1]
+            await self.chooseTwoPlayersHere()
+            # a drag from g1 to f3, through canvas points below the strip
+            start, end = self.boardPoint(7, 6), self.boardPoint(5, 5)
+            await self.click(start, 0.05)
+            for i in range(1, 6):
+                pos = (round(start[0] + (end[0] - start[0]) * i / 5), round(start[1] + (end[1] - start[1]) * i / 5))
+                self.mouse[0] = pos
+                p.event.post(p.event.Event(p.MOUSEMOTION, pos=pos, rel=(0, 0), buttons=(1, 0, 0)))
+                await asyncio.sleep(0.04)
+            p.event.post(p.event.Event(p.MOUSEBUTTONUP, button=1, pos=self.mouse[0]))
+            await asyncio.sleep(0.4)
+            seen['after drag'] = list(gameMoves)
+            # the phone turns: the game lays itself out in landscape and goes on
+            self.viewport[0] = (915, 412)
+            await asyncio.sleep(1.2)
+            seen['turned'] = (main.LAYOUT.kind, p.display.get_surface().get_size())
+            await self.move((1, 4), (3, 4), 0.4)  # landscape squares again
+            seen['after turning'] = list(gameMoves)
+            self.viewport[0] = (412, 915)
+            await asyncio.sleep(1.2)
+            seen['back'] = (main.LAYOUT.kind, p.display.get_surface().get_size())
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        gameMoves = []
+        realDraw = main.drawGameState
+
+        def record(screen, gs, *args, **kwargs):
+            gameMoves[:] = [m.getCode() for m in gs.moveLog]
+            return realDraw(screen, gs, *args, **kwargs)
+        main.drawGameState = record
+        try:
+            self.runGame(script)
+        finally:
+            main.drawGameState = realDraw
+            restore()
+        self.assertEqual(seen['height'], main.PORTRAIT_HEIGHTS[1])
+        self.assertEqual(seen['after drag'], ['g1f3'])
+        self.assertEqual(seen['turned'], ('landscape', main.WINDOW_SIZE))
+        self.assertEqual(seen['after turning'], ['g1f3', 'e7e5'], "the game went on in the new layout")
+        self.assertEqual(seen['back'], ('portrait', (main.PORTRAIT_WIDTH, main.PORTRAIT_HEIGHTS[1])))
+        self.assertEqual(p.display.get_surface().get_size(), seen['back'][1])
+
+    async def chooseTwoPlayersHere(self):
+        """Local 2-Player from the mode dropdown, in whatever layout is live."""
+        modeRect = self.main.panelLayout(0, False)['mode']
+        await self.tap(modeRect.center)
+        await self.tap(self.main.dropdownOptionRects(modeRect, len(self.main.MODE_OPTIONS))[1].center, 0.5)
 
 
 if __name__ == '__main__':

@@ -17,6 +17,8 @@ class FakeSupabase:
         self.reports = []
         self.rpcCalls = []
         self.rpcAnswer = rpcAnswer
+        self.authCalls = []  # (method, path, token, kwargs) of the auth requests for a reset link or a new password
+        self.authStatus = 200  # the auth service's answer to them
 
     def rest(self, method, path, params=None, json=None, headers=None):
         if path == 'online_reports' and method == 'POST':
@@ -40,6 +42,9 @@ class FakeSupabase:
         raise AssertionError((method, path))
 
     def supabase(self, method, path, token=None, **kwargs):
+        if path in ('/auth/v1/recover', '/auth/v1/user') and method in ('POST', 'PUT'):
+            self.authCalls.append((method, path, token, kwargs))
+            return Response(self.authStatus, {} if self.authStatus < 400 else {'msg': 'refused'})
         if path.startswith('/auth/v1/admin/users/'):
             return Response(200, {'email': 'duy@example.com'})
         if path.startswith('/auth/v1/token'):
@@ -109,6 +114,59 @@ class AccountApiTest(unittest.TestCase):
                 with self.assertRaises(api.ApiError) as caught:
                     api.login(data)
                 self.assertEqual((caught.exception.status, caught.exception.message), (401, api.BAD_LOGIN))
+
+
+    # --- forgot password
+
+    def test_reset_link_is_sent_for_any_email(self):
+        for status in (200, 400, 404, 422):  # unknown or refused addresses look the same as known ones
+            with self.subTest(status=status):
+                self.fake.authStatus = status
+                self.assertEqual(api.recover({'email': 'nobody@example.com'}), {'sent': True})
+        method, path, token, kwargs = self.fake.authCalls[0]
+        self.assertEqual((method, path, kwargs['json']), ('POST', '/auth/v1/recover', {'email': 'nobody@example.com'}))
+        self.assertEqual(kwargs['params'], {}, "no redirect asked for")
+        with self.assertRaises(api.ApiError):
+            api.recover({'email': 'not an email'})
+
+    def test_reset_link_redirects_to_the_site(self):
+        api.recover({'email': 'duy@example.com', 'redirect_to': 'https://chess-playing-ai.vercel.app/'})
+        self.assertEqual(self.fake.authCalls[-1][3]['params'], {'redirect_to': 'https://chess-playing-ai.vercel.app/'})
+        api.recover({'email': 'duy@example.com', 'redirect_to': 'javascript:alert(1)'})
+        self.assertEqual(self.fake.authCalls[-1][3]['params'], {}, "only web addresses")
+
+    def test_reset_link_service_errors(self):
+        for status in (429, 500, 503):
+            with self.subTest(status=status):
+                self.fake.authStatus = status
+                with self.assertRaises(api.ApiError) as caught:
+                    api.recover({'email': 'duy@example.com'})
+                self.assertEqual(caught.exception.status, 503)
+
+    def test_set_password(self):
+        self.assertEqual(api.setPassword({'token': 'reset-token', 'password': 'newsecret1'}), {'ok': True})
+        method, path, token, kwargs = self.fake.authCalls[-1]
+        self.assertEqual((method, path, token, kwargs['json']),
+                         ('PUT', '/auth/v1/user', 'reset-token', {'password': 'newsecret1'}))
+
+    def test_set_password_errors(self):
+        with self.assertRaises(api.ApiError) as caught:
+            api.setPassword({'token': 'reset-token', 'password': 'short'})
+        self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(self.fake.authCalls, [], "a short password isn't sent")
+        for status, expected in ((401, 401), (403, 401), (422, 400), (429, 503), (500, 503)):
+            with self.subTest(status=status):
+                self.fake.authStatus = status
+                with self.assertRaises(api.ApiError) as caught:
+                    api.setPassword({'token': 'old-token', 'password': 'newsecret1'})
+                self.assertEqual(caught.exception.status, expected)
+                if status in (401, 403):
+                    self.assertEqual(caught.exception.message, api.RESET_LINK_EXPIRED)
+
+    def test_new_actions_are_routed(self):
+        self.assertIs(api.ACTIONS['recover'], api.recover)
+        self.assertIs(api.ACTIONS['set_password'], api.setPassword)
+        self.assertEqual(api.GAMES_LISTED, 50)
 
 
 if __name__ == '__main__':

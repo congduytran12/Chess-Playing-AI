@@ -26,6 +26,8 @@ EMAIL_PATTERN = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 MIN_PASSWORD_LENGTH = 8
 BAD_LOGIN = 'Invalid login credentials'  # Supabase Auth's answer to a wrong email or password
 MAX_PGN_LENGTH = 20000
+GAMES_LISTED = 50  # the newest saved games shown in the game's My games list
+RESET_LINK_EXPIRED = 'This reset link has expired, ask for a new one'
 RESULTS = ('1-0', '0-1', '1/2-1/2')
 MIN_RATED_PLIES = 4  # shorter online games don't change ratings
 MOVE_PATTERN = re.compile(r'^[a-h][1-8][a-h][1-8][qrbn]?$')  # Move.getCode in the game
@@ -171,6 +173,43 @@ def refresh(data):
     return signedIn(res.json())
 
 
+# "Forgot password?": Supabase emails a link that signs the player in for choosing a new password. The answer is
+# the same whether or not an account uses the email, so this can't be used to find out who has an account.
+# redirect_to is where the link leads (the game's site; it must be in the project's redirect URL allow-list)
+def recover(data):
+    email = text(data, 'email')
+    if not EMAIL_PATTERN.match(email):
+        raise ApiError("That doesn't look like an email address")
+    params = {}
+    redirect = data.get('redirect_to')
+    if isinstance(redirect, str) and re.match(r'^https?://[^\s]{1,300}$', redirect):
+        params['redirect_to'] = redirect
+    res = supabase('POST', '/auth/v1/recover', params=params, json={'email': email})
+    if res.status_code == 429 or res.status_code >= 500:
+        raise authUnavailable(res)
+    if res.status_code >= 400:  # e.g. an address the service refuses: still no hint whether it has an account
+        print(f"[account] recover -> {res.status_code} {res.text[:300]}")
+    return {'sent': True}
+
+
+# the new password, with the access token from the reset link (it signs in only for this)
+def setPassword(data):
+    token = text(data, 'token', 4000)
+    password = text(data, 'password')
+    if not token:
+        raise ApiError(RESET_LINK_EXPIRED, 401)
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ApiError('Passwords need at least %d characters' % MIN_PASSWORD_LENGTH)
+    res = supabase('PUT', '/auth/v1/user', token=token, json={'password': password})
+    if res.status_code in (401, 403):
+        raise ApiError(RESET_LINK_EXPIRED, 401)
+    if res.status_code == 429 or res.status_code >= 500:
+        raise authUnavailable(res)
+    if res.status_code >= 400:  # e.g. the same password as before, or one the project's rules refuse
+        raise ApiError(authErrorMessage(res))
+    return {'ok': True}
+
+
 # wins / losses / draws against each AI level and online
 def me(data):
     userId = currentUser(data)
@@ -228,7 +267,7 @@ def saveGame(data):
 
 def listGames(data):
     userId = currentUser(data)
-    rows = rest('GET', 'games', params={'user_id': 'eq.' + userId, 'order': 'played_at.desc', 'limit': '20',
+    rows = rest('GET', 'games', params={'user_id': 'eq.' + userId, 'order': 'played_at.desc', 'limit': str(GAMES_LISTED),
                                         'select': 'id,mode,ai_level,color,opponent,result,played_at'})
     return {'games': rows}
 
@@ -293,6 +332,8 @@ ACTIONS = {
     'register': register,
     'login': login,
     'refresh': refresh,
+    'recover': recover,
+    'set_password': setPassword,
     'me': me,
     'save_game': saveGame,
     'games': listGames,

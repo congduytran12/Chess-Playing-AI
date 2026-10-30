@@ -16,19 +16,43 @@ if WASM:
 SITE_URL = "https://chess-playing-ai.vercel.app/"  # where the game is played in the browser
 
 JS_HELPERS = r'''
-    // pasted text arrives as an event (a game can't read the clipboard on its own), so it's kept for polling
+    // pasted text is kept for the game to poll. The canvas's key handling cancels Ctrl+V's default action, so
+    // the browser's own paste (the 'paste' event) doesn't happen there: Ctrl+V / Cmd+V asks the clipboard instead
+    // (the browser may ask the player to allow it once). A paste event that does come wins over that answer.
     window.__chessPasted = null;
+    window.__chessPasteEventAt = 0;
     if (!window.__chessPasteListener) {
         window.__chessPasteListener = true;
         document.addEventListener('paste', function(e) {
             const text = e.clipboardData ? e.clipboardData.getData('text') : '';
-            if (text) window.__chessPasted = text;
+            if (text) {
+                window.__chessPasted = text;
+                window.__chessPasteEventAt = Date.now();
+            }
         });
+        window.addEventListener('keydown', function(e) {
+            if (!(e.ctrlKey || e.metaKey) || e.altKey || (e.key !== 'v' && e.key !== 'V')) return;
+            if (!navigator.clipboard || !navigator.clipboard.readText) return;
+            const asked = Date.now();
+            navigator.clipboard.readText().then(function(text) {
+                if (text && window.__chessPasteEventAt < asked) window.__chessPasted = text;
+            }).catch(function() {});
+        }, true);
     }
     window.chessTakePasted = function() {
         const text = window.__chessPasted;
         window.__chessPasted = null;
         return text === null ? '' : text;
+    }
+
+    // the canvas never overflows the window, not even for the moment between a phone turning and the page fitting
+    // the canvas again: a phone's browser would zoom out to show the overflow and keep that zoom (the page's window
+    // would then report the wrong size and the game would be cut off). The page's own fit stays within this anyway.
+    if (!window.__chessCanvasGuard) {
+        window.__chessCanvasGuard = true;
+        const style = document.createElement('style');
+        style.textContent = 'canvas.emscripten { max-width: 100vw; max-height: 100vh; }';
+        document.head.appendChild(style);
     }
 
     // copying needs a user action in some browsers; the old execCommand way is the fallback
@@ -146,6 +170,16 @@ def siteUrl():
 def pageHidden():
     """The browser tab is in the background (desktop: False; the game listens for window focus there)."""
     return bool(_eval("document.hidden ? 1 : 0", 0))
+
+
+def viewportSize():
+    """The browser window's inside (width, height) in CSS px, which picks the game's layout; None on desktop."""
+    size = _eval("window.innerWidth + 'x' + window.innerHeight", "")
+    try:
+        width, height = (int(float(part)) for part in str(size).split('x'))
+    except (TypeError, ValueError):
+        return None
+    return (width, height) if width > 0 and height > 0 else None
 
 
 def setTitle(text):
