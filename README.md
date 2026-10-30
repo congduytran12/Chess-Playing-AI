@@ -114,8 +114,9 @@ In chess, pawn promotion occurs when a pawn reaches the eighth rank. The pawn ca
 
 3. Optional, for Stockfish: download Stockfish from [stockfishchess.org](https://stockfishchess.org/download/) and either put the program in the repository's `engines/` folder, install it so `stockfish` is on your `PATH`, or set the `STOCKFISH_PATH` environment variable to it. Without it, the desktop game uses its built-in AI.
 
-4. Start the game from inside the `game` folder (the game loads its images, sounds, and fonts from there):
+4. Start the game from the repository root:
    ```bash
+   cd ..
    python main.py
    ```
 
