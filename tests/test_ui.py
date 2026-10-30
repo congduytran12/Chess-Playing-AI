@@ -1,5 +1,7 @@
 # Runs the real game loop without a window: scripted clicks and keys, checked against the drawn screen
 import asyncio
+import base64
+import json
 import os
 import tempfile
 import unittest
@@ -1251,6 +1253,83 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['after'], ("e2e4 e7e5 d2d4", ["e2e4", "e7e5", "d2d4"]),
                          "the premove was played and sent as soon as the opponent's move came in")
 
+    def test_a_tap_on_the_prompts_box_selects_no_move_under_it(self):
+        main = self.main
+        seen = {}
+        moves = [((6, 4), (4, 4)), ((1, 4), (3, 4)), ((7, 6), (5, 5)), ((0, 1), (2, 2)), ((7, 5), (4, 2)),
+                 ((0, 5), (3, 2)), ((6, 2), (5, 2)), ((0, 6), (2, 5)), ((6, 3), (5, 3)), ((1, 3), (2, 3)),
+                 ((6, 7), (5, 7)), ((1, 7), (2, 7)), ((6, 0), (5, 0)), ((1, 0), (2, 0)), ((6, 1), (4, 1)),
+                 ((3, 2), (1, 0))]
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[1].center, 0.5)
+            for start, end in moves:
+                await self.move(start, end, 0.15)
+            layout = main.panelLayout(1, False)
+            await self.click(layout['draw'].center, 0.3)  # White offers a draw
+            box, accept, decline = main.promptRects()
+            listTop, listBottom = main.panelAreas(min(r.y for r in layout.values()), False)['list']
+            cells = main.moveListLayout(len(moves), listTop, listBottom)['cells']
+            points = [(box.centerx, accept.centery), (accept.centerx, accept.bottom + 5)]  # between, below the buttons
+            seen['over moves'] = [any(rect.collidepoint(point) for rect, _ in cells) for point in points]
+            for point in points:
+                await self.tap(point, 0.3)
+            seen['shown'] = len(frames[-1][0])
+            await self.click(decline.center, 0.3)  # the prompt was still open
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restore = self.recordBoards()
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            restore()
+        self.assertEqual(seen['over moves'], [True, True], "the taps are over moves in the list")
+        self.assertEqual(seen['shown'], len(moves), "no looking back")
+        self.assertIn("Draw declined", shown['status'])
+
+    def test_how_to_play_closes_an_open_dropdown(self):
+        # H opens How to play over an open dropdown: the options go (in portrait they'd cover its buttons)
+        main = self.main
+        seen = {}
+        marks = []
+        realMark = main.drawCheckMark
+
+        def recordMark(screen, rect):
+            marks.append(p.time.get_ticks())
+            return realMark(screen, rect)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.panelLayout(0, False)['clock'].center, 0.3)
+            seen['open'] = bool(marks)
+            await self.key(p.K_h, 'h', 0.3)
+            del marks[:]
+            await asyncio.sleep(0.2)
+            seen['help'] = (pages[-1], len(marks))
+            await self.key(p.K_ESCAPE, '', 0.3)
+            del marks[:]
+            await asyncio.sleep(0.2)
+            seen['closed'] = (pages[-1], len(marks))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        pages, restore = self.recordHelpPages()
+        main.drawCheckMark = recordMark
+        try:
+            self.runGame(script)
+        finally:
+            main.drawCheckMark = realMark
+            restore()
+        self.assertTrue(seen['open'], "the Clock dropdown's options showed")
+        self.assertEqual(seen['help'], (0, 0), "How to play, and no options over it")
+        self.assertEqual(seen['closed'], (None, 0), "nor after it closes")
+
     def test_looking_back_during_the_game(self):
         main = self.main
         seen = {}
@@ -1486,6 +1565,38 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['away again'], main.YOUR_MOVE_TITLE)
         self.assertEqual(seen['moved'], main.GAME_TITLE)
         self.assertEqual(seen['focused'], (main.GAME_TITLE, 2))
+
+    def test_premove_while_away_is_not_your_move(self):
+        # the premove is played for the player, so the computer's reply doesn't call them back
+        import browser
+        main = self.main
+        seen = {}
+        titles = []
+        realTitle = browser.setTitle
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.move((6, 4), (4, 4), 0.4)  # 1.e4; the computer thinks for at least 1.5 s
+            await self.move((6, 0), (5, 0), 0.3)  # premove a2-a3, then look at another window
+            p.event.post(p.event.Event(main.WINDOW_FOCUS_LOST))
+            await asyncio.sleep(2.5)
+            seen['away'] = (frames[-1][0], list(plays), list(titles))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restoreBoards = self.recordBoards()
+        plays, restoreSounds = self.fakeSounds()
+        browser.setTitle = lambda text: titles.append(text) or realTitle(text)
+        try:
+            self.runGame(script, thinkMs=1500)
+        finally:
+            browser.setTitle = realTitle
+            restoreSounds()
+            restoreBoards()
+        log, played, changed = seen['away']
+        self.assertEqual(log[2:3], ["a2a3"], "the premove was played")
+        self.assertNotIn('notify', played)
+        self.assertNotIn(main.YOUR_MOVE_TITLE, changed)
 
     def test_turn_arrived(self):
         arrived = self.main.turnArrived
@@ -1955,12 +2066,13 @@ class GameLoopTest(unittest.TestCase):
         real = main.drawAccountWindow
 
         def record(screen, view, fields, focus, message, busy, account, rows, mouse_pos, tone='error', scroll=0,
-                   showPassword=False, thumbHeld=False):
+                   showPassword=False, thumbHeld=False, resetEmail=None):
             frames.append({'view': view, 'message': message, 'tone': tone, 'scroll': scroll, 'rows': len(rows),
                            'focus': focus, 'values': {name: field.value for name, field in fields.items()},
-                           'caret': fields[focus].caret if focus in fields else None, 'shown': showPassword})
+                           'caret': fields[focus].caret if focus in fields else None, 'shown': showPassword,
+                           'resetEmail': resetEmail})
             return real(screen, view, fields, focus, message, busy, account, rows, mouse_pos, tone, scroll,
-                        showPassword, thumbHeld)
+                        showPassword, thumbHeld, resetEmail)
 
         def restore():
             main.drawAccountWindow = real
@@ -2011,6 +2123,16 @@ class GameLoopTest(unittest.TestCase):
         self.assertIsNone(main.resetLinkFromHash(""))
         expired = main.resetLinkFromHash("error=access_denied&error_code=otp_expired&error_description=Email+link")
         self.assertIn("expired", expired['error'])
+        # anyone can link to the site with any text after the #: it is never shown
+        made = main.resetLinkFromHash("error_code=x&error_description=Your+account+is+locked.+Visit+evil.example")
+        self.assertEqual(made, {'error': "That email link didn't work. Ask for a new one"})
+        email = base64.urlsafe_b64encode(json.dumps({'email': "duy@example.com"}).encode()).decode().rstrip('=')
+        self.assertEqual(main.resetLinkFromHash("access_token=h.%s.s&refresh_token=r&type=recovery" % email),
+                         {'token': "h.%s.s" % email, 'refresh': 'r', 'email': "duy@example.com"})
+        self.assertIsNone(main.tokenEmail("h.!!.s"))
+        self.assertTrue(main.hashHasSignIn("#access_token=a&refresh_token=r&type=signup"), "a confirmation link")
+        self.assertFalse(main.hashHasSignIn("#error_code=otp_expired"))
+        self.assertFalse(main.hashHasSignIn(""))
 
     def test_account_windows_fit_their_content(self):
         main = self.main
@@ -2152,7 +2274,7 @@ class GameLoopTest(unittest.TestCase):
 
         async def script():
             await asyncio.sleep(1.0)
-            seen['start'] = frames[-1]['view']
+            seen['start'] = (frames[-1]['view'], frames[-1]['resetEmail'], list(cleared))
             await self.typeText("short")
             await self.key(p.K_RETURN, "\r")
             seen['short'] = (frames[-1]['message'], list(calls))
@@ -2163,7 +2285,8 @@ class GameLoopTest(unittest.TestCase):
             p.event.post(p.event.Event(p.QUIT))
             await asyncio.sleep(0.5)
 
-        browser.locationHash = lambda: "access_token=tok&refresh_token=ref&type=recovery"
+        token = "h." + base64.urlsafe_b64encode(json.dumps({'email': "duy@example.com"}).encode()).decode().rstrip('=')
+        browser.locationHash = lambda: "access_token=%s.s&refresh_token=ref&type=recovery" % token
         browser.clearLocationHash = lambda: cleared.append(True)
         frames, restore = self.recordAccountWindow()
         account, restoreAccount = self.fakeAccount(setPassword=setPassword, loadStats=loadStats)
@@ -2173,10 +2296,12 @@ class GameLoopTest(unittest.TestCase):
             restore()
             restoreAccount()
             browser.locationHash, browser.clearLocationHash = realHash, realClear
-        self.assertEqual(seen['start'], 'newPassword', "the page opened from the reset email asks for the password")
+        self.assertEqual(seen['start'], ('newPassword', "duy@example.com", [True]),
+                         "the page opened from the reset email asks for the password of the account it names, and "
+                         "the link left the address bar at once")
         self.assertEqual(seen['short'], ("Passwords need at least 8 characters", []))
-        self.assertEqual(seen['saved'], ('profile', [("tok", "short-but-ok", "ref")], [True]),
-                         "saved, signed in, and the link left the address bar")
+        self.assertEqual(seen['saved'], ('profile', [(token + ".s", "short-but-ok", "ref")], [True]),
+                         "saved and signed in")
 
     def test_saved_games_scroll_and_open(self):
         main = self.main
@@ -2337,8 +2462,9 @@ class GameLoopTest(unittest.TestCase):
 
     # --- step 8: invite links, joining from a link, quick chat
 
-    def offlineRoom(self):
-        """Replaces ntfy with a room only this test talks to; returns (sent, topics, restore)."""
+    def offlineRoom(self, echo=True):
+        """Replaces ntfy with a room only this test talks to; returns (sent, topics, restore). Like ntfy, it hands
+        our sync_request back to us (stamped with the room's latest time), unless echo is False."""
         import network
         net = network.net
         sent, topics = [], []
@@ -2353,6 +2479,8 @@ class GameLoopTest(unittest.TestCase):
 
         async def fakeSend(data):
             sent.append(dict(data))
+            if echo and data.get('type') == 'sync_request':
+                net.incoming_messages.append(dict(data, _time=net.server_time))
 
         def restore():
             net.set_topic, net.send = realSetTopic, realSend
@@ -2400,17 +2528,45 @@ class GameLoopTest(unittest.TestCase):
             message = {'type': 'chat', 'id': 2, 'role': 'client', '_time': 1000}
             message.update(changes)
             return message
-        self.assertEqual(chat(msg(), 'client', 1000), 2)
-        self.assertEqual(chat(msg(), 'client', 1000 + main.CHAT_FRESH_SECONDS), 2, "30 s old still shows")
-        self.assertIsNone(chat(msg(), 'client', 1001 + main.CHAT_FRESH_SECONDS), "history replayed on joining")
-        self.assertIsNone(chat(msg(), 'host', 1000), "our own role")
-        self.assertIsNone(chat(msg(role=None), 'client', 1000))
-        self.assertIsNone(chat(msg(type='ping'), 'client', 1000))
+        self.assertEqual(chat(msg(), 'client', 1000, 990), 2)
+        self.assertEqual(chat(msg(), 'client', 1000 + main.CHAT_FRESH_SECONDS, 990), 2, "30 s old still shows")
+        self.assertIsNone(chat(msg(), 'client', 1001 + main.CHAT_FRESH_SECONDS, 990), "history replayed on joining")
+        self.assertIsNone(chat(msg(), 'host', 1000, 990), "our own role")
+        self.assertIsNone(chat(msg(role=None), 'client', 1000, 990))
+        self.assertIsNone(chat(msg(type='ping'), 'client', 1000, 990))
         for bad in (-1, len(main.QUICK_CHAT), "2", 2.0, True, None):
-            self.assertIsNone(chat(msg(id=bad), 'client', 1000), bad)
-        self.assertEqual(chat(msg(id=len(main.QUICK_CHAT) - 1), 'client', 1000), len(main.QUICK_CHAT) - 1)
-        self.assertIsNone(chat(msg(_time=None), 'client', 1000), "no server time: can't tell how old it is")
-        self.assertIsNone(chat(msg(), 'client', None))
+            self.assertIsNone(chat(msg(id=bad), 'client', 1000, 990), bad)
+        self.assertEqual(chat(msg(id=len(main.QUICK_CHAT) - 1), 'client', 1000, 990), len(main.QUICK_CHAT) - 1)
+        self.assertIsNone(chat(msg(_time=None), 'client', 1000, 990), "no server time: can't tell how old it is")
+        self.assertIsNone(chat(msg(), 'client', None, 990))
+        # the room's newest message may be an old chat: it is history if it came before we joined
+        self.assertIsNone(chat(msg(), 'client', 1000, None), "our sync_request hasn't come back yet")
+        self.assertIsNone(chat(msg(), 'client', 1000, 1600), "sent 10 min before we joined")
+        self.assertEqual(chat(msg(), 'client', 1000, 1000 + main.CHAT_FRESH_SECONDS), 2, "just before we joined")
+
+    def test_malformed_online_messages_are_ignored(self):
+        # anyone with the room's code can post to it: nothing they send may stop the game
+        main = self.main
+        info = main.onlinePlayerInfo
+        self.assertEqual(info({'uid': "u1", 'name': "alice_9", 'rating': 1500}),
+                         {'uid': "u1", 'name': "alice_9", 'rating': 1500})
+        self.assertEqual(info({'uid': "u1", 'name': "a\x00b\u202ec", 'rating': 1500})['name'], "abc",
+                         "a name keeps only the characters usernames have (a NUL can't be drawn)")
+        self.assertEqual(info({'uid': "u1", 'name': "\x00"})['name'], "?")
+        for rating in (json.loads("1e999"), float('nan'), "1500", True, [1]):
+            self.assertIsNone(info({'uid': "u1", 'name': "x", 'rating': rating}), rating)
+        self.assertIsNone(info({'name': "x"}), "no account")
+        self.assertIsNone(info("player"))
+
+        good = {'type': 'state', 'game': 0, 'version': 3, 'moves': "e2e4 e7e5", 'tc': [300, 0],
+                'clocks': {'w': 290000, 'b': 300000.5}, 'result': ["White wins by resignation", "1-0"]}
+        self.assertTrue(main.wellFormedState(good))
+        self.assertTrue(main.wellFormedState(dict(good, tc=None, clocks=None, result=None, moves=None)))
+        for change in ({'tc': ["5+0", 0]}, {'tc': [300]}, {'tc': [json.loads("1e999"), 0]}, {'tc': [-1, 0]},
+                       {'tc': "300"}, {'clocks': {'w': "x"}}, {'clocks': {'w': float('nan')}}, {'clocks': [1, 2]},
+                       {'result': ["White\x00", "1-0"]}, {'result': ["White wins", 1]}, {'result': "1-0"},
+                       {'moves': ["e2e4"]}):
+            self.assertFalse(main.wellFormedState(dict(good, **change)), change)
 
     def test_chat_rate_limit_and_bubble_layout(self):
         main = self.main
@@ -2436,6 +2592,19 @@ class GameLoopTest(unittest.TestCase):
             self.assertTrue(fits, text)
             lifted, _ = main.chatBubbleLayout(text, stripY, False, lift=50)
             self.assertEqual(lifted.bottom, bottom.bottom - 50, "it rises above a status message")
+        # the lower bubble clears the status message, and after the game the review info (the result) too
+        controlsTop = min(rect.y for rect in main.panelLayout(2, True).values())
+        for gameOver in (False, True):
+            areas = main.panelAreas(controlsTop, gameOver)
+            stripY = areas['bottomStrip'].y
+            for statusShown in (False, True):
+                rect, _ = main.chatBubbleLayout("Good game!", stripY, False,
+                                                main.chatBubbleLift(areas, statusShown, gameOver))
+                where = (gameOver, statusShown)
+                if gameOver:
+                    self.assertFalse(rect.colliderect(areas['info']), (where, "the result stays readable"))
+                if statusShown:
+                    self.assertFalse(rect.colliderect(areas['status']), where)
         host = main.panelLayout(2, True)
         self.assertIn('invite', host)
         guest = main.panelLayout(2, True, guest=True)
@@ -2517,6 +2686,128 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['cancelled'], ("AB-12", []), "online setup with the room box filled in")
         self.assertEqual(seen['joined'], ["AB-12"])
 
+    def test_invite_link_cancel_then_host_makes_a_new_room(self):
+        # the invited room is the friend's: hosting instead (to play White) must not join it as a second host
+        main = self.main
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.promptRects()[2].center, 0.4)  # Cancel
+            await self.click(main.panelLayout(2, False)['host'].center, 0.4)
+            seen['hosted'] = list(topics)
+            await self.click(main.panelLayout(2, True)['restart'].center)
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        removed, restoreParam = self.openedWithRoomParam("FRIEND")
+        try:
+            self.runGame(script)
+        finally:
+            restoreParam()
+            restoreRoom()
+        self.assertEqual(len(seen['hosted']), 1)
+        self.assertNotEqual(seen['hosted'][0], "FRIEND", "a room of its own")
+        self.assertEqual(len(seen['hosted'][0]), 6)
+
+    def test_chat_from_the_rooms_history_stays_hidden(self):
+        # the backlog's newest message is an old chat (both players left after 'Good game!'); only when our own
+        # sync_request comes back does the room's clock say how old it is
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+        bubbles = []
+        realBubble = main.drawChatBubble
+
+        def recordBubble(screen, text, *args, **kwargs):
+            bubbles.append(text)
+            return realBubble(screen, text, *args, **kwargs)
+
+        def hostMessage(**fields):
+            message = {'role': 'host', 'sender': 'host-of-test', 'game': 0, 'version': 1}
+            message.update(fields)
+            net.server_time = max(net.server_time, fields['_time'])
+            net.incoming_messages.append(message)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['room'].center)
+            for letter in "ab12":
+                await self.key(getattr(p, 'K_' + letter), letter, 0.05)
+            await self.click(main.panelLayout(2, False)['join'].center, 0.3)
+            # the backlog: the host's game, then their chat
+            hostMessage(type='state', gid="old", moves="e2e4", tc=None, clocks=None, result=None, _time=1000)
+            hostMessage(type='chat', id=2, _time=1005)
+            await asyncio.sleep(0.4)
+            seen['backlog'] = list(bubbles)
+            echo = dict([m for m in sent if m.get('type') == 'sync_request'][-1], _time=1600)
+            net.server_time = 1600
+            net.incoming_messages.append(echo)  # our sync_request comes back, 10 min later
+            await asyncio.sleep(0.3)
+            hostMessage(type='chat', id=0, _time=1601)  # a fresh one shows
+            await asyncio.sleep(0.4)
+            seen['fresh'] = sorted(set(bubbles))
+            await self.click(main.panelLayout(2, True, guest=True)['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom(echo=False)
+        main.drawChatBubble = recordBubble
+        try:
+            self.runGame(script)
+        finally:
+            main.drawChatBubble = realBubble
+            restoreRoom()
+        self.assertEqual(seen['backlog'], [], "the old 'Good game!' doesn't pop up")
+        self.assertEqual(seen['fresh'], ["Hello!"])
+
+    def test_next_game_started_by_the_guest_plays_the_start(self):
+        # the host never adopted a state of the guest's (it resigned before the guest moved), yet the guest's new
+        # game is a start, not catching up
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            await self.move((6, 4), (4, 4), 0.4)
+            await self.click(main.panelLayout(2, True)['resign'].center)
+            await self.click(main.promptRects()[1].center, 0.4)
+            state = dict([m for m in sent if m.get('type') == 'state'][-1])
+            seen['result'] = state.get('result')
+            del plays[:]
+            state.update({'role': 'client', 'sender': 'guest', 'game': state['game'] + 1, 'version': 0,
+                          'moves': "", 'result': None, 'gid': "nextgame"})
+            net.incoming_messages.append(state)
+            await asyncio.sleep(0.5)
+            seen['next game'] = list(plays)
+            await self.click(main.panelLayout(2, True)['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        plays, restore = self.fakeSounds()
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreRoom()
+        self.assertIsNotNone(seen['result'], "the host resigned")
+        self.assertEqual(seen['next game'], ['game-start'])
+
     def test_copy_link_and_quick_chat(self):
         main = self.main
         import browser
@@ -2526,12 +2817,16 @@ class GameLoopTest(unittest.TestCase):
         copied = []
         copyWorks = [True]
         bubbles = []  # (ticks, text, below) of every bubble drawn
-        realCopy, realBubble = browser.copyText, main.drawChatBubble
+        realCopy, realResult, realBubble = browser.copyText, browser.copyResult, main.drawChatBubble
+        answers = []  # the browser's later answers to a copy (copyText returned None)
         saved = (main.CHAT_BUBBLE_MS, main.CHAT_INTERVAL_MS)
 
         def fakeCopy(text):
             copied.append(text)
             return copyWorks[0]
+
+        def fakeCopyResult():
+            return answers.pop(0) if answers else None
 
         def recordBubble(screen, text, stripY, below, age=0, lift=0, span=None):
             bubbles.append((p.time.get_ticks(), text, below))
@@ -2556,6 +2851,11 @@ class GameLoopTest(unittest.TestCase):
             await self.click(layout['invite'].center, 0.3)
             copyWorks[0] = False
             await self.click(layout['invite'].center, 0.3)
+            seen['refused'] = shown['status'][-1]
+            copyWorks[0] = None  # a browser that answers later: no answer for two frames, then copied
+            answers[:] = [None, None, True]
+            await self.click(layout['invite'].center, 0.3)
+            seen['later'] = shown['status'][-1]
             seen['copied'] = list(copied)
             seen['room'] = topics[-1]
             await self.click(layout['chat'].center, 0.3)
@@ -2581,19 +2881,20 @@ class GameLoopTest(unittest.TestCase):
 
         sent, topics, restoreRoom = self.offlineRoom()
         shown, restoreShown = self.recordShown()
-        browser.copyText, main.drawChatBubble = fakeCopy, recordBubble
+        browser.copyText, browser.copyResult, main.drawChatBubble = fakeCopy, fakeCopyResult, recordBubble
         main.CHAT_BUBBLE_MS, main.CHAT_INTERVAL_MS = 2000, 2500
         try:
             self.runGame(script)
         finally:
-            browser.copyText, main.drawChatBubble = realCopy, realBubble
+            browser.copyText, browser.copyResult, main.drawChatBubble = realCopy, realResult, realBubble
             main.CHAT_BUBBLE_MS, main.CHAT_INTERVAL_MS = saved
             restoreShown()
             restoreRoom()
         link = main.inviteUrl(browser.SITE_URL, seen['room'])
-        self.assertEqual(seen['copied'], [link, link])
+        self.assertEqual(seen['copied'], [link, link, link])
         self.assertIn("Invite link copied: send it to your friend", shown['status'])
-        self.assertIn("Couldn't copy the link: share the room code", shown['status'])
+        self.assertEqual(seen['refused'], "Couldn't copy the link: share the room code " + seen['room'])
+        self.assertEqual(seen['later'], "Invite link copied: send it to your friend", "the browser's later answer")
         self.assertEqual(seen['sent'], [(1, 'host')])
         self.assertEqual(seen['own'], [("Good luck!", False)], "by our own strip, at the bottom")
         self.assertIn("Wait a moment", shown['status'])
@@ -2696,6 +2997,37 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['after'], 0, "How to play opens once it is answered")
         self.assertTrue(seen['closed'])
 
+    def test_first_visit_help_opened_by_hand_under_the_prompt(self):
+        # read (H) and closed while the Join prompt waited: answering the prompt doesn't open it a second time
+        main = self.main
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(0.8)
+            await self.key(p.K_h, 'h', 0.3)
+            seen['opened'] = pages[-1]
+            await self.key(p.K_ESCAPE)
+            seen['closed'] = (pages[-1], self.settings.get('seenHelp'))
+            await self.click(main.promptRects()[2].center, 0.6)  # Cancel
+            seen['after'] = pages[-1]
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        pages, restore = self.recordHelpPages()
+        sent, topics, restoreRoom = self.offlineRoom()
+        removed, restoreParam = self.openedWithRoomParam("test12")
+        try:
+            self.settings.put('seenHelp', False)
+            self.runGame(script)
+        finally:
+            restore()
+            restoreParam()
+            restoreRoom()
+            self.settings.put('seenHelp', True)
+        self.assertEqual(seen['opened'], 0)
+        self.assertEqual(seen['closed'], (None, True))
+        self.assertIsNone(seen['after'], "How to play doesn't open again")
+
     def test_first_visit_help_skips_a_password_reset(self):
         import browser
         seen = {}
@@ -2783,6 +3115,21 @@ class GameLoopTest(unittest.TestCase):
         tiny = main.startingWindowSize(size, (400, 300), frame)
         self.assertEqual(tiny, (round(size[0] * main.WINDOW_MIN_SCALE), round(size[1] * main.WINDOW_MIN_SCALE)),
                          "never smaller than the smallest the window can be made")
+
+    def test_picture_rect_and_the_black_bars(self):
+        main = self.main
+        size = main.WINDOW_SIZE
+        self.assertEqual(main.pictureRect(size, size), p.Rect((0, 0), size), "the game's own shape: no bars")
+        maximized = main.pictureRect((1920, 1009), size)  # a maximized window on a 1920x1080 screen
+        self.assertEqual((maximized.y, maximized.height), (0, 1009))
+        self.assertAlmostEqual(maximized.x, (1920 - maximized.width) / 2, delta=1)
+        self.assertAlmostEqual(maximized.width / maximized.height, size[0] / size[1], places=2)
+        self.assertFalse(maximized.collidepoint(60, 568), "the left bar is outside the picture")
+        self.assertTrue(maximized.collidepoint(272, 820), "a2")
+        tall = main.pictureRect((1200, 1000), size)
+        self.assertEqual((tall.x, tall.width), (0, 1200))
+        self.assertFalse(tall.collidepoint(5, 5), "the bar above the board")
+        self.assertEqual(main.pointerPos(), p.mouse.get_pos(), "no scaled desktop window: pygame's own")
 
     def test_open_window_keeps_the_plain_window_headless(self):
         main = self.main
@@ -2961,6 +3308,23 @@ class GameLoopTest(unittest.TestCase):
         finally:
             main.setLayout('landscape')
 
+    def test_portrait_prompt_leaves_the_status_slot_free(self):
+        # a message shown while a question is open (a disabled button's reason, say) mustn't cover the question
+        main = self.main
+        try:
+            for height in (main.PORTRAIT_HEIGHTS[0], 1500, 1662, main.PORTRAIT_HEIGHTS[1]):
+                main.setLayout('portrait', height)
+                for gameOver, reviewing in ((False, False), (True, True)):
+                    rects = main.panelLayout(1, False, reviewing=reviewing, graph=reviewing)
+                    areas = main.panelAreas(min(rect.y for rect in rects.values()), gameOver)
+                    box = main.promptRects()[0]
+                    where = (height, gameOver)
+                    self.assertFalse(box.colliderect(areas['status']), where)
+                    self.assertFalse(box.colliderect(main.LAYOUT.board), where)
+                    self.assertFalse(any(box.colliderect(rect) for rect in rects.values()), (where, "the controls"))
+        finally:
+            main.setLayout('landscape')
+
     def test_portrait_chat_bubbles_stay_in_the_strips(self):
         main = self.main
         main.loadImages()
@@ -2986,6 +3350,11 @@ class GameLoopTest(unittest.TestCase):
                     self.assertLessEqual(textWidth, rect.width - main.scaled(28), (where, "the text fits"))
                     drawn = main.drawChatBubble(screen, text, strip.y, strip is top, span=span)
                     self.assertEqual(drawn, rect)
+            # a name of 20 wide letters leaves almost no room: the bubble still keeps off the clock and the edge
+            for span in ((599, 617), (731, 754)):
+                rect, tail = main.chatBubbleLayout("One moment, please", top.y, True, span=span)
+                self.assertLessEqual(rect.right, span[1], span)
+                self.assertTrue(top.contains(rect), span)
         finally:
             main.setLayout('landscape')
 

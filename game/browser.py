@@ -31,7 +31,9 @@ JS_HELPERS = r'''
             }
         });
         window.addEventListener('keydown', function(e) {
-            if (!(e.ctrlKey || e.metaKey) || e.altKey || (e.key !== 'v' && e.key !== 'V')) return;
+            // the V key: by its letter, or by its place while the layout types another alphabet (Russian 'м')
+            const vKey = e.key === 'v' || e.key === 'V' || (e.code === 'KeyV' && !/^[a-zA-Z]$/.test(e.key));
+            if (!(e.ctrlKey || e.metaKey) || e.altKey || !vKey) return;
             if (!navigator.clipboard || !navigator.clipboard.readText) return;
             const asked = Date.now();
             navigator.clipboard.readText().then(function(text) {
@@ -55,7 +57,14 @@ JS_HELPERS = r'''
         document.head.appendChild(style);
     }
 
-    // copying needs a user action in some browsers; the old execCommand way is the fallback
+    // copying needs a user action in some browsers; the old execCommand way is the fallback. The clipboard's
+    // answer comes later: 2 means wait for it, and window.__chessCopied becomes 'ok' or 'failed'
+    window.__chessCopied = null;
+    window.chessTakeCopied = function() {
+        const result = window.__chessCopied;
+        if (result) window.__chessCopied = null;
+        return result || '';
+    }
     window.chessCopyText = function(text) {
         function fallback() {
             const area = document.createElement('textarea');
@@ -70,8 +79,13 @@ JS_HELPERS = r'''
             return ok;
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).catch(fallback);
-            return 1;
+            window.__chessCopied = null;
+            navigator.clipboard.writeText(text).then(function() {
+                window.__chessCopied = 'ok';
+            }).catch(function() {
+                window.__chessCopied = fallback() ? 'ok' : 'failed';
+            });
+            return 2;
         }
         return fallback() ? 1 : 0;
     }
@@ -196,13 +210,21 @@ def setTitle(text):
 # --- the clipboard
 
 def copyText(text):
-    """Puts text on the clipboard; returns whether that (probably) worked."""
+    """Puts text on the clipboard; returns whether that worked, or None in a browser that answers later: then
+    copyResult() tells."""
     text = str(text)
     if inBrowser():
-        return bool(_eval("window.chessCopyText(%s)" % json.dumps(text), 0))
+        result = _eval("window.chessCopyText(%s)" % json.dumps(text), 0)
+        return None if result == 2 else bool(result)
     if WASM:
         return False
     return _scrapCopy(text) or _tkCopy(text)
+
+
+def copyResult():
+    """After copyText returned None: True or False once the browser has answered (once), None until then."""
+    result = _eval("window.chessTakeCopied()", "") if inBrowser() else ""
+    return {'ok': True, 'failed': False}.get(str(result) if result else "")
 
 
 def takePastedText():

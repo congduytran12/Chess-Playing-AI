@@ -5,6 +5,8 @@ import tempfile
 import unittest
 
 import support  # noqa: F401  (puts game/ on the path)
+import asyncio
+import account
 import browser
 import hints
 import network
@@ -176,6 +178,22 @@ class BrowserTest(unittest.TestCase):
         finally:
             browser._scrapCopy, browser._tkCopy, browser._scrapPaste, browser._tkPaste = saved
 
+    def test_browser_copy_answers_later(self):
+        # navigator.clipboard answers after the click: copyText says so (None), and copyResult gives the answer once
+        answers = [2, 'failed', '', 1, 0]
+        saved = browser.inBrowser, browser._eval
+        try:
+            browser.inBrowser = lambda: True
+            browser._eval = lambda code, default=None: answers.pop(0)
+            self.assertIsNone(browser.copyText("link"))
+            self.assertIs(browser.copyResult(), False)
+            self.assertIsNone(browser.copyResult(), "answered once")
+            self.assertIs(browser.copyText("link"), True, "the old way copies at once")
+            self.assertIs(browser.copyText("link"), False)
+        finally:
+            browser.inBrowser, browser._eval = saved
+        self.assertIsNone(browser.copyResult(), "desktop copies at once")
+
     def test_set_title(self):
         import pygame
         browser.setTitle("Your move · Chess Playing AI")
@@ -185,3 +203,38 @@ class BrowserTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AccountClientTest(unittest.TestCase):
+    def client(self, answers):
+        """An Account whose requests get answers[action] (a dict, or an AccountError raised); nothing is stored."""
+        client = account.Account()
+        client._store = lambda token: None
+        client.calls = []
+
+        async def post(payload):
+            client.calls.append(payload['action'])
+            answer = answers[payload['action']]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        client._post = post
+        return client
+
+    def test_a_saved_password_stays_saved_when_signing_in_fails(self):
+        signedIn = {'token': "t", 'refresh': "r2", 'profile': {'id': "u", 'username': "duy", 'rating': 1200}}
+        # the sign-in after the save fails (the service is busy): signed out, to sign in with the new password
+        client = self.client({'set_password': {'ok': True}, 'refresh': account.AccountError("Server error 503", 503)})
+        client.profile = {'id': "x", 'username': "someone", 'rating': 1500}  # signed in as another player before
+        asyncio.run(client.setPassword("access", "newsecret1", "r1"))
+        self.assertEqual(client.calls, ['set_password', 'refresh'])
+        self.assertFalse(client.signedIn)
+        # the stats don't load: still signed in
+        client = self.client({'set_password': {'ok': True}, 'refresh': signedIn,
+                              'me': account.AccountError("Server error 502", 502)})
+        asyncio.run(client.setPassword("access", "newsecret1", "r1"))
+        self.assertEqual(client.username, "duy")
+        # the save itself fails: the form shows why
+        client = self.client({'set_password': account.AccountError("That link has expired", 401)})
+        with self.assertRaises(account.AccountError):
+            asyncio.run(client.setPassword("access", "newsecret1", "r1"))

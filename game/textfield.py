@@ -123,7 +123,8 @@ class TextField:
         (clipboard: a function returning the clipboard's text). Returns whether the key was used."""
         key = event.key
         mods = getattr(event, 'mod', 0)
-        command = mods & (p.KMOD_CTRL | p.KMOD_META)
+        # Ctrl or Cmd; Windows reports AltGr (which types '@' on many keyboards) as Ctrl+Alt, and that is typing
+        command = (mods & p.KMOD_META) or ((mods & p.KMOD_CTRL) and not (mods & p.KMOD_ALT))
         if key == p.K_v and command:
             text = clipboard() if clipboard is not None else ""
             if text:

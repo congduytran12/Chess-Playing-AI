@@ -165,13 +165,25 @@ class Account:
         await self._post(payload)
 
     async def setPassword(self, token, password, refreshToken=None):
-        """Saves a new password with the access token from a reset link, then signs in with the link's refresh token."""
+        """Saves a new password with the access token from a reset link, then signs in with the link's refresh token.
+        Once the password is saved this succeeds: if the sign-in fails, the player is signed out (to sign in with
+        the new password), and stats that don't load are left out."""
         await self._post({'action': 'set_password', 'token': token, 'password': password})
         if refreshToken:
             self._session += 1
+            session = self._session
             self.refreshToken = refreshToken
-            await self._refresh()
-            await self.loadStats()
+            try:
+                await self._refresh()
+            except AccountError as e:
+                print("Account: the new password is saved, but signing in failed -", e)
+                if session == self._session:  # not someone else who signed in meanwhile
+                    self.signOut()
+                return
+            try:
+                await self.loadStats()
+            except AccountError as e:
+                print("Account: could not load the stats -", e)
 
     def signOut(self):
         self._session += 1

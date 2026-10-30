@@ -10,7 +10,9 @@
 import os
 import re
 import sys
+import json
 import math
+import base64
 import ctypes
 
 # Fix Pygame resolution blurriness on Windows by telling the OS this app is high DPI aware
@@ -243,6 +245,9 @@ ROOM_CODE_LENGTH = 12
 QUICK_CHAT = ["Hello!", "Good luck!", "Good game!", "Thanks!", "Well played!", "Oops", "One moment, please"]
 CHAT_INTERVAL_MS = 3000  # at most one chat message per this many ms (Chat is disabled in between)
 CHAT_FRESH_SECONDS = 30  # a received chat older than this (server clock) is history replayed on joining: not shown
+# online: our own sync_request coming back marks when we joined (ntfy's clock); without it after this long, the
+# room's latest time stands in for it
+JOIN_ECHO_MS = 10000
 CHAT_BUBBLE_MS = 5000  # a chat message's bubble shows this long by its sender's name
 CHAT_FADE_MS = 400  # and fades out over its last this many ms
 
@@ -529,14 +534,14 @@ async def pawnPromotionPopup(screen, color, row, col, flip=False):
             elif e.type == p.KEYDOWN and e.key == p.K_ESCAPE:
                 return None
             elif e.type == p.MOUSEBUTTONDOWN and e.button in (1, 2, 3):
-                mouse_pos = toBoard(p.mouse.get_pos())
+                mouse_pos = toBoard(pointerPos())
                 for i, button in enumerate(buttons):
                     if button.collidepoint(mouse_pos):
                         return choices[i]
                 return None
 
         screen.blit(background, (0, 0))
-        mouse_pos = toBoard(p.mouse.get_pos())
+        mouse_pos = toBoard(pointerPos())
         setCursor('hand' if any(button.collidepoint(mouse_pos) for button in buttons) else 'arrow')
         for i, button in enumerate(buttons):
             hovered = button.collidepoint(mouse_pos)
@@ -683,10 +688,11 @@ def chatItemRects(chatRect):
 
 
 # Accept / Decline prompt for undo requests and draw offers, drawn over the move log (in portrait just under the
-# player's strip, over the status slot and the first moves)
+# status slot, over the first moves, so a message shown meanwhile doesn't cover its question)
 def promptRects():
     layout = LAYOUT
-    top = layout.board.bottom + layout.stripHeight + scaled(12) if layout.kind == 'portrait' else 150
+    top = (layout.board.bottom + layout.stripHeight + scaled(6) + layout.statusHeight + scaled(6)
+           if layout.kind == 'portrait' else 150)
     panel = p.Rect(layout.controlsX, top, layout.controlsWidth, scaled(100))
     accept = p.Rect(panel.x + scaled(10), panel.y + scaled(48), panel.width // 2 - scaled(15), layout.rowHeight)
     decline = p.Rect(panel.centerx + scaled(5), panel.y + scaled(48), panel.width // 2 - scaled(15), layout.rowHeight)
@@ -730,14 +736,30 @@ def desktopArea():
         return None
 
 
+# the SDL2.dll pygame loaded (so it is the same SDL, with the same windows and mouse), or None (off Windows)
+SDL_LIBRARY = []
+
+
+def sdlLibrary():
+    if not SDL_LIBRARY:
+        sdl = None
+        try:
+            path = os.path.join(os.path.dirname(p.__file__), 'SDL2.dll')
+            if os.path.exists(path):
+                sdl = ctypes.CDLL(path)
+        except Exception as e:
+            print("Main: could not load SDL2.dll -", e)
+        SDL_LIBRARY.append(sdl)
+    return SDL_LIBRARY[0]
+
+
 # pygame makes a SCALED window no smaller than the game; SDL itself allows it (through the SDL2.dll pygame loaded,
 # so it is the same SDL). Returns whether it worked
 def setWindowMinimumSize(window, size):
     try:
-        path = os.path.join(os.path.dirname(p.__file__), 'SDL2.dll')
-        if not os.path.exists(path):
+        sdl = sdlLibrary()
+        if sdl is None:
             return False
-        sdl = ctypes.CDLL(path)
         sdl.SDL_GetWindowFromID.restype = ctypes.c_void_p
         sdl.SDL_GetWindowFromID.argtypes = [ctypes.c_uint32]
         sdl.SDL_SetWindowMinimumSize.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
@@ -749,6 +771,36 @@ def setWindowMinimumSize(window, size):
     except Exception as e:
         print("Main: could not set the window's minimum size -", e)
         return False
+
+
+# the desktop window's pygame Window, kept for as long as the display exists: pygame gives SDL only a borrowed
+# pointer to it, and puts that pointer in every window event (freed, the first event crashes the game)
+DESKTOP_WINDOW = []
+
+
+# where the scaled game sits in a window of window size (centered, as large as fits: the rest is black bars)
+def pictureRect(window, size):
+    scale = min(window[0] / size[0], window[1] / size[1])
+    width, height = round(size[0] * scale), round(size[1] * scale)
+    return p.Rect((window[0] - width) // 2, (window[1] - height) // 2, width, height)
+
+
+# the pointer in game pixels, or (-1, -1) in the black bars of a scaled desktop window that isn't the game's shape:
+# pygame pulls a point there onto the picture's edge (the board's a-file, or the panel's edge)
+def pointerPos():
+    pos = p.mouse.get_pos()
+    sdl = sdlLibrary() if DESKTOP_WINDOW else None
+    if sdl is None:
+        return pos
+    try:
+        x, y = ctypes.c_int(), ctypes.c_int()
+        sdl.SDL_GetMouseState(ctypes.byref(x), ctypes.byref(y))  # in the window's own pixels, not clamped
+        if not pictureRect(p.display.get_window_size(), p.display.get_surface().get_size()).collidepoint(x.value,
+                                                                                                         y.value):
+            return (-1, -1)
+    except Exception:
+        pass
+    return pos
 
 
 # the game's window: in the browser (the page scales the canvas) and under the headless tests' dummy driver as
@@ -766,7 +818,9 @@ def openWindow(size=WINDOW_SIZE):
         # pygame reads this hint by its macro's name: any scale, not only whole multiples, so the window can be
         # smaller than the game; the real hint smooths a scale that isn't whole and keeps whole ones crisp
         os.environ['SDL_HINT_RENDER_SCALE_QUALITY'] = '1'
-        os.environ['SDL_RENDER_SCALE_QUALITY'] = 'nearest' if target[0] % size[0] == 0 else 'linear'
+        # (SDL reads it once, here: a window that starts at 1x and is maximized later is smoothed too)
+        os.environ['SDL_RENDER_SCALE_QUALITY'] = ('nearest' if target[0] % size[0] == 0 and target[0] >= 2 * size[0]
+                                                  else 'linear')
     try:
         # hidden until it has its size: with the hint, pygame first makes it as large as the desktop
         screen = p.display.set_mode(size, p.SCALED | p.RESIZABLE | (p.HIDDEN if Window else 0))
@@ -778,6 +832,7 @@ def openWindow(size=WINDOW_SIZE):
     window = None
     try:
         window = Window.from_display_module()
+        DESKTOP_WINDOW[:] = [window]
         setWindowMinimumSize(window, (round(size[0] * WINDOW_MIN_SCALE), round(size[1] * WINDOW_MIN_SCALE)))
         window.size = target
         if area and area[2]:  # centered in the work area, frame included
@@ -790,7 +845,9 @@ def openWindow(size=WINDOW_SIZE):
         print("Main: could not size the window -", e)
     finally:
         try:
-            (window or Window.from_display_module()).show()
+            window = window or Window.from_display_module()
+            DESKTOP_WINDOW[:] = [window]
+            window.show()
         except Exception as e:
             print("Main: could not show the window -", e)
     return screen
@@ -894,6 +951,8 @@ async def main():
     chatOpen = False  # the quick chat's messages are showing (opened from the Chat button like the menu)
     lastChatSent = None  # ticks when we last sent a chat message (CHAT_INTERVAL_MS apart)
     chatBubbles = {}  # color -> (text, ticks): the chat message shown by that player's strip, for CHAT_BUBBLE_MS
+    copyPending = None  # (ticks, room code) while the browser hasn't said whether the invite link was copied
+    invitedRoom = None  # the friend's room from an invite link: Host makes a room of its own instead
 
     # player account (see account.py): the account window, and saving finished games to the account
     # 'signin' | 'register' | 'forgot' | 'newPassword' | 'profile' | 'games' | 'leaderboard' while the window is open
@@ -917,7 +976,8 @@ async def main():
     # pressing on the saved games: {'pos', 'scroll', 'active'} as listPress; accountThumb: dragging their scrollbar
     accountPress = None
     accountThumb = None
-    resetLink = None  # {'token', 'refresh'} from a password reset link the page was opened with (browser)
+    # {'token', 'refresh', 'email'?} from a password reset link the page was opened with (browser)
+    resetLink = None
     accountRequests = []  # running requests: (task, onDone, onError, shownInWindow)
     gameSaved = False  # the finished game was sent to the account
     savedGameId = None  # its id there, so finishing again after an undo updates it
@@ -958,6 +1018,9 @@ async def main():
     endSoundPlayed = False  # 'game-end' plays once per game
     lowTimeWarned = set()  # the colors whose low clock was already heard this game
     caughtUp = False  # online: the first state adopted after connecting is catching up, not a game starting
+    # online: this connection's id (on its sync_request), ntfy's time when that came back (None until then: what
+    # arrives before it is the room's history), and the ticks when we connected
+    joinId, joinedAt, connectedAt = None, None, 0
     windowFocused = True  # desktop: the window has the keyboard focus (WINDOWFOCUSLOST / WINDOWFOCUSGAINED)
     yourMoveAlert = False  # the title says "Your move" (the player was away when their turn came)
     movesSeen = 0  # moves in the game last frame, to notice the opponent's move
@@ -1249,10 +1312,19 @@ async def main():
 
     # Copy link: the host's invite link goes on the clipboard (on desktop it points at the public site)
     def copyInviteLink():
-        if browser.copyText(inviteUrl(browser.siteUrl(), roomCode)):
+        nonlocal copyPending
+        copyPending = None
+        copied = browser.copyText(inviteUrl(browser.siteUrl(), roomCode))
+        if copied is None:  # the browser answers later (copyResult, polled each frame)
+            copyPending = (p.time.get_ticks(), roomCode)
+        else:
+            showCopyResult(copied, roomCode)
+
+    def showCopyResult(copied, code):
+        if copied:
             showStatus("Invite link copied: send it to your friend")
         else:
-            showStatus("Couldn't copy the link: share the room code")
+            showStatus("Couldn't copy the link: share the room code %s" % code, 6000)
 
     def newOnlineGameId():
         return "".join(random.choices(string.ascii_letters + string.digits, k=12))
@@ -1272,7 +1344,7 @@ async def main():
 
     def connectOnline(role):
         nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, onlineGameId, savedSession, lastStateHeard
-        nonlocal opponentInfo, opponentSeen, caughtUp, chatOpen
+        nonlocal opponentInfo, opponentSeen, caughtUp, chatOpen, joinId, joinedAt, connectedAt
         multiplayerRole = role
         opponentInfo = None
         opponentSeen = None
@@ -1289,8 +1361,10 @@ async def main():
         lastStateHeard = p.time.get_ticks()
         net.save_session(roomCode, role)
         savedSession = {'room': roomCode, 'role': role}
-        # the opponent answers with the current game, so a rejoining player catches up
-        sendOnline({'type': 'sync_request'})
+        # the opponent answers with the current game, so a rejoining player catches up; it comes back to us after
+        # the room's history (joinedAt)
+        joinId, joinedAt, connectedAt = newOnlineGameId(), None, p.time.get_ticks()
+        sendOnline({'type': 'sync_request', 'join': joinId})
 
     # rebuilds the game from a newer state: undo back to the common moves, then play the rest
     def adoptState(state):
@@ -1451,10 +1525,12 @@ async def main():
                     return 'chat:%d' % index, None, True
             return ('chat', None, True) if layout['chat'].collidepoint(pos) else (None, None, False)
         if pendingPrompt:
-            _, acceptRect, declineRect = promptRects()
+            promptBox, acceptRect, declineRect = promptRects()
             for name, rect in (('yes', acceptRect), ('no', declineRect)):
                 if rect.collidepoint(pos):
                     return 'prompt:' + name, None, True
+            if promptBox.collidepoint(pos):  # nothing under the prompt can be clicked
+                return None, None, False
         if gameOver and reviewPly is None and not resultCardHidden:
             rects = resultCardLayout(outcome[0], resultButtons())[2]
             for name in resultButtons():
@@ -1815,11 +1891,10 @@ async def main():
             openAccountView('signin')
             setAccountMessage("Check your email to confirm the account, then sign in", 'success')
 
-    # the new password from a reset link is saved: the link's sign-in is kept, and the link leaves the address bar
+    # the new password from a reset link is saved: the link's sign-in is kept
     def passwordSaved():
         nonlocal resetLink
         resetLink = None
-        browser.clearLocationHash()
         accountFields['password'].setValue("")
         if account.signedIn:
             openAccountView('profile')
@@ -1948,15 +2023,19 @@ async def main():
                          onDone=reported, inWindow=False,
                          onError=lambda message: showStatus("Couldn't report the result: " + message))
 
-    # the page was opened from a password reset email (browser): Supabase put a sign-in for it after the #
-    linkInfo = resetLinkFromHash(browser.locationHash())
+    # the page was opened from a password reset email (browser): Supabase put a sign-in for it after the #. The
+    # link leaves the address bar at once (kept in resetLink), so its tokens can't be copied or shown from there;
+    # so does a new account's confirmation link (it signs in the same way)
+    hashText = browser.locationHash()
+    linkInfo = resetLinkFromHash(hashText)
+    if linkInfo or hashHasSignIn(hashText):
+        browser.clearLocationHash()
     if linkInfo and 'token' in linkInfo:
         resetLink = linkInfo
         openAccountView('newPassword')
     elif linkInfo:  # an expired or used link
         openAccountView('signin')
         setAccountMessage(linkInfo['error'])
-        browser.clearLocationHash()
 
     # the page was opened from an invite link (browser): online setup with the room filled in, and a Join prompt;
     # the link's ?room= leaves the address bar, so a reload doesn't ask again
@@ -1968,7 +2047,7 @@ async def main():
             currentModeIndex = 2
             multiplayerMode = True
             resetGame()
-            roomCode = invitedCode
+            roomCode = invitedRoom = invitedCode
             pendingPrompt = {'kind': 'joinInvite', 'text': "Join room %s as Black?" % invitedCode, 'yes': "Join",
                              'no': "Cancel", 'room': invitedCode}
 
@@ -1978,6 +2057,8 @@ async def main():
     helpWasOpen = False
 
     while running:
+        if helpPage is not None:  # opened by hand while the first visit's waited: it doesn't open again
+            firstVisitHelp = False
         if firstVisitHelp and not (pendingPrompt and pendingPrompt['kind'] == 'joinInvite') and not accountView:
             firstVisitHelp = False
             helpPage = 0
@@ -2002,23 +2083,27 @@ async def main():
         if multiplayerMode and networkConnected:
             now = p.time.get_ticks()
             opponentRole = 'client' if multiplayerRole == 'host' else 'host'
-            messages = [msg for msg in net.get_messages() if msg.get('sender') != myPlayerId]
+            incoming = net.get_messages()
+            if joinedAt is None:  # our sync_request came back: everything before it was the room's history
+                for msg in incoming:
+                    if (msg.get('sender') == myPlayerId and msg.get('join') == joinId
+                            and isinstance(msg.get('_time'), (int, float))):
+                        joinedAt = msg['_time']
+                if joinedAt is None and now - connectedAt > JOIN_ECHO_MS:
+                    joinedAt = net.server_time
+            messages = [msg for msg in incoming if msg.get('sender') != myPlayerId]
             for msg in messages:
                 print(f"Main: Received message type='{msg.get('type')}' from {msg.get('role')} sender={msg.get('sender', '???')}")
                 if msg.get('role') == opponentRole and msg.get('_time') is not None:
                     opponentSeen = max(opponentSeen or 0, msg['_time'])  # server time of their latest message
-                player = msg.get('player')
-                if msg.get('role') == opponentRole and isinstance(player, dict) and player.get('uid'):
-                    try:
-                        opponentInfo = {'uid': str(player['uid'])[:64], 'name': str(player.get('name') or "?")[:20],
-                                        'rating': int(player.get('rating') or 0)}
-                    except (TypeError, ValueError):
-                        pass
+                if msg.get('role') == opponentRole:
+                    opponentInfo = onlinePlayerInfo(msg.get('player')) or opponentInfo
 
             # game states: a replay after joining can deliver many, so only the newest one is used
             newest = None
             for msg in messages:
-                if msg.get('type') == 'state' and isinstance(msg.get('game'), int) and isinstance(msg.get('version'), int):
+                if (msg.get('type') == 'state' and isinstance(msg.get('game'), int)
+                        and isinstance(msg.get('version'), int) and wellFormedState(msg)):
                     if newest is None or (msg['game'], msg['version']) > (newest['game'], newest['version']):
                         newest = msg
             if newest is not None:
@@ -2053,7 +2138,7 @@ async def main():
                         lastSyncReply = now
                     continue
                 if mtype == 'chat':  # any time in the room, but only fresh ones from the opponent
-                    index = incomingChat(msg, opponentRole, net.server_time)
+                    index = incomingChat(msg, opponentRole, net.server_time, joinedAt)
                     if index is not None:
                         chatBubbles['b' if multiplayerRole == 'host' else 'w'] = (QUICK_CHAT[index], now)
                     continue
@@ -2070,6 +2155,10 @@ async def main():
                         pendingPrompt = {'kind': 'draw', 'text': "Opponent offers a draw"}
                 elif mtype == 'draw_declined':
                     showStatus("Opponent declined the draw")
+            # the room's history has been heard: a state adopted from now on is the game going on (a new game
+            # the opponent starts plays its sound)
+            if joinedAt is not None:
+                caughtUp = True
 
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
             not gs.whiteToMove and playerBlackHuman)
@@ -2085,15 +2174,19 @@ async def main():
         # "Your move": the opponent moved while the player is away (a hidden tab, or another window in front);
         # the title says so until they're back or the turn passes
         away = browser.pageHidden() if browser.inBrowser() else not windowFocused
-        if (turnArrived(currentModeIndex, humanTurn and not (currentModeIndex == 2 and not networkConnected),
-                        movesSeen, len(gs.moveLog), gameOver) and away and not yourMoveAlert):
+        playable = humanTurn and not (currentModeIndex == 2 and not networkConnected)
+        # a premove answers for the player later in this frame; if it is dropped, the next frame calls them
+        premoveDue = premove is not None and playable
+        if (not premoveDue and turnArrived(currentModeIndex, playable, movesSeen, len(gs.moveLog), gameOver)
+                and away and not yourMoveAlert):
             yourMoveAlert = True
             browser.setTitle(YOUR_MOVE_TITLE)
             playSound('notify')
         elif yourMoveAlert and (not away or not humanTurn or gameOver):
             yourMoveAlert = False
             browser.setTitle(GAME_TITLE)
-        movesSeen = len(gs.moveLog)
+        if not premoveDue:
+            movesSeen = len(gs.moveLog)
 
         # online: while waiting for the opponent (or after the game), keep re-sending our state so a
         # lost message can't leave both players waiting for each other
@@ -2110,11 +2203,19 @@ async def main():
         if drag is not None and (not canDrag(drag['square']) or menuOpen or chatOpen or openDropdown or accountView
                                  or helpPage is not None or settingsTab):
             drag = None
+        # and an open dropdown, the menu or the chat list closes when a window opens (H or F1 opens How to play)
+        if accountView or helpPage is not None or settingsTab:
+            openDropdown, menuOpen, chatOpen = None, False, False
         if kingFlash is not None and p.time.get_ticks() - kingFlash[1] > KING_FLASH_MS:
             kingFlash = None
 
         if roomField.value != roomCode:  # the room changed elsewhere (Host, Rejoin, another mode)
             roomField.setValue(roomCode)
+        if copyPending is not None:  # the browser's answer to Copy link (no answer in time counts as a failure)
+            copied = browser.copyResult()
+            if copied is not None or p.time.get_ticks() - copyPending[0] > COPY_WAIT_MS:
+                showCopyResult(bool(copied), copyPending[1])
+                copyPending = None
         # in the browser a paste (Ctrl+V) arrives as the page's paste event; desktop reads the clipboard in handleKey
         pasted = browser.takePastedText()
         if pasted and focusedField() is not None:
@@ -2138,7 +2239,7 @@ async def main():
                 if accountView:  # the window's list scrolls (wheel up: newer games, at the top)
                     if accountView == 'games':
                         accountScroll = accountListGeometry()['scroll'] - e.y * ACCOUNT_LIST_WHEEL
-                elif not onBoard(p.mouse.get_pos()):
+                elif not onBoard(pointerPos()):
                     moveLogScroll += e.y  # wheel up scrolls back through older moves
             elif e.type == p.MOUSEMOTION:
                 pos = p.mouse.get_pos()
@@ -2194,15 +2295,15 @@ async def main():
                     listPress, thumbGrab, graphHeld = None, None, False
                 if e.button == 1 and drag is not None:
                     if drag['active']:
-                        await dropPiece(p.mouse.get_pos())
+                        await dropPiece(pointerPos())
                     else:
                         drag = None  # a plain click: the press already did everything
                 elif e.button == 3:
-                    rightRelease(p.mouse.get_pos())
+                    rightRelease(pointerPos())
             elif e.type == p.MOUSEBUTTONDOWN:
                 if e.button in (4, 5):  # wheel also fires button events; handled by MOUSEWHEEL
                     continue
-                location = p.mouse.get_pos()
+                location = pointerPos()
                 # the right button: a drag is cancelled, then a premove (rightPress), marks and arrows on the board;
                 # elsewhere a click as before
                 if e.button == 3 and drag is not None:
@@ -2288,7 +2389,7 @@ async def main():
                     continue
 
                 if pendingPrompt:
-                    _, acceptRect, declineRect = promptRects()
+                    promptBox, acceptRect, declineRect = promptRects()
                     if acceptRect.collidepoint(location) or declineRect.collidepoint(location):
                         accepted = acceptRect.collidepoint(location)
                         prompt, kind = pendingPrompt, pendingPrompt['kind']
@@ -2321,6 +2422,8 @@ async def main():
                             roomCode = prompt['room']
                             connectOnline('client')
                             await asyncio.sleep(0)  # yield so poll task can start
+                        continue
+                    if promptBox.collidepoint(location):  # the rest of its box hides the moves under it
                         continue
 
                 clicked = None
@@ -2376,7 +2479,8 @@ async def main():
                     copyInviteLink()
                 elif clicked == 'host':
                     print("DEBUG: Host button clicked.")
-                    if not roomCode:
+                    # a new room, unless one was typed in (the invite's room has its host: the friend)
+                    if not roomCode or roomCode == invitedRoom:
                         roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
                     connectOnline('host')
                     await asyncio.sleep(0)  # yield so poll task can start
@@ -2524,8 +2628,8 @@ async def main():
                         reviewTo(len(gs.moveLog))
                     continue
 
-                if e.key in (p.K_h, p.K_F1):  # How to play
-                    helpPage = 0
+                if e.key in (p.K_h, p.K_F1):  # How to play (it closes an open dropdown, as a click would)
+                    helpPage, openDropdown = 0, None
                     continue
                 if e.key == p.K_f:  # Flip board, as in the menu
                     menuAction('flip')
@@ -2748,7 +2852,7 @@ async def main():
                                                 shownClocks[color] if timeControl else None,
                                                 clockRunning() and sideToMove == color, notes.get(color))
 
-        mouse_pos = p.mouse.get_pos()
+        mouse_pos = pointerPos()
         states = controlStates()
         labels = {
             'mode': "Mode: " + MODE_OPTIONS[currentModeIndex],
@@ -2820,23 +2924,27 @@ async def main():
                 continue
             atTop = color == ('w' if flip_board else 'b')
             statusShown = statusText and p.time.get_ticks() < statusUntil
-            # landscape: over the move list, the lower strip's bubble rising over the status slot above it;
-            # portrait: inside the strip, after the name, so neither covers the board
+            # landscape: over the move list, the lower strip's bubble rising over the status slot and the review
+            # info above it; portrait: inside the strip, after the name, so neither covers the board
             if LAYOUT.kind == 'portrait':
                 drawChatBubble(screen, text, areas['topStrip'].y if atTop else stripY, atTop,
                                p.time.get_ticks() - since, span=stripSpans[color])
             else:
                 drawChatBubble(screen, text, areas['topStrip'].y if atTop else stripY, atTop,
-                               p.time.get_ticks() - since, stripY - statusRect.y if statusShown and not atTop else 0)
+                               p.time.get_ticks() - since, 0 if atTop else chatBubbleLift(areas, statusShown, gameOver))
 
-        # the dragged piece follows the pointer, over the board and the panel but under the overlays
+        # the dragged piece follows the pointer, over the board and the panel but under the overlays (in a desktop
+        # window's black bars it stays at the picture's edge)
         if dragging:
-            drawDraggedPiece(screen, gs.board[drag['square'][0]][drag['square'][1]], mouse_pos)
+            drawDraggedPiece(screen, gs.board[drag['square'][0]][drag['square'][1]], p.mouse.get_pos())
 
         if gameOver and reviewPly is None and not resultCardHidden:
             drawEndGameText(screen, outcome[0], resultButtons(), mouse_pos)
 
-        # overlays: the Accept / Decline prompt, windows, the status message and open dropdown options or menu (on top)
+        # overlays: the status message, the Accept / Decline prompt, windows and open dropdown options or menu (on
+        # top); a window covers the status slot (in portrait it lies across the middle of a window)
+        if statusText and p.time.get_ticks() < statusUntil:
+            drawStatus(screen, statusRect, statusText)
         if pendingPrompt:
             panel_rect, acceptBtn, denyBtn = promptRects()
             p.draw.rect(screen, p.Color(UI['strip']), panel_rect, border_radius=WINDOW_RADIUS)
@@ -2859,13 +2967,11 @@ async def main():
             drawWindow(screen, windowBox(), lambda surface: drawAccountWindow(
                 surface, accountView, accountFields, accountFocus, accountMessage, accountBusy(), account, accountList,
                 (-1, -1) if scrolling else windowMouse, accountTone, accountScroll, accountShowPassword,
-                accountThumb is not None))
+                accountThumb is not None, (resetLink or {}).get('email')))
         if helpPage is not None:
             drawWindow(screen, windowBox(), lambda surface: drawHelpWindow(surface, helpPage, windowMouse))
         if settingsTab:
             drawWindow(screen, windowBox(), lambda surface: drawSettingsWindow(surface, windowMouse, settingsTab))
-        if statusText and p.time.get_ticks() < statusUntil:
-            drawStatus(screen, statusRect, statusText)
         if openDropdown in layout:
             options = dropdownLabels(openDropdown)
             current = {'mode': currentModeIndex, 'level': chessAi.LEVEL, 'side': sideIndex,
@@ -3159,16 +3265,37 @@ def pasteRoomCode(field, text):
 
 
 # what a password reset link put after the # of the page's address: {'token', 'refresh'} for choosing a new
-# password, {'error'} for a link that expired or was used, None for anything else
+# password (and 'email', the account it is for, when the token names it), {'error'} for a link that expired or
+# was used, None for anything else. Anyone can make such an address, so its error text is never shown
 def resetLinkFromHash(hashText):
     values = dict(parse_qsl(str(hashText or "").lstrip('#'), keep_blank_values=True))
     if values.get('type') == 'recovery' and values.get('access_token'):
-        return {'token': values['access_token'], 'refresh': values.get('refresh_token') or None}
+        link = {'token': values['access_token'], 'refresh': values.get('refresh_token') or None}
+        email = tokenEmail(values['access_token'])
+        if email:
+            link['email'] = email
+        return link
     if values.get('error_code') or values.get('error_description'):
         if values.get('error_code') == 'otp_expired':
             return {'error': "That email link has expired or was already used. Ask for a new one"}
-        return {'error': "That email link didn't work: " + (values.get('error_description') or values['error_code'])}
+        return {'error': "That email link didn't work. Ask for a new one"}
     return None
+
+
+# whether the # of the page's address carries a sign-in (an email link's tokens: reset, confirmation, ...)
+def hashHasSignIn(hashText):
+    values = dict(parse_qsl(str(hashText or "").lstrip('#'), keep_blank_values=True))
+    return bool(values.get('access_token') or values.get('refresh_token'))
+
+
+# the email an access token (a JWT) was given for, or None; only read to show it, never trusted for anything
+def tokenEmail(token):
+    try:
+        payload = str(token).split('.')[1]
+        email = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4))).get('email')
+    except Exception:
+        return None
+    return email if isinstance(email, str) and 0 < len(email) <= 254 and email.isprintable() else None
 
 
 def drawTextField(screen, rect, field, focused, mouse_pos=(-1, -1), showPassword=False, placeholder="",
@@ -3245,6 +3372,9 @@ ACCOUNT_TITLES = {'signin': "Sign in", 'register': "Create an account", 'games':
 # a line or two under the title of a form that needs saying what it does
 ACCOUNT_INTROS = {'forgot': "Enter your account's email, and we'll send you a link to choose a new password.",
                   'newPassword': "Type a new password for your account. You'll stay signed in on this device."}
+# the newPassword view names the account the reset link is for, so nobody sets a password on another's unawares
+NEW_PASSWORD_FOR = "Type a new password for %s."
+NEW_PASSWORD_STAY = "You'll stay signed in on this device."
 ACCOUNT_INTRO_HEIGHT = 52
 ACCOUNT_SUBMITS = {'signin': "Sign in", 'register': "Create account", 'forgot': "Send reset link",
                    'newPassword': "Save password"}
@@ -3407,7 +3537,7 @@ def drawProfile(screen, box, account):
 
 
 def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows, mouse_pos, tone='error', scroll=0,
-                      showPassword=False, thumbHeld=False):
+                      showPassword=False, thumbHeld=False, resetEmail=None):
     drawShade(screen)
     rects = accountLayout(view, accountRowCount(view, account, rows), scroll)
     box = rects['box']
@@ -3418,7 +3548,18 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
     screen.blit(titleObj, (box.centerx - titleObj.get_width() / 2, box.y + 26))
     if view in ACCOUNT_INTROS:
         y = box.y + 76
-        for line in wrapText(ACCOUNT_INTROS[view], get_font(18, False), width):
+        text = ACCOUNT_INTROS[view]
+        if view == 'newPassword' and resetEmail:  # resetEmail: the account the reset link is for
+            text = NEW_PASSWORD_FOR % resetEmail + " " + NEW_PASSWORD_STAY
+        font = get_font(18, False)
+        lines = wrapText(text, font, width)
+        if len(lines) > 2:  # a long email: on a line of its own, shortened in the middle as much as it must be
+            shown, keep = resetEmail, len(resetEmail)
+            while font.size(NEW_PASSWORD_FOR % shown)[0] > width and keep > 2:
+                keep -= 1
+                shown = resetEmail[:(keep + 1) // 2] + "..." + resetEmail[len(resetEmail) - keep // 2:]
+            lines = [NEW_PASSWORD_FOR % shown, NEW_PASSWORD_STAY]
+        for line in lines:
             screen.blit(get_text_surface(line, 18, UI['textBody'], False), (x, y))
             y += 22
 
@@ -4868,6 +5009,36 @@ def resultCardLayout(text, buttons):
     return titleObj, noteObj, rects
 
 
+# --- what other players send: anyone with the room's code can post to it, so nothing from it may stop the game
+
+# the opponent's {'uid', 'name', 'rating'} from a message's 'player' field, or None when it has none or it doesn't
+# make sense (a name keeps only the characters usernames have)
+def onlinePlayerInfo(player):
+    if not isinstance(player, dict) or not player.get('uid'):
+        return None
+    rating = player.get('rating') or 0
+    if isinstance(rating, bool) or not isinstance(rating, (int, float)) or not -1e6 < rating < 1e6:
+        return None  # also NaN and infinity
+    name = "".join(ch for ch in str(player.get('name') or "") if ch in USERNAME_CHARACTERS)[:20]
+    return {'uid': str(player['uid'])[:64], 'name': name or "?", 'rating': int(rating)}
+
+
+# whether a received state can be adopted: a time control of two whole seconds counts (or none), clocks in ms,
+# a result of two printable texts, the moves a text (a modified client's message would otherwise stop the game)
+def wellFormedState(msg):
+    def number(x, low):
+        return not isinstance(x, bool) and isinstance(x, (int, float)) and low <= x < 1e12  # not NaN or infinity
+    tc, clocks, result = msg.get('tc'), msg.get('clocks'), msg.get('result')
+    if tc is not None and not (isinstance(tc, list) and len(tc) == 2 and all(number(x, 0) for x in tc)):
+        return False
+    if clocks is not None and not (isinstance(clocks, dict) and all(number(clocks.get(c, 0), -1e12) for c in 'wb')):
+        return False
+    if result is not None and not (isinstance(result, list) and len(result) == 2
+                                   and all(isinstance(x, str) and len(x) <= 100 and x.isprintable() for x in result)):
+        return False
+    return isinstance(msg.get('moves') or "", str)
+
+
 # what the online status line says: (text, palette key of its color, note for the opponent's name or None)
 # role: ours; opponentSeen: server time of the opponent's latest message (None before any); serverTime: the latest
 # server time of any message in the room, ours included (we ping when quiet, so it keeps up); networkStatus: net.last_status
@@ -4886,21 +5057,26 @@ def presenceStatus(role, opponentSeen, serverTime, networkStatus):
 
 # --- invite links and the quick chat
 
+COPY_WAIT_MS = 3000  # browser: how long Copy link waits for the clipboard's answer before saying it failed
+
+
 # the link that opens the game with the room's Join prompt (site: browser.siteUrl(), the public site on desktop)
 def inviteUrl(site, code):
     return site + ('&' if '?' in site else '?') + 'room=' + code
 
 
 # the QUICK_CHAT index a received message shows, or None: only a chat from the opponent's role with a known id,
-# sent within CHAT_FRESH_SECONDS of the room's latest server time (older ones are the room's history, replayed
-# when joining)
-def incomingChat(msg, opponentRole, serverTime):
+# sent within CHAT_FRESH_SECONDS of the room's latest server time and of when we joined (joinedAt; None while
+# we haven't heard our own sync_request back: until then the room's history is still arriving)
+def incomingChat(msg, opponentRole, serverTime, joinedAt):
     if msg.get('type') != 'chat' or msg.get('role') != opponentRole:
         return None
     index, sent = msg.get('id'), msg.get('_time')
     if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(QUICK_CHAT):
         return None
     if isinstance(sent, bool) or not isinstance(sent, (int, float)) or not isinstance(serverTime, (int, float)):
+        return None
+    if not isinstance(joinedAt, (int, float)) or sent < joinedAt - CHAT_FRESH_SECONDS:
         return None
     return index if serverTime - sent <= CHAT_FRESH_SECONDS else None
 
@@ -4919,12 +5095,13 @@ CHAT_TAIL = 8  # how far the bubble's tail reaches toward the strip
 # the panel, over the move list, so it never covers the board or the controls.
 # lift: px it rises above the lower strip, to clear the status slot while a message shows there
 # span: portrait, where the strips lie above and below the board: the bubble goes inside the strip instead, in
-# this free span after the name (drawPlayerStrip), its tail pointing back at the name
+# this free span after the name (drawPlayerStrip), its tail pointing back at the name (it never runs past the span)
 def chatBubbleLayout(text, stripY, below, lift=0, span=None):
     width = min(get_font(scaled(CHAT_TEXT_SIZE), True, True).size(text)[0] + scaled(28), LAYOUT.controlsWidth)
     if span is not None:
-        left = span[0] + CHAT_TAIL + scaled(6)
-        rect = p.Rect(left, 0, max(min(width, span[1] - scaled(6) - left), scaled(60)), scaled(36))
+        left, right = span[0] + CHAT_TAIL + scaled(6), span[1] - scaled(6)
+        rect = p.Rect(left, 0, max(min(width, right - left), scaled(60)), scaled(36))
+        rect.x = min(left, right - rect.width)  # after a very long name it covers the name's end, not the clock
         rect.centery = stripY + LAYOUT.stripHeight // 2
         tail = [(rect.x + 1, rect.centery - 6), (rect.x + 1, rect.centery + 6), (rect.x - CHAT_TAIL, rect.centery)]
         return rect, tail
@@ -4937,6 +5114,16 @@ def chatBubbleLayout(text, stripY, below, lift=0, span=None):
         rect.bottom = stripY - CHAT_TAIL - 2 - lift
         tail = [(tipX - 4, rect.bottom - 2), (tipX + 10, rect.bottom - 2), (tipX, rect.bottom + CHAT_TAIL)]
     return rect, tail
+
+
+# landscape: px the lower strip's bubble rises (chatBubbleLayout's lift) to clear what lies just above that strip
+# (areas: panelAreas): the status message while one shows, and the review info after the game (the status slot is
+# above the info then)
+def chatBubbleLift(areas, statusShown, gameOver):
+    stripY = areas['bottomStrip'].y
+    if statusShown:
+        return stripY - areas['status'].y
+    return stripY - areas['info'].y if gameOver else 0
 
 
 # age: ms since the message came; it fades out over the last CHAT_FADE_MS of CHAT_BUBBLE_MS

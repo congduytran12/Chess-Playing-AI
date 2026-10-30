@@ -185,9 +185,11 @@ def recover(data):
     if isinstance(redirect, str) and re.match(r'^https?://[^\s]{1,300}$', redirect):
         params['redirect_to'] = redirect
     res = supabase('POST', '/auth/v1/recover', params=params, json={'email': email})
-    if res.status_code == 429 or res.status_code >= 500:
+    if res.status_code >= 500:
         raise authUnavailable(res)
-    if res.status_code >= 400:  # e.g. an address the service refuses: still no hint whether it has an account
+    # e.g. an address the service refuses, or 429: GoTrue sends a known address one email a minute and answers a
+    # second request with 429, which an unknown address never gets; so that is no hint whether it has an account
+    if res.status_code >= 400:
         print(f"[account] recover -> {res.status_code} {res.text[:300]}")
     return {'sent': True}
 

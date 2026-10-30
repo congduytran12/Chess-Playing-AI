@@ -94,6 +94,17 @@ class TextFieldTest(unittest.TestCase):
         replaced.paste("abc")
         self.assertEqual(replaced.value, "cba", "onPaste decides what a paste does")
 
+    def test_altgr_types_instead_of_a_shortcut(self):
+        # Windows reports AltGr as left Ctrl + right Alt: AltGr+Q types '@' on a German keyboard, AltGr+V on a Czech one
+        altGr = p.KMOD_LCTRL | p.KMOD_RALT
+        field = TextField("d")
+        field.handleKey(keyEvent(p.K_q, "@", altGr))
+        field.handleKey(keyEvent(p.K_e, "€", altGr))
+        field.handleKey(keyEvent(p.K_v, "@", altGr), clipboard=lambda: "CLIP")
+        self.assertEqual(field.value, "d@€@", "AltGr types its character; AltGr+V doesn't paste")
+        field.handleKey(keyEvent(p.K_v, "\x16", p.KMOD_LCTRL), clipboard=lambda: "x")
+        self.assertEqual(field.value, "d@€@x", "Ctrl+V still pastes")
+
     def test_caret_from_a_click(self):
         field = TextField("rook")
         field.setCaretFromX(Font(), 14, 0)

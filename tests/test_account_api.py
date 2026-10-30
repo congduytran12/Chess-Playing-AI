@@ -119,7 +119,9 @@ class AccountApiTest(unittest.TestCase):
     # --- forgot password
 
     def test_reset_link_is_sent_for_any_email(self):
-        for status in (200, 400, 404, 422):  # unknown or refused addresses look the same as known ones
+        # unknown or refused addresses look the same as known ones; so does asking again within a minute (GoTrue
+        # answers 429 only for a known address)
+        for status in (200, 400, 404, 422, 429):
             with self.subTest(status=status):
                 self.fake.authStatus = status
                 self.assertEqual(api.recover({'email': 'nobody@example.com'}), {'sent': True})
@@ -136,7 +138,7 @@ class AccountApiTest(unittest.TestCase):
         self.assertEqual(self.fake.authCalls[-1][3]['params'], {}, "only web addresses")
 
     def test_reset_link_service_errors(self):
-        for status in (429, 500, 503):
+        for status in (500, 503):
             with self.subTest(status=status):
                 self.fake.authStatus = status
                 with self.assertRaises(api.ApiError) as caught:
