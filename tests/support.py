@@ -12,6 +12,9 @@ if GAME not in sys.path:
     sys.path.insert(0, GAME)
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
+# the computer plays chessAi's own moves in the tests, whether or not Stockfish is installed (test_stockfish.py
+# turns it on with a stand-in engine)
+os.environ['CHESS_NO_STOCKFISH'] = '1'
 
 from engine import GameState, Move, castleRights  # noqa: E402
 

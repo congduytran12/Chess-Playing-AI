@@ -26,7 +26,8 @@ if sys.platform == 'win32':
 import pygame as p
 import chessAi
 from engine import GameState, Move
-from chessAi import findRandomMoves, findBestMove
+from chessAi import findRandomMoves
+import stockfish
 import asyncio
 from network import net
 import pgn
@@ -232,6 +233,7 @@ MOVE_MARKS = [(3.0, "??"), (1.5, "?"), (0.8, "?!")]  # blunder, mistake, inaccur
 EVAL_CAP = 10  # evaluations are capped at +-10 pawns before comparing, so won positions don't flag everything
 # the AI accepts a draw offer only when its evaluation is below this (it is losing)
 AI_DRAW_ACCEPT_SCORE = -1
+DRAW_EVAL_SECONDS = 0.3  # how long Stockfish looks at the position when the player offers a draw
 PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
 # online: the player waiting for the opponent re-sends the game state this often (ms), so a dropped
 # message is noticed and the side that is behind catches up; ntfy.sh allows about one message per 5s
@@ -881,6 +883,7 @@ async def main():
     # the layout follows the browser window's shape (portrait on an upright phone); desktop is always landscape
     setLayout(*layoutFor(browser.viewportSize()))
     screen = openWindow(LAYOUT.size)
+    stockfish.engine.start()  # Stockfish loads in the background; until it answers, the game's own AI plays
     refitCanvas()
     boardSurface = screen.subsurface(LAYOUT.board)  # the board draws here in its own (0, 0) coordinates
     lastLayoutCheck = p.time.get_ticks()  # the window's shape is looked at again every LAYOUT_CHECK_MS
@@ -1088,7 +1091,7 @@ async def main():
             history = [board.getPositionKey()]
             for i in range(len(log) + 1):
                 if moves:
-                    score, best, _ = await chessAi.searchPosition(board, moves, ANALYSIS_SECONDS, history=history)
+                    score, best, _ = await stockfish.searchPosition(board, moves, ANALYSIS_SECONDS, history=history)
                     result['best'].append(best.getCode())
                     result['bestSan'].append(board.getSan(best, moves))
                 else:
@@ -2460,8 +2463,15 @@ async def main():
                                      'confirm': True}
                 elif clicked == 'draw':
                     if currentModeIndex == 0:
-                        aiSign = 1 if playerBlackHuman else -1  # scoreBoard is positive when White is better
-                        if aiSign * chessAi.scoreBoard(gs) < AI_DRAW_ACCEPT_SCORE:
+                        # the computer's view of the position: a short Stockfish search when it is free, or else
+                        # its own count of the material (scoreBoard is positive when White is better)
+                        aiSign = 1 if playerBlackHuman else -1
+                        score = await stockfish.evaluate(gs, DRAW_EVAL_SECONDS)
+                        if score is not None:
+                            score = score if gs.whiteToMove else -score  # for White, like scoreBoard
+                        else:
+                            score = chessAi.scoreBoard(gs)
+                        if aiSign * score < AI_DRAW_ACCEPT_SCORE:
                             gameResult = ('Draw by agreement', '1/2-1/2')
                         else:
                             showStatus("The computer declines the draw")
@@ -2683,7 +2693,7 @@ async def main():
             stopAI()  # the position it was searching is gone
         if aiTurn and aiSearch is None:
             board = copyGame(gs)
-            aiSearch = {'task': asyncio.ensure_future(findBestMove(board, board.getValidMoves(),
+            aiSearch = {'task': asyncio.ensure_future(stockfish.findBestMove(board, board.getValidMoves(),
                                                                    history=list(positionHistory))),
                         'gs': gs, 'ply': len(gs.moveLog), 'started': p.time.get_ticks()}
         elif aiTurn and aiSearch['task'].done() and p.time.get_ticks() - aiSearch['started'] >= AI_MIN_THINK_MS:
@@ -2720,7 +2730,8 @@ async def main():
         elif hintState == 'searching':
             hintState = None
             if humanTurn and not gameOver and gameResult is None and validMoves:
-                _, suggestion, _ = await chessAi.searchPosition(gs, validMoves, HINT_SECONDS, history=positionHistory)
+                _, suggestion, _ = await stockfish.searchPosition(gs, validMoves, HINT_SECONDS,
+                                                                  history=positionHistory)
                 if suggestion is None:
                     suggestion = findRandomMoves(validMoves)
                 hintMove = suggestion

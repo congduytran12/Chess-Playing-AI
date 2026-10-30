@@ -22,7 +22,7 @@ Build the web (WASM) bundle. This is what Vercel runs. The output goes to `game/
 npm run build
 ```
 
-The build pins pygbag 0.9.3. It also downloads the pygbag runtime JS files locally and uses `sed` to rewrite `index.html` so the page loads them from the local copies instead of the CDN. Keep those versions in sync if you change one.
+The build pins pygbag 0.9.3. It also downloads stockfish.js 17.1.0 (the lite single-threaded build, its `.wasm` and its GPL license) from unpkg into `game/build/web/stockfish/` (jsDelivr refuses the package: it is over 150 MB), and the pygbag runtime JS files locally and uses `sed` to rewrite `index.html` so the page loads them from the local copies instead of the CDN. Keep those versions in sync if you change one.
 
 Run the tests from the repository root (standard library `unittest`, no extra packages; the account API tests need `flask` and `requests`, and the UI tests need `pygame`):
 
@@ -30,12 +30,13 @@ Run the tests from the repository root (standard library `unittest`, no extra pa
 python -m unittest discover -s tests
 ```
 
-They cover move generation (perft counts), the AI search, PGN, network message handling, the hint and settings storage, the account API against an in-memory Supabase stand-in, and the game loop itself, run headless with scripted clicks. There is no linter configured.
+They cover move generation (perft counts), the AI search, the Stockfish bridge (against a stand-in UCI engine; `tests/support.py` sets `CHESS_NO_STOCKFISH=1`, so every other test plays `chessAi`'s moves whether or not Stockfish is installed), PGN, network message handling, the hint and settings storage, the account API against an in-memory Supabase stand-in, and the game loop itself, run headless with scripted clicks. There is no linter configured.
 
 ## Architecture
 
 - `game/engine.py`: rules engine. `GameState` holds an 8×8 board of two-character strings (`'wK'`, `'bp'`, `'--'` for empty). It handles move generation with pin/check detection (`checkForPinsAndChecks`), castling rights, en passant, and draw detection (50-move rule, insufficient material, position keys for threefold repetition). `Move` stores a move, including its `promotionChoice`. Game moves go through `makeMoveWithSan`, which records standard algebraic notation in `move.san`; `findMoveBySan` parses it back. The AI search calls plain `makeMove`. Every state change in `makeMove` must be reversed in `undoMove`, because the AI search depends on make/undo.
-- `game/chessAi.py`: the AI.
+- `game/stockfish.py`: Stockfish, which plays the computer's moves, finds the hints and analyzes finished games. The `engine` singleton (`Engine`) speaks UCI to stockfish.js in a Web Worker in the browser (`WORKER_URL`, JS helpers through `js.eval`, polled) or, on desktop, to a native executable (`findExecutable()`: `STOCKFISH_PATH`, `stockfish` on PATH, or the repository's `engines/` folder, which git ignores) read by a thread. `main()` calls `engine.start()` once; the handshake runs in the background (`state`: 'off', 'starting', 'ready', 'failed'). Positions go as `position startpos moves ...` from `Move.getCode`, so Stockfish sees repetitions. `findBestMove(gs, validMoves, level)` (held to `LEVEL_ELO[level]` with `UCI_LimitStrength`, for `chessAi.LEVELS[level]`'s time), `searchPosition(gs, validMoves, seconds)` (full strength; hints and the analysis) and `evaluate(gs, seconds)` (the draw-offer decision; None while busy) have `chessAi`'s shapes and fall back to `chessAi` when Stockfish isn't ready within `READY_WAIT` or fails. One search runs at a time (a lock); a cancelled search is stopped, and the next one reads its `bestmove` before starting.
+- `game/chessAi.py`: the game's own AI, used when Stockfish isn't there.
   - **Search:** `searchPosition()` runs NegaMax with alpha-beta pruning by iterative deepening until a time budget runs out, then returns the best move of the last finished depth. It adds quiescence search over captures and promotions, check extensions, a transposition table keyed by `GameState.getPositionKey()`, killer and history move ordering, null move pruning (`makeNullMove` passes the turn, and must be undone even on a timeout), late move reductions, and repetition detection against the game's position history. A depth cut off by the clock still contributes the best move it found so far.
   - **Levels:** `findBestMove()` plays from the opening book (`BOOK_LINES`, built on first use) while it can. After that it searches with the settings in `LEVELS[LEVEL]`: time, depth cap, and root noise that makes the lower levels beatable. `main.py` sets `chessAi.LEVEL` from the difficulty dropdown.
   - **Responsiveness:** the search raises `SearchTimeout` when time runs out, and the caller undoes back to the root. It yields to the browser every `YIELD_SECONDS`.

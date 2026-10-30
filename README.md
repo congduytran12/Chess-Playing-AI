@@ -1,6 +1,6 @@
 # Chess
 
-A chess game written in Python with Pygame. You can play against a built-in AI, against a friend on the same screen, or online with a room code. It runs on the desktop and in the browser (Python compiled to WebAssembly with pygbag).
+A chess game written in Python with Pygame. You can play against the computer (Stockfish), against a friend on the same screen, or online with a room code. It runs on the desktop and in the browser (Python compiled to WebAssembly with pygbag).
 
 ![Untitled video - Made with Clipchamp](https://github.com/anuragjain-git/chess/assets/98457054/bfdea7e5-502b-4852-a2c9-115ea32e45da)
 
@@ -16,18 +16,20 @@ Switch modes with the **Mode** dropdown:
 
 ### The AI
 
-- **Thinks for a set time:** each level has a time budget (from 0.3 s on Easy to 5 s on Impossible). The AI searches one move deeper at a time until the budget runs out, so it never freezes the game, even in the browser. Easy and Normal also add some randomness, so they stay beatable.
-- **Search:** NegaMax with alpha-beta pruning. It also:
+- **Stockfish:** the computer's moves, the hints and the game analysis come from [Stockfish](https://stockfishchess.org/). In the browser it is [stockfish.js](https://github.com/nmrugg/stockfish.js) (17.1, the lite single-threaded build), which runs in the background while you play. On the desktop the game uses a Stockfish program on your computer (see [Installation](#installation--how-to-play)).
+- **Levels:** each level holds Stockfish to a playing strength: about 1320 Elo on Easy, 1600 on Normal, 1900 on Hard and 2300 on Very Hard. Impossible is full strength. Each level also has a time budget, from 0.3 s on Easy to 5 s on Impossible. Hints and the analysis always use full strength.
+- **The built-in AI:** when there is no Stockfish (a desktop without it, or a browser that can't load it), the game's own AI plays instead. It thinks for the same time budgets, searching one move deeper at a time, so it never freezes the game. Easy and Normal also add some randomness, so they stay beatable.
+- **The built-in AI's search:** NegaMax with alpha-beta pruning. It also:
   - keeps following captures past the normal search depth, so it doesn't misjudge trades
   - follows checking sequences further, so it sees mating attacks
   - remembers positions it has already searched
   - avoids repeating positions when it's winning
-- **Opening book:** the first moves come from 32 common openings, picked at random, so games don't all start the same way.
+- **The built-in AI's opening book:** its first moves come from 32 common openings, picked at random, so games don't all start the same way.
 
 ### Playing a game
 
 - **Chess clock:** play untimed or with 1+0, 3+2, 5+0, 10+5, or 15+10. Running out of time loses, unless your opponent has only a king left, in which case it's a draw.
-- **Hints:** the **Hint** button highlights a good move for you (not available online).
+- **Hints:** the **Hint** button highlights a good move for you, up to 5 times a day (online too, on your turn).
 - **Resign or offer a draw:** against the AI, the computer accepts a draw only when it's losing. In 2-player and online games, the opponent gets an Accept / Decline prompt.
 - **Undo:** use the button or press `Z`. Against the AI, it takes back your last move and the AI's reply. Online, it asks your opponent first.
 - **On the board:** the last move and a king in check are highlighted. Each player's panel shows the pieces they've captured, the material lead, and their clock.
@@ -110,7 +112,9 @@ In chess, pawn promotion occurs when a pawn reaches the eighth rank. The pawn ca
    pip install -r requirements.txt
    ```
 
-3. Start the game from inside the `game` folder (the game loads its images, sounds, and fonts from there):
+3. Optional, for Stockfish: download Stockfish from [stockfishchess.org](https://stockfishchess.org/download/) and either put the program in the repository's `engines/` folder, install it so `stockfish` is on your `PATH`, or set the `STOCKFISH_PATH` environment variable to it. Without it, the desktop game uses its built-in AI.
+
+4. Start the game from inside the `game` folder (the game loads its images, sounds, and fonts from there):
    ```bash
    python main.py
    ```
@@ -123,7 +127,9 @@ The browser version is built with [pygbag](https://github.com/pygame-web/pygbag)
 npm run build
 ```
 
-The output goes to `game/build/web`.
+The output goes to `game/build/web`. The build also downloads stockfish.js and its `.wasm` file into `game/build/web/stockfish/`.
+
+Stockfish and stockfish.js are licensed under the GNU GPL v3; the build copies the license next to them (`stockfish/Copying.txt`).
 
 ### Setting up accounts
 
