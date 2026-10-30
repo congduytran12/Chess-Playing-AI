@@ -557,6 +557,7 @@ async def pawnPromotionPopup(screen, color, row, col, flip=False):
 # names of the panel controls, row by row from the top; which controls exist depends on the mode
 # graph: after the game, once an analysis exists, its evaluation graph replaces the Analyze game button
 # guest: online in a room as the guest, who has no invite link to copy (only the host invites)
+# online in a room the hint shares the row of Copy link and Chat
 def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=False, guest=False):
     if modeIndex == 0:  # Local vs AI
         rows = [['mode'], ['level', 'side'], ['clock', 'hint']]
@@ -566,8 +567,8 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
         rows = [['mode'], ['room', 'clock'], ['host', 'join']]
         if canRejoin:
             rows.append(['rejoin'])
-    else:  # Online, in a room: Copy link (host) and the quick chat under the room's line
-        rows = [['mode'], ['roomInfo'], ['chat'] if guest else ['invite', 'chat']]
+    else:  # Online, in a room: Copy link (host), the quick chat and the hint under the room's line
+        rows = [['mode'], ['roomInfo'], ['chat', 'hint'] if guest else ['invite', 'chat', 'hint']]
     if reviewing:  # after the game: analysis and stepping through the moves
         rows += [['graph' if graph else 'analyze'], ['first', 'prev', 'next', 'last']]
     elif modeIndex != 2 or connected:  # online without a room there is no game to resign or draw yet
@@ -659,10 +660,10 @@ MENU_PADDING = 6  # between the items and the menu's frame, and between the fram
 
 
 # a list that opens upwards from its button like a dropdown, its frame right-aligned with it (the menu's button is
-# narrow): the rects of the items named in names, top to bottom
+# narrow), but never out past the controls' left edge: the rects of the items named in names, top to bottom
 def popupItemRects(buttonRect, names):
     count, width, height = len(names), LAYOUT.menuWidth, LAYOUT.rowHeight
-    x = buttonRect.right - MENU_PADDING - width
+    x = max(buttonRect.right - MENU_PADDING - width, LAYOUT.controlsX + MENU_PADDING)
     bottom = buttonRect.y - 2 * MENU_PADDING
     return {name: p.Rect(x, bottom - (count - i) * height - (count - 1 - i) * MENU_GAP, width, height)
             for i, name in enumerate(names)}
@@ -1451,7 +1452,8 @@ async def main():
         inProgress = not gameOver
         online = currentModeIndex == 2
         return {
-            'hint': inProgress and humanTurn and not online and hintState is None and hints.remaining() > 0,
+            'hint': (inProgress and humanTurn and (not online or networkConnected) and hintState is None
+                     and hints.remaining() > 0),
             'resign': inProgress and (not online or networkConnected),
             'draw': inProgress and (not online or networkConnected) and pendingPrompt is None,
             'undo': not online or networkConnected,
@@ -4777,8 +4779,8 @@ def disabledReason(name, gameOver=False, online=False, connected=False, humanTur
     if name == 'hint':
         if gameOver:
             return "The game is over"
-        if online:
-            return "Hints are off in online games"
+        if online and not connected:
+            return "Join a room first"
         if hintsLeft <= 0:
             return "No hints left today"
         if hintBusy:

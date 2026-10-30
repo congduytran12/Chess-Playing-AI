@@ -522,7 +522,8 @@ class GameLoopTest(unittest.TestCase):
                         self.assertTrue(main.tooltipText(name), name)
         self.assertEqual(reason('hint', hintsLeft=0), "No hints left today")
         self.assertEqual(reason('hint', humanTurn=False), "Wait for your turn")
-        self.assertEqual(reason('hint', online=True), "Hints are off in online games")
+        self.assertEqual(reason('hint', online=True), "Join a room first")
+        self.assertIsNone(reason('hint', online=True, connected=True), "hints work in an online game")
         self.assertEqual(reason('hint', gameOver=True), "The game is over")
         self.assertIsNone(reason('hint'))
         self.assertEqual(reason('save'), "Make a move first")
@@ -535,7 +536,7 @@ class GameLoopTest(unittest.TestCase):
         self.assertIsNone(reason('join', roomCode="AB12"))
         screen = (main.BOARD_WIDTH + main.MOVE_LOG_PANEL_WIDTH, main.BOARD_HEIGHT)
         for pos in ((0, 0), (screen[0] - 1, screen[1] - 1), (screen[0] - 1, 0), (0, screen[1] - 1)):
-            rect = main.tooltipRect("Hints are off in online games", pos, screen)
+            rect = main.tooltipRect("Ask your opponent to undo (Z)", pos, screen)
             self.assertTrue(p.Rect(0, 0, *screen).contains(rect), pos)
             self.assertFalse(rect.collidepoint(pos), "the tooltip doesn't cover the pointer")
 
@@ -2609,7 +2610,9 @@ class GameLoopTest(unittest.TestCase):
         self.assertIn('invite', host)
         guest = main.panelLayout(2, True, guest=True)
         self.assertNotIn('invite', guest, "only the host invites")
-        self.assertEqual(guest['chat'].width, main.CONTROL_WIDTH)
+        self.assertEqual((host['chat'].y, host['hint'].y), (host['invite'].y, host['invite'].y), "one row")
+        self.assertEqual(guest['chat'].y, guest['hint'].y)
+        self.assertAlmostEqual(guest['chat'].width, guest['hint'].width, delta=1, msg="half the row each")
         for layout in (host, guest):
             for rect in main.chatItemRects(layout['chat']).values():
                 self.assertTrue(panel.contains(rect), "the chat list stays in the panel")
@@ -2807,6 +2810,42 @@ class GameLoopTest(unittest.TestCase):
             restoreRoom()
         self.assertIsNotNone(seen['result'], "the host resigned")
         self.assertEqual(seen['next game'], ['game-start'])
+
+    def test_hint_in_an_online_game(self):
+        main = self.main
+        import hints
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            layout = main.panelLayout(2, True)
+            await self.click(layout['hint'].center, 2.5)  # the host plays White: their turn
+            seen['hint'] = {text for text in shown['status'] if text.startswith("Hint: ")}
+            seen['left'] = hints.remaining()
+            await self.move((6, 4), (4, 4), 0.5)
+            await self.click(layout['hint'].center, 0.3)  # now it's the guest's turn
+            seen['waiting'] = shown['status'][-1]
+            await self.click(layout['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            restoreRoom()
+            hints._store({})
+            hints._saved = None
+        self.assertEqual(len(seen['hint']), 1, "the hint was shown")
+        self.assertEqual(seen['left'], hints.HINTS_PER_DAY - 1, "and counted")
+        self.assertEqual(seen['waiting'], "Wait for your turn")
 
     def test_copy_link_and_quick_chat(self):
         main = self.main
