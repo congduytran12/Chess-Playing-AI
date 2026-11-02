@@ -1,0 +1,318 @@
+# Vietnamese (see i18n.py). EXACT: English text -> Vietnamese. TEMPLATES: English text with %s, %d, %+d or %.1f ->
+# Vietnamese with {0}, {1}... for them; a part that is itself a text of the game (a color, a level) is translated too.
+# Chess words: King Vua, Queen Hậu, Rook Xe, Bishop Tượng, Knight Mã, Pawn Tốt, check chiếu, checkmate chiếu hết,
+# castling nhập thành, en passant bắt tốt qua đường, promotion phong cấp, draw hòa.
+
+EXACT = {
+    # modes, levels, sides
+    "Local vs AI": "Chơi với máy", "Local 2-Player": "Hai người chơi", "Online Multiplayer": "Chơi trực tuyến",
+    "Puzzles": "Câu đố",
+    "Easy": "Dễ", "Normal": "Thường", "Hard": "Khó", "Very Hard": "Rất khó", "Impossible": "Bất khả",
+    "White": "Trắng", "Black": "Đen", "Random": "Ngẫu nhiên", "Off": "Tắt", "On": "Bật",
+    "Green": "Xanh lá", "Brown": "Nâu", "Gray": "Xám", "Modern": "Hiện đại", "Classic": "Cổ điển",
+    # panel
+    "Host (White)": "Tạo phòng (Trắng)", "Join (Black)": "Vào phòng (Đen)", "Room code": "Mã phòng",
+    "Resign": "Xin thua", "Offer Draw": "Đề nghị hòa", "Undo": "Đi lại", "Restart": "Chơi lại",
+    "Copy link": "Chép liên kết", "Chat": "Trò chuyện", "Analyze game": "Phân tích ván", "Hint": "Gợi ý",
+    "Skip": "Bỏ qua", "Next puzzle": "Câu tiếp theo", "Sign in": "Đăng nhập", "Account": "Tài khoản",
+    "not here yet": "chưa vào", "may have left": "có thể đã rời đi",
+    "You": "Bạn", "Opponent": "Đối thủ", "Player": "Người chơi", "Host": "Chủ phòng", "Guest": "Khách",
+    # menu and windows
+    "Save game (PGN)": "Lưu ván (PGN)", "Load game (PGN)": "Mở ván (PGN)", "Flip board (F)": "Xoay bàn cờ (F)",
+    "Settings": "Cài đặt", "How to play (H)": "Hướng dẫn chơi (H)", "How to play": "Hướng dẫn chơi",
+    "Accept": "Đồng ý", "Decline": "Từ chối", "Cancel": "Hủy", "Join": "Vào", "Leave": "Rời", "Stay": "Ở lại",
+    "Close": "Đóng", "Back": "Quay lại", "Next": "Tiếp", "Show": "Hiện", "Hide": "Ẩn",
+    # quick chat
+    "Hello!": "Xin chào!", "Good luck!": "Chúc may mắn!", "Good game!": "Ván hay!", "Thanks!": "Cảm ơn!",
+    "Well played!": "Chơi hay lắm!", "Oops": "Ối", "One moment, please": "Chờ một chút nhé",
+    # status and prompts
+    "Premove canceled: no longer legal": "Đã hủy nước đi trước: không còn hợp lệ",
+    "You're in check: move the king, block, or capture": "Bạn đang bị chiếu: di chuyển vua, chặn hoặc bắt quân chiếu",
+    "That would leave your king in check": "Nước đó sẽ để vua bạn bị chiếu",
+    "No puzzles found": "Không tìm thấy câu đố",
+    "Solved!": "Đã giải được!",
+    "Solved, after a mistake: your rating stays": "Đã giải, sau một lần sai: điểm của bạn giữ nguyên",
+    "Not that one. Try again": "Chưa đúng. Thử lại nhé",
+    "Hint: move the piece shown. Solving it with a hint doesn't change your rating":
+        "Gợi ý: đi quân được chỉ. Giải bằng gợi ý thì điểm không đổi",
+    "Leave this room?": "Rời khỏi phòng này?", "Start a new game?": "Bắt đầu ván mới?",
+    "Invite link copied: send it to your friend": "Đã chép liên kết mời: hãy gửi cho bạn của bạn",
+    "New game started": "Đã bắt đầu ván mới", "Undo accepted": "Đã đồng ý cho đi lại",
+    "Not in puzzles": "Không dùng được trong câu đố", "The puzzle is solved": "Câu đố đã được giải",
+    "Games from a custom start position aren't supported": "Chưa hỗ trợ ván bắt đầu từ thế cờ tùy chọn",
+    "Please wait...": "Vui lòng chờ...",
+    "That doesn't look like an email address": "Đây không giống địa chỉ email",
+    "This reset link has expired, ask for a new one": "Liên kết đặt lại này đã hết hạn, hãy xin liên kết mới",
+    "Check your email to confirm the account, then sign in": "Hãy kiểm tra email để xác nhận tài khoản, rồi đăng nhập",
+    "Password changed. Sign in with the new password": "Đã đổi mật khẩu. Hãy đăng nhập bằng mật khẩu mới",
+    "Leave online play to open a saved game": "Hãy thoát chế độ trực tuyến để mở ván đã lưu",
+    "Signed out": "Đã đăng xuất", "Game saved to your account": "Đã lưu ván vào tài khoản của bạn",
+    "Result sent; ratings change when your opponent confirms it":
+        "Đã gửi kết quả; điểm sẽ đổi khi đối thủ xác nhận",
+    "Not rated: you already played 3 rated games against this player today":
+        "Không tính điểm: hôm nay bạn đã chơi 3 ván tính điểm với người này",
+    "Opponent requested an undo": "Đối thủ xin đi lại", "Opponent declined the undo": "Đối thủ từ chối cho đi lại",
+    "Opponent offers a draw": "Đối thủ đề nghị hòa", "Opponent declined the draw": "Đối thủ từ chối hòa",
+    "Draw by agreement": "Hòa do thỏa thuận", "Draw declined": "Đã từ chối hòa",
+    "Undo request sent": "Đã gửi yêu cầu đi lại", "Resign this game?": "Xin thua ván này?",
+    "The computer declines the draw": "Máy từ chối hòa", "Draw offer sent": "Đã gửi lời đề nghị hòa",
+    "Host or join a room to start a game": "Hãy tạo hoặc vào một phòng để bắt đầu ván",
+    "Click the board after the game for a new one, or Restart to leave the room":
+        "Sau ván, nhấp vào bàn cờ để chơi ván mới, hoặc Chơi lại để rời phòng",
+    "Connecting to the server...": "Đang kết nối tới máy chủ...",
+    "Waiting for your opponent: send the link or the code": "Đang chờ đối thủ: hãy gửi liên kết hoặc mã phòng",
+    "Waiting for the host to answer...": "Đang chờ chủ phòng trả lời...",
+    "Opponent connected": "Đối thủ đã kết nối",
+    "That email link has expired or was already used. Ask for a new one":
+        "Liên kết email này đã hết hạn hoặc đã được dùng. Hãy xin liên kết mới",
+    "That email link didn't work. Ask for a new one": "Liên kết email này không dùng được. Hãy xin liên kết mới",
+    # results
+    "Draw by threefold repetition": "Hòa do lặp lại thế cờ ba lần", "Draw by 50-move rule": "Hòa theo luật 50 nước",
+    "Draw by insufficient material": "Hòa do không đủ quân để chiếu hết",
+    "Black wins by checkmate": "Đen thắng do chiếu hết", "White wins by checkmate": "Trắng thắng do chiếu hết",
+    "Stalemate": "Hòa do hết nước đi", "Black wins by resignation": "Đen thắng do đối phương xin thua",
+    "White wins by resignation": "Trắng thắng do đối phương xin thua",
+    "Draw: time out vs lone king": "Hòa: hết giờ khi đối phương chỉ còn vua",
+    "White wins on time": "Trắng thắng do hết giờ", "Black wins on time": "Đen thắng do hết giờ",
+    "New game": "Ván mới", "Switch sides": "Đổi bên", "Rematch": "Đấu lại",
+    "Click the board to see the final position": "Nhấp vào bàn cờ để xem thế cờ cuối",
+    "Tap the board to see the final position": "Chạm vào bàn cờ để xem thế cờ cuối",
+    # accounts
+    "Sign in": "Đăng nhập", "Create an account": "Tạo tài khoản", "My games": "Ván của tôi",
+    "Leaderboard": "Bảng xếp hạng", "Reset your password": "Đặt lại mật khẩu", "Choose a new password": "Chọn mật khẩu mới",
+    "Enter your account's email, and we'll send you a link to choose a new password.":
+        "Nhập email của tài khoản, chúng tôi sẽ gửi liên kết để chọn mật khẩu mới.",
+    "Type a new password for your account. You'll stay signed in on this device.":
+        "Nhập mật khẩu mới cho tài khoản. Bạn sẽ vẫn đăng nhập trên thiết bị này.",
+    "You'll stay signed in on this device.": "Bạn sẽ vẫn đăng nhập trên thiết bị này.",
+    "Create account": "Tạo tài khoản", "Send reset link": "Gửi liên kết đặt lại", "Save password": "Lưu mật khẩu",
+    "No account yet? Create one": "Chưa có tài khoản? Tạo một tài khoản", "Already registered? Sign in": "Đã đăng ký? Đăng nhập",
+    "Back to sign in": "Quay lại đăng nhập", "Ask for a new link": "Xin liên kết mới", "Sign out": "Đăng xuất",
+    "If that email has an account, a reset link is on its way. Check your inbox.":
+        "Nếu email này có tài khoản, liên kết đặt lại đang được gửi. Hãy kiểm tra hộp thư.",
+    "Play online games while signed in to get rated": "Chơi trực tuyến khi đã đăng nhập để có điểm xếp hạng",
+    "Your results": "Kết quả của bạn", "Drawn": "Hòa", "Won": "Thắng", "Lost": "Thua", "Draw": "Hòa",
+    "Games you finish while signed in are counted here": "Các ván bạn hoàn thành khi đã đăng nhập được tính ở đây",
+    "Online": "Trực tuyến", "Username (3-20 letters, digits or _)": "Tên người dùng (3-20 chữ, số hoặc _)",
+    "Email": "Email", "Email or username": "Email hoặc tên người dùng", "Password": "Mật khẩu",
+    "Password (at least 8 characters)": "Mật khẩu (ít nhất 8 ký tự)",
+    "New password (at least 8 characters)": "Mật khẩu mới (ít nhất 8 ký tự)", "Forgot password?": "Quên mật khẩu?",
+    "Local game": "Ván cục bộ", "No saved games yet": "Chưa có ván nào được lưu", "Nobody is rated yet": "Chưa có ai có điểm",
+    "Unfinished": "Chưa xong", "White won": "Trắng thắng", "Black won": "Đen thắng",
+    "Accounts aren't available here": "Không dùng được tài khoản ở đây", "The server didn't answer": "Máy chủ không trả lời",
+    "Can't reach the server": "Không kết nối được máy chủ", "Not signed in": "Chưa đăng nhập",
+    "Invalid login credentials": "Sai thông tin đăng nhập", "Sign-in failed": "Đăng nhập thất bại",
+    "Your session expired, please sign in again": "Phiên đăng nhập đã hết hạn, hãy đăng nhập lại",
+    "Please sign in again": "Hãy đăng nhập lại",
+    "The account service is busy, please try again": "Dịch vụ tài khoản đang bận, hãy thử lại",
+    "Database error": "Lỗi cơ sở dữ liệu", "This account has no profile": "Tài khoản này chưa có hồ sơ",
+    "Usernames are 3-20 letters, digits or _": "Tên người dùng gồm 3-20 chữ, số hoặc _",
+    "That username is taken": "Tên người dùng này đã có người dùng",
+    "Accounts are not set up on this server": "Máy chủ này chưa bật tài khoản", "Unknown action": "Thao tác không rõ",
+    "Game not found": "Không tìm thấy ván", "You didn't play in this game": "Bạn không chơi trong ván này",
+    # settings
+    "Board": "Bàn cờ", "Game": "Ván", "Board colors": "Màu bàn cờ", "Pieces": "Quân cờ", "Coordinates": "Tọa độ",
+    "Move hints": "Gợi ý nước đi", "Last move": "Nước vừa đi", "Animation": "Hiệu ứng", "Theme": "Giao diện",
+    "Sound": "Âm thanh", "Volume": "Âm lượng", "Notation": "Ký hiệu", "Premoves": "Đi trước", "Language": "Ngôn ngữ",
+    "Fast": "Nhanh", "Slow": "Chậm", "Light": "Sáng", "Dark": "Tối", "Letters": "Chữ cái", "Figurines": "Hình quân",
+    "Muted": "Tắt tiếng",
+    "Colors of the board's squares": "Màu các ô của bàn cờ", "The look of the pieces": "Kiểu dáng quân cờ",
+    "Letters and numbers along the board's edges": "Chữ và số dọc theo cạnh bàn cờ",
+    "Dots and rings where the selected piece can go": "Chấm và vòng ở nơi quân đang chọn có thể đi tới",
+    "Color the squares of the last move": "Tô màu các ô của nước vừa đi", "How fast the pieces slide": "Quân cờ trượt nhanh đến đâu",
+    "Colors of the side panel and the windows": "Màu của bảng bên và các cửa sổ",
+    "Sounds of moves, checks and the game's start and end": "Âm thanh của nước đi, chiếu và lúc bắt đầu, kết thúc ván",
+    "How loud the sounds are": "Âm thanh to đến đâu",
+    "Moves in the list as letters (Nf3) or small pieces": "Nước đi trong danh sách bằng chữ (Nf3) hoặc hình quân nhỏ",
+    "Choose your next move while the opponent is thinking": "Chọn trước nước đi khi đối thủ đang nghĩ",
+    "The language of the game's texts": "Ngôn ngữ của các dòng chữ trong trò chơi",
+    # tooltips
+    "Play the computer, a friend here, or online": "Chơi với máy, với bạn tại chỗ, hoặc trực tuyến",
+    "How strong the computer plays": "Máy chơi mạnh đến đâu", "Your color against the computer": "Màu quân của bạn khi chơi với máy",
+    "Time for each player: minutes + seconds per move": "Thời gian mỗi người: phút + số giây cộng thêm mỗi nước",
+    "Show a good move on the board": "Hiện một nước đi tốt trên bàn cờ",
+    "Skip this puzzle (it counts as a miss), or go on to the next": "Bỏ qua câu đố này (tính là sai), hoặc sang câu tiếp",
+    "Type or paste the room code your friend sent": "Gõ hoặc dán mã phòng bạn của bạn đã gửi",
+    "Create a room and play White": "Tạo phòng và chơi quân Trắng", "Join this room and play Black": "Vào phòng này và chơi quân Đen",
+    "Go back to your last room": "Quay lại phòng gần nhất của bạn", "Copy an invite link to send your friend": "Chép liên kết mời để gửi cho bạn",
+    "Send your opponent a quick message": "Gửi đối thủ một tin nhắn nhanh", "Save this game as a PGN file": "Lưu ván này thành tệp PGN",
+    "Open a game from a PGN file": "Mở một ván từ tệp PGN", "Give up this game": "Bỏ cuộc ván này",
+    "Offer your opponent a draw": "Đề nghị đối thủ hòa", "Let the computer mark the mistakes": "Để máy đánh dấu các nước sai",
+    "White is ahead above the line. Click or drag to see a move": "Trắng hơn khi ở trên đường kẻ. Nhấp hoặc kéo để xem một nước đi",
+    "First move": "Nước đầu", "Previous move (Left)": "Nước trước (Trái)", "Next move (Right)": "Nước sau (Phải)",
+    "Last move (End)": "Nước cuối (End)", "Undo (Z)": "Đi lại (Z)", "Restart (R)": "Chơi lại (R)",
+    "Sign in to save games and get rated": "Đăng nhập để lưu ván và có điểm xếp hạng",
+    "More: save, load, flip board, settings, help": "Thêm: lưu, mở, xoay bàn cờ, cài đặt, trợ giúp",
+    "Turn the board around (F)": "Xoay bàn cờ (F)", "Board, pieces, theme and sound": "Bàn cờ, quân cờ, giao diện và âm thanh",
+    "Ask your opponent to undo (Z)": "Xin đối thủ cho đi lại (Z)", "Leave the room": "Rời khỏi phòng",
+    "Your games, record and rating": "Ván, thành tích và điểm của bạn",
+    "The game is over": "Ván đã kết thúc", "Join a room first": "Hãy vào một phòng trước",
+    "No hints left today": "Hôm nay hết lượt gợi ý", "Looking for a good move...": "Đang tìm nước đi tốt...",
+    "Wait for your turn": "Hãy chờ đến lượt bạn", "Answer the open question first": "Hãy trả lời câu hỏi đang mở trước",
+    "No game yet": "Chưa có ván nào", "Make a move first": "Hãy đi một nước trước", "Leave online play first": "Hãy thoát chế độ trực tuyến trước",
+    "Type a room code first": "Hãy gõ mã phòng trước", "Wait a moment": "Chờ một chút",
+    "The game is already analyzed": "Ván đã được phân tích", "The analysis is running": "Đang phân tích",
+    "This is the start of the game": "Đây là đầu ván", "This is the final position": "Đây là thế cờ cuối",
+    # puzzles and lists
+    "Solved after a mistake": "Giải được sau một lần sai", "Solved with a hint": "Giải được nhờ gợi ý",
+    "Play online": "Chơi trực tuyến", "You play Black": "Bạn chơi quân Đen", "Waiting for your friend": "Đang chờ bạn của bạn",
+    "White moves first": "Trắng đi trước", "Your move": "Đến lượt bạn",
+    "Host a game to get a room code, or type the code your friend sent and press Join.":
+        "Hãy tạo phòng để có mã phòng, hoặc gõ mã bạn của bạn gửi rồi nhấn Vào.",
+    "The menu has How to play.": "Trong menu có phần Hướng dẫn chơi.", "Press H for How to play.": "Nhấn H để xem Hướng dẫn chơi.",
+    "Drag a piece, or click it and then a square.": "Kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
+    "Drag a piece, or tap it and then a square.": "Kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
+    "White moves first. Drag a piece, or click it and then a square.":
+        "Trắng đi trước. Kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
+    "White moves first. Drag a piece, or tap it and then a square.":
+        "Trắng đi trước. Kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
+    "You play White. Send the link or the room code, then drag a piece, or click it and then a square.":
+        "Bạn chơi quân Trắng. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
+    "You play White. Send the link or the room code, then drag a piece, or tap it and then a square.":
+        "Bạn chơi quân Trắng. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
+    "Drag a piece, or click it and then a square. Press H for How to play.":
+        "Kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô. Nhấn H để xem Hướng dẫn chơi.",
+    "Drag a piece, or tap it and then a square. The menu has How to play.":
+        "Kéo một quân, hoặc chạm vào quân rồi chạm vào một ô. Trong menu có phần Hướng dẫn chơi.",
+    "No mistakes found": "Không thấy nước sai nào", "no mistakes": "không sai nước nào", "Start position": "Thế cờ ban đầu",
+    "the start position": "thế cờ ban đầu", "Blunder": "Sai lầm nặng", "Mistake": "Sai lầm", "Inaccuracy": "Thiếu chính xác",
+    "Analyzing the game...": "Đang phân tích ván...", "Step through the moves with the arrow keys": "Duyệt các nước đi bằng phím mũi tên",
+    "Checkmate": "Chiếu hết", "   Checkmate": "   Chiếu hết",
+    # how to play
+    "The goal": "Mục tiêu", "Checkmate wins": "Chiếu hết là thắng",
+    "Attack the opponent's king so that it has no way to escape. You may never leave your own king under attack.":
+        "Tấn công vua của đối thủ sao cho nó không còn đường thoát. Bạn không bao giờ được để vua của mình bị tấn công.",
+    "Taking turns": "Lần lượt đi",
+    "White moves first, then the players take turns, one move each. Click one of your pieces, then a square it can go to, or drag it there (see On the board).":
+        "Trắng đi trước, rồi hai bên lần lượt đi, mỗi lần một nước. Nhấp vào một quân của bạn, rồi nhấp vào ô nó có thể đi tới, hoặc kéo quân tới đó (xem phần Trên bàn cờ).",
+    "Capturing": "Bắt quân",
+    "Move onto an opponent's piece to take it. The pieces each side has taken, and who is ahead in material, are shown next to the players' names.":
+        "Đi vào ô có quân của đối thủ để bắt nó. Các quân mỗi bên đã bắt, và bên nào hơn quân, được hiện cạnh tên người chơi.",
+    "Draws": "Hòa",
+    "No legal move while not in check (stalemate), the same position three times, 50 moves each without a capture or pawn move, too few pieces left to checkmate, or a draw both players agree to.":
+        "Không còn nước đi hợp lệ mà không bị chiếu (hết nước), cùng một thế cờ ba lần, mỗi bên đi 50 nước mà không bắt quân hay đi tốt, còn quá ít quân để chiếu hết, hoặc cả hai người chơi đồng ý hòa.",
+    "How the pieces move": "Cách các quân đi",
+    "King": "Vua", "One square in any direction.": "Một ô theo mọi hướng.",
+    "Queen": "Hậu", "Any number of squares in a straight line: along a row, a column or a diagonal.":
+        "Bao nhiêu ô cũng được theo đường thẳng: dọc hàng, cột hoặc đường chéo.",
+    "Rook": "Xe", "Any number of squares along a row or a column.": "Bao nhiêu ô cũng được theo hàng hoặc cột.",
+    "Bishop": "Tượng", "Any number of squares along a diagonal.": "Bao nhiêu ô cũng được theo đường chéo.",
+    "Knight": "Mã", "In an L: two squares one way, then one square to the side. It jumps over other pieces.":
+        "Theo hình chữ L: hai ô một hướng, rồi một ô sang bên. Nó nhảy qua các quân khác.",
+    "Pawn": "Tốt", "One square forward, or two from its starting square. It captures one square diagonally forward.":
+        "Tiến một ô, hoặc hai ô từ ô xuất phát. Nó bắt quân ở ô chéo phía trước.",
+    "Check and promotion": "Chiếu và phong cấp", "Check": "Chiếu",
+    "When your king is attacked, move it, block the attack or take the attacker. The king's square turns red, and only moves that get out of check are allowed.":
+        "Khi vua bạn bị tấn công, hãy di chuyển vua, chặn đường tấn công hoặc bắt quân đang tấn công. Ô của vua chuyển sang đỏ, và chỉ các nước thoát khỏi chiếu mới được đi.",
+    "Promotion": "Phong cấp",
+    "A pawn that reaches the far side becomes a queen, rook, bishop or knight. Pick one from the pieces shown over the square, or click elsewhere to take the move back.":
+        "Tốt đi tới cuối bàn cờ sẽ thành hậu, xe, tượng hoặc mã. Chọn một quân trong các quân hiện trên ô, hoặc nhấp chỗ khác để rút lại nước đi.",
+    "Special moves": "Nước đi đặc biệt", "Castling": "Nhập thành",
+    "Click the king, then the square two steps toward a rook: the rook jumps to the king's other side. Neither piece may have moved, the squares between must be empty, and the king can't be in check or cross an attacked square.":
+        "Nhấp vào vua, rồi nhấp vào ô cách hai bước về phía một con xe: xe nhảy sang phía bên kia của vua. Cả hai quân chưa được đi, các ô ở giữa phải trống, và vua không được đang bị chiếu hay đi qua ô bị tấn công.",
+    "En passant": "Bắt tốt qua đường",
+    "A pawn that moves two squares can be taken by an enemy pawn beside it, as if it had moved only one, but only on the very next move. Here Black's pawn has just moved from d7 to d5.":
+        "Tốt vừa đi hai ô có thể bị tốt đối phương bên cạnh bắt, như thể nó chỉ đi một ô, nhưng chỉ ngay ở nước kế tiếp. Ở đây tốt Đen vừa đi từ d7 đến d5.",
+    "On the board": "Trên bàn cờ", "Moving": "Đi quân",
+    "Click a piece to see where it can go: dots on free squares, rings around pieces it can take. Then click one of them, or drag the piece there. A move that would leave your king in check is refused, and the king's square flashes.":
+        "Nhấp vào một quân để xem nó đi được đâu: chấm trên ô trống, vòng quanh quân nó có thể bắt. Rồi nhấp vào một ô đó, hoặc kéo quân tới. Nước đi làm vua bạn bị chiếu sẽ bị từ chối, và ô của vua nhấp nháy.",
+    "Arrows and marks": "Mũi tên và dấu",
+    "Right-click a square to circle it, or drag with the right button to draw an arrow. Hold Shift for red, Ctrl or Alt for blue. A left click on the board clears them.":
+        "Nhấp chuột phải vào một ô để khoanh tròn, hoặc kéo bằng nút phải để vẽ mũi tên. Giữ Shift để màu đỏ, Ctrl hoặc Alt để màu xanh. Nhấp trái vào bàn cờ để xóa.",
+    "While your opponent thinks, choose your next move: its squares turn purple, and it's played as soon as your turn comes if it's still legal. Right-click or Esc cancels it (Settings can turn premoves off).":
+        "Khi đối thủ đang nghĩ, hãy chọn trước nước đi của bạn: các ô của nó chuyển sang màu tím, và nó được đi ngay khi đến lượt bạn nếu vẫn hợp lệ. Nhấp chuột phải hoặc Esc để hủy (trong Cài đặt có thể tắt đi trước).",
+    "Looking back": "Xem lại",
+    "The arrow keys, or a click on a move in the list, show earlier positions, during the game too: End or a click on the board returns. After the game, Analyze game marks mistakes with ?!, ? and ??.":
+        "Phím mũi tên, hoặc nhấp vào một nước trong danh sách, hiện các thế cờ trước, kể cả trong lúc chơi: End hoặc nhấp vào bàn cờ để quay lại. Sau ván, Phân tích ván đánh dấu các nước sai bằng ?!, ? và ??.",
+    "Game modes": "Chế độ chơi",
+    "Play the computer. Choose its level, from Easy to Impossible, and whether you play White, Black or a random side.":
+        "Chơi với máy. Chọn cấp độ của máy, từ Dễ đến Bất khả, và chọn chơi quân Trắng, Đen hoặc ngẫu nhiên.",
+    "Two players take turns on the same screen.": "Hai người lần lượt đi trên cùng một màn hình.",
+    "Play a friend on another device, in a room of your own: see Playing online, the next page.":
+        "Chơi với bạn trên thiết bị khác, trong một phòng riêng: xem Chơi trực tuyến ở trang sau.",
+    "Solving a puzzle": "Giải một câu đố",
+    "Choose Puzzles in the Mode list. Find the best move for the side shown, then the next ones: after each right move the opponent answers. A wrong move comes back, and the first one of a puzzle lowers your puzzle rating.":
+        "Chọn Câu đố trong danh sách Chế độ. Tìm nước đi tốt nhất cho bên được nêu, rồi các nước tiếp theo: sau mỗi nước đúng đối thủ đáp lại. Nước sai sẽ bị rút lại, và lần sai đầu tiên của một câu làm giảm điểm câu đố của bạn.",
+    "Hint and Skip": "Gợi ý và Bỏ qua",
+    "Hint shows the next move: a puzzle solved with a hint leaves your rating alone. Skip goes on to another puzzle and counts as a miss. Restart tries the same puzzle again.":
+        "Gợi ý hiện nước tiếp theo: câu đố giải bằng gợi ý thì điểm giữ nguyên. Bỏ qua để sang câu khác và tính là sai. Chơi lại để thử lại cùng câu đó.",
+    "Your rating": "Điểm của bạn",
+    "Puzzles get harder as your puzzle rating rises. The rating and your streak are kept on this device, and the puzzle's themes show once it is solved.":
+        "Câu đố khó dần khi điểm câu đố của bạn tăng. Điểm và chuỗi thắng được lưu trên thiết bị này, và chủ đề của câu đố hiện ra sau khi giải xong.",
+    "Clock": "Đồng hồ",
+    "Pick a time control before the game. 3+2 means three minutes each, plus two seconds for every move. Running out of time loses.":
+        "Chọn thời gian trước ván. 3+2 nghĩa là mỗi người ba phút, cộng thêm hai giây cho mỗi nước. Hết giờ là thua.",
+    "Sign in to keep your games, see your record and get an online rating. Forgot your password? Sign in has a reset link.":
+        "Đăng nhập để lưu ván, xem thành tích và có điểm xếp hạng trực tuyến. Quên mật khẩu? Trong phần Đăng nhập có liên kết đặt lại.",
+    "Playing online": "Chơi trực tuyến", "Hosting a room": "Tạo phòng",
+    "Choose Online Multiplayer and click Host: you play White. Copy link puts an invite link on the clipboard to send your friend, or tell them the room code.":
+        "Chọn Chơi trực tuyến và nhấp Tạo phòng: bạn chơi quân Trắng. Chép liên kết đưa liên kết mời vào bộ nhớ tạm để gửi cho bạn, hoặc nói mã phòng cho họ.",
+    "Joining": "Vào phòng",
+    "Open the invite link and click Join, or type or paste the code in the room box and click Join (Black).":
+        "Mở liên kết mời và nhấp Vào, hoặc gõ hay dán mã vào ô phòng và nhấp Vào phòng (Đen).",
+    "Quick chat": "Trò chuyện nhanh",
+    "Chat opens a list of short messages, like Good luck! or Good game!. Each shows for a few seconds in a bubble by its sender's name.":
+        "Trò chuyện mở một danh sách tin ngắn, như Chúc may mắn! hay Ván hay!. Mỗi tin hiện vài giây trong bong bóng cạnh tên người gửi.",
+    "Is your opponent there?": "Đối thủ có ở đó không?",
+    "The line under the room code says whether your opponent is connected, or has gone quiet and may have left.":
+        "Dòng dưới mã phòng cho biết đối thủ đang kết nối, hay đã im lặng và có thể đã rời đi.",
+    "Rejoin and Your move": "Vào lại và Đến lượt bạn",
+    "Rejoin returns to your last room, say after a reload. If your turn comes while you're in another tab or window, its title says Your move and a chime plays.":
+        "Vào lại đưa bạn về phòng gần nhất, ví dụ sau khi tải lại trang. Nếu đến lượt bạn khi bạn đang ở thẻ hoặc cửa sổ khác, tiêu đề sẽ ghi Đến lượt bạn và có tiếng chuông.",
+    "Buttons and keys": "Nút và phím tắt",
+    "Shows a good move on the board, up to 5 times a day.": "Hiện một nước đi tốt trên bàn cờ, tối đa 5 lần mỗi ngày.",
+    "Undo (Z) and Restart (R)": "Đi lại (Z) và Chơi lại (R)",
+    "Take back your last move (and the computer's reply). Online, the opponent must agree, and Restart leaves the room.":
+        "Rút lại nước vừa đi (và nước đáp lại của máy). Khi chơi trực tuyến, đối thủ phải đồng ý, và Chơi lại sẽ rời phòng.",
+    "Resign and Offer Draw": "Xin thua và Đề nghị hòa",
+    "Give up the game, or offer a draw. The computer only accepts a draw when it is losing.":
+        "Bỏ cuộc, hoặc đề nghị hòa. Máy chỉ đồng ý hòa khi nó đang thua.",
+    "Menu (three lines, bottom right)": "Menu (ba gạch, góc dưới bên phải)",
+    "Save the game as a PGN file or open one, Flip board (F), Settings (board, pieces, theme, sound) and How to play.":
+        "Lưu ván thành tệp PGN hoặc mở một tệp, Xoay bàn cờ (F), Cài đặt (bàn cờ, quân cờ, giao diện, âm thanh) và Hướng dẫn chơi.",
+    "Move list and graph": "Danh sách nước đi và biểu đồ",
+    "Scroll with the wheel or the scrollbar, or drag the list. After Analyze game, click or drag on the graph of who was better to see that moment.":
+        "Cuộn bằng con lăn hoặc thanh cuộn, hoặc kéo danh sách. Sau Phân tích ván, nhấp hoặc kéo trên biểu đồ ai hơn để xem thời điểm đó.",
+    "Opens this window. Esc closes it. Rest the pointer on a button to see what it does, or why it's grayed out.":
+        "Mở cửa sổ này. Esc để đóng. Đặt con trỏ lên một nút để biết nó làm gì, hoặc vì sao nó bị mờ.",
+    "Your move · Chess Playing AI": "Đến lượt bạn · Chess Playing AI",
+    # puzzles and the game's own messages
+    "Opponent": "Đối thủ",
+    "Saving isn't available here": "Không lưu được ở đây", "Save cancelled": "Đã hủy lưu",
+    "Loading isn't available here": "Không mở được ở đây", "Load cancelled": "Đã hủy mở",
+}
+
+TEMPLATES = {
+    "Mode: %s": "Chế độ: {0}", "AI: %s": "Máy: {0}", "Play as: %s": "Chơi quân: {0}", "Clock: %s": "Đồng hồ: {0}",
+    "Room: %s": "Phòng: {0}", "Rejoin %s as %s": "Vào lại phòng {0}, quân {1}", "Hint (%d left)": "Gợi ý (còn {0})",
+    "Hint: %s": "Gợi ý: {0}", "Hint: %s (%d left today)": "Gợi ý: {0} (hôm nay còn {1})",
+    "Hint: %s (%d left)": "Gợi ý: {0} (còn {1})",
+    "Find the best move for %s": "Tìm nước đi tốt nhất cho quân {0}", "Rematch: you play %s": "Đấu lại: bạn chơi quân {0}",
+    "Puzzle %d  ·  You %d": "Câu đố {0}  ·  Bạn {1}", "You (%d)": "Bạn ({0})", "Puzzle (%d)": "Câu đố ({0})",
+    "Streak %d": "Chuỗi thắng {0}", "Solved! Rating %+d": "Đã giải được! Điểm {0}",
+    "Not that one. Rating %+d. Try again": "Chưa đúng. Điểm {0}. Thử lại nhé",
+    "Signed in as %s": "Đã đăng nhập: {0}", "Welcome, %s": "Chào mừng, {0}", "Password changed. Signed in as %s":
+        "Đã đổi mật khẩu. Đã đăng nhập: {0}",
+    "Rejoining room %s": "Đang vào lại phòng {0}", "%s offers a draw": "{0} đề nghị hòa",
+    "Couldn't copy the link: share the room code %s": "Không chép được liên kết: hãy chia sẻ mã phòng {0}",
+    "Caught up with the game (move %d)": "Đã theo kịp ván (nước {0})", "Loaded %d moves": "Đã mở {0} nước đi",
+    "Stopped at move %d: can't play %s": "Dừng ở nước {0}: không đi được {1}",
+    "Join room %s as Black?": "Vào phòng {0} với quân Đen?", "Your rating: %d (%+d)": "Điểm của bạn: {0} ({1})",
+    "Something went wrong: %s": "Có lỗi xảy ra: {0}", "Couldn't save the game: %s": "Không lưu được ván: {0}",
+    "Couldn't report the result: %s": "Không báo được kết quả: {0}", "Couldn't save: %s": "Không lưu được: {0}",
+    "Couldn't open: %s": "Không mở được: {0}", "Saved %s": "Đã lưu {0}", "Downloaded %s": "Đã tải xuống {0}",
+    "No saved games in %s": "Không có ván nào được lưu trong {0}",
+    "Server error %d": "Lỗi máy chủ {0}", "Can't reach the server (%s)": "Không kết nối được máy chủ ({0})",
+    "Can't reach the account service: %s": "Không kết nối được dịch vụ tài khoản: {0}",
+    "Passwords need at least %d characters": "Mật khẩu cần ít nhất {0} ký tự",
+    "Type a new password for %s.": "Nhập mật khẩu mới cho {0}.", "Missing %s": "Thiếu {0}",
+    "Rating %d": "Điểm {0}", "%d games rated online": "{0} ván có tính điểm trực tuyến",
+    "%d game rated online": "{0} ván có tính điểm trực tuyến", "%d games": "{0} ván", "%d game": "{0} ván",
+    "%d won, %d lost, %d drawn": "{0} thắng, {1} thua, {2} hòa", "level %d": "cấp {0}", "vs %s": "với {0}",
+    "Opponent silent for %d min: they may have left": "Đối thủ im lặng {0} phút: có thể đã rời đi",
+    "Analyzing... %d/%d": "Đang phân tích... {0}/{1}", "%s: loses %.1f. Best was %s": "{0}: mất {1}. Nước tốt nhất là {2}",
+    "after %d.%s %s": "sau {0}.{1} {2}", "After %d.%s %s": "Sau {0}.{1} {2}", "After %d.%s ": "Sau {0}.{1} ",
+    "Looking back: %s  -  tap the board to return": "Đang xem lại: {0}  -  chạm vào bàn cờ để quay lại",
+    "Looking back: %s  -  click here or press End to return": "Đang xem lại: {0}  -  nhấp vào đây hoặc nhấn End để quay lại",
+    "thinking%s": "đang nghĩ{0}", "Computer (%s)": "Máy ({0})", "Eval %s": "Đánh giá {0}", "   Eval %s": "   Đánh giá {0}",
+}

@@ -35,6 +35,7 @@ class GameLoopTest(unittest.TestCase):
         hints._saved = None
         settings._values = None
         settings.put('seenHelp', True)  # How to play opens by itself only on the first visit (its own tests)
+        settings.put('language', 'en')  # not the system's language, which the game starts in when none is chosen
         cls.settings = settings
         import main
         cls.main = main

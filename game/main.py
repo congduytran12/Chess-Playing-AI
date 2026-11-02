@@ -32,6 +32,7 @@ import asyncio
 from network import net
 import pgn
 import hints
+import i18n
 import puzzles
 import settings
 import browser
@@ -81,6 +82,8 @@ HELP_ICON_SIZE = 40
 DIAGRAM_IMAGES = {}  # pieces for the How to play window's board diagrams (HELP_DIAGRAM_SQ)
 UI_CACHE = {}
 FONT_CACHE = {}
+FONT_SANS = 'fonts/LiberationSans-Bold.ttf'  # for the languages pygame's default font can't draw (see sansFont)
+SANS_SCALE = 0.68
 # Liberation Serif, metric-compatible with Times New Roman (SIL Open Font License, see fonts/)
 FONT_REGULAR = "fonts/LiberationSerif-Regular.ttf"
 FONT_BOLD = "fonts/LiberationSerif-Bold.ttf"
@@ -286,6 +289,22 @@ def get_text_surface(text, size, color, bold=True, sans=False):
     return UI_CACHE[key]
 
 
+class LocalFont:
+    """A font that shows (and measures) its text in the game's language: every text goes through i18n.tr."""
+
+    def __init__(self, font):
+        self._font = font
+
+    def render(self, text, *args, **kwargs):
+        return self._font.render(i18n.tr(text), *args, **kwargs)
+
+    def size(self, text):
+        return self._font.size(i18n.tr(text))
+
+    def __getattr__(self, name):
+        return getattr(self._font, name)
+
+
 # the font ships with the game: browsers have no system fonts, and SysFont there falls back
 # to an already-bold sans font that turns smudgy when bolded again
 # sans: pygame's bundled default font (already bold, so bold is ignored), for button labels
@@ -293,8 +312,16 @@ def get_text_surface(text, size, color, bold=True, sans=False):
 def get_font(size, bold=True, sans=False):
     key = (size, bold and not sans, sans)
     if key not in FONT_CACHE:
-        FONT_CACHE[key] = p.font.Font(None, size) if sans else p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size)
+        FONT_CACHE[key] = LocalFont(sansFont(size) if sans else p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size))
     return FONT_CACHE[key]
+
+
+# pygame's own font (the button labels' and the tooltips') can't draw Vietnamese, so another language has Liberation
+# Sans Bold, scaled to look as big as the default font at the same size
+def sansFont(size):
+    if i18n.language() == 'en':
+        return p.font.Font(None, size)
+    return p.font.Font(FONT_SANS, max(8, round(size * SANS_SCALE)))
 
 
 # largest text surface (up to size) that fits in maxWidth
@@ -447,6 +474,19 @@ BOARD_COLORS = list(BOARD_THEMES["Green"])  # light and dark squares of the chos
 # piece styles: name -> image folder
 PIECE_SETS = {"Modern": "images1", "Classic": "images"}
 PIECES = ['bR', 'bN', 'bB', 'bQ', 'bK', 'bp', 'wR', 'wN', 'wB', 'wQ', 'wK', 'wp']
+
+
+# the language to start in: the one chosen in Settings, or else the browser's (or the system's) when it is Vietnamese
+def startingLanguage():
+    if settings.isSet('language') and settings.get('language') in dict(i18n.LANGUAGES):
+        return settings.get('language')
+    return 'vi' if browser.language() == 'vi' else 'en'
+
+
+def applyLanguage(code):
+    i18n.setLanguage(code)
+    UI_CACHE.clear()  # the texts drawn so far were in the other language
+    FONT_CACHE.clear()  # and the buttons' font depends on the language
 
 
 def setBoardTheme(name):
@@ -927,6 +967,7 @@ async def main():
     setUiTheme(settings.get('uiTheme'))  # the panel theme, board colors and pieces chosen in Settings last time
     setBoardTheme(settings.get('board'))
     applySoundSettings()
+    applyLanguage(startingLanguage())
     screen.fill(p.Color(UI['panel']))
     # Creating gamestate object calling our constructor
     gs = GameState()
@@ -2402,11 +2443,11 @@ async def main():
         if (not premoveDue and turnArrived(currentModeIndex, playable, movesSeen, len(gs.moveLog), gameOver)
                 and away and not yourMoveAlert):
             yourMoveAlert = True
-            browser.setTitle(YOUR_MOVE_TITLE)
+            browser.setTitle(i18n.tr(YOUR_MOVE_TITLE))
             playSound('notify')
         elif yourMoveAlert and (not away or not humanTurn or gameOver):
             yourMoveAlert = False
-            browser.setTitle(GAME_TITLE)
+            browser.setTitle(i18n.tr(GAME_TITLE))
         if not premoveDue:
             movesSeen = len(gs.moveLog)
 
@@ -4014,6 +4055,18 @@ HELP_PAGES = [
          "Sign in to keep your games, see your record and get an online rating. Forgot your password? Sign in "
          "has a reset link."),
     ]),
+    ("Puzzles", [
+        (None, "Solving a puzzle",
+         "Choose Puzzles in the Mode list. Find the best move for the side shown, then the next ones: after "
+         "each right move the opponent answers. A wrong move comes back, and the first one of a puzzle lowers "
+         "your puzzle rating."),
+        (None, "Hint and Skip",
+         "Hint shows the next move: a puzzle solved with a hint leaves your rating alone. Skip goes on to "
+         "another puzzle and counts as a miss. Restart tries the same puzzle again."),
+        (None, "Your rating",
+         "Puzzles get harder as your puzzle rating rises. The rating and your streak are kept on this device, "
+         "and the puzzle's themes show once it is solved."),
+    ]),
     ("Playing online", [
         (None, "Hosting a room",
          "Choose Online Multiplayer and click Host: you play White. Copy link puts an invite link on the "
@@ -4086,6 +4139,7 @@ def helpKey(page, key):
 
 # splits text into lines that fit in maxWidth
 def wrapText(text, font, maxWidth):
+    text = i18n.tr(text)  # the lines are cut from the translation
     lines = []
     line = ""
     for word in text.split():
@@ -4847,12 +4901,13 @@ SETTINGS_BOX = p.Rect(84, 34, 600, 700)
 SETTINGS_LABEL_WIDTH = 160  # the labels' column; the choices take the rest
 SETTINGS_TABS = [('board', "Board"), ('game', "Game")]
 SETTINGS_ROWS = {'board': ['board', 'pieces', 'coordinates', 'moveMarkers', 'lastMove', 'animation'],
-                 'game': ['uiTheme', 'sound', 'volume', 'figurines', 'premoves']}
+                 'game': ['language', 'uiTheme', 'sound', 'volume', 'figurines', 'premoves']}
 SETTING_LABELS = {'board': "Board colors", 'pieces': "Pieces", 'coordinates': "Coordinates", 'moveMarkers': "Move hints",
                   'lastMove': "Last move", 'animation': "Animation", 'uiTheme': "Theme", 'sound': "Sound",
-                  'volume': "Volume", 'figurines': "Notation", 'premoves': "Premoves"}
+                  'volume': "Volume", 'figurines': "Notation", 'premoves': "Premoves", 'language': "Language"}
 # the switches: setting -> its choices as (value, label), in the order shown
 SETTING_CHOICES = {
+    'language': i18n.LANGUAGES,
     'coordinates': [(True, "On"), (False, "Off")],
     'moveMarkers': [(True, "On"), (False, "Off")],
     'lastMove': [(True, "On"), (False, "Off")],
@@ -4871,7 +4926,8 @@ SETTING_TIPS = {'board': "Colors of the board's squares", 'pieces': "The look of
                 'sound': "Sounds of moves, checks and the game's start and end",
                 'volume': "How loud the sounds are",
                 'figurines': "Moves in the list as letters (Nf3) or small pieces",
-                'premoves': "Choose your next move while the opponent is thinking"}
+                'premoves': "Choose your next move while the opponent is thinking",
+                'language': "The language of the game's texts"}
 VOLUME_STEP = 10
 SEGMENT_LABEL_SIZE = 24
 PREVIEW_SIZE = 72  # piece previews in the Settings window
@@ -4892,6 +4948,8 @@ def settingValue(kind):
         return value if value in BOARD_THEMES else settings.DEFAULTS['board']
     if kind == 'pieces':
         return value if value in PIECE_SETS else settings.DEFAULTS['pieces']
+    if kind == 'language':
+        return value if value in dict(i18n.LANGUAGES) else 'en'
     if kind == 'volume':
         try:
             return max(0, min(100, int(value)))
@@ -4962,7 +5020,9 @@ def settingsClick(location, tab='board'):
         elif kind in SETTING_CHOICES:
             value = next(value for value, _ in SETTING_CHOICES[kind] if choiceId(value) == choice)
             settings.put(kind, value)
-            if kind == 'uiTheme':
+            if kind == 'language':
+                applyLanguage(value)
+            elif kind == 'uiTheme':
                 setUiTheme(value)
             elif kind == 'sound':
                 applySoundSettings()

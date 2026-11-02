@@ -20,7 +20,7 @@ _values = None  # read from storage once
 # what get() returns for a setting that was never saved
 DEFAULTS = {'board': "Green", 'pieces': "Modern", 'uiTheme': 'light', 'coordinates': True, 'moveMarkers': True,
             'lastMove': True, 'animation': 'normal', 'figurines': False, 'sound': True, 'volume': 80,
-            'premoves': True, 'seenHelp': False}
+            'premoves': True, 'seenHelp': False, 'language': 'en'}
 
 
 def get(name, default=None):
@@ -28,6 +28,12 @@ def get(name, default=None):
     if _values is None:
         _values = _load()
     return _values.get(name, DEFAULTS.get(name) if default is None else default)
+
+
+def isSet(name):
+    """Whether the setting was ever saved (get() gives its default when not)."""
+    get(name)
+    return name in _values
 
 
 def put(name, value):

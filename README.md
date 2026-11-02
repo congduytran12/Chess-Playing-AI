@@ -48,6 +48,10 @@ When a game ends, you can go back through it:
 - **Save PGN** saves the game in PGN, the standard chess game format that most chess sites and apps can open. On the desktop you choose where to save the file; in the browser it downloads.
 - **Load PGN** opens a PGN file. You can review the game, or keep playing from the final position (against the AI or a friend).
 
+### Languages
+
+The game speaks English and Vietnamese (Tiếng Việt). **Menu > Settings > Game > Language** switches it at once, and a first visit from a Vietnamese browser or system starts in Vietnamese. Texts that have no translation yet stay English.
+
 ### Online play that recovers
 
 Online games can recover from dropped messages and page refreshes. Every move sends the whole game, and a player who falls behind is caught up automatically. After a refresh or restart, the **Rejoin** button puts you back in your last room as the same color.
@@ -169,7 +173,7 @@ All sign-ins reach Supabase from Vercel's servers, so they share Supabase's sign
 - Online games are relayed through [ntfy.sh](https://ntfy.sh/).
 - Accounts are stored with [Supabase](https://supabase.com/).
 - The puzzles come from the [Lichess puzzle database](https://database.lichess.org/#puzzles) (CC0). `tools/make_puzzles.py` picks them into `game/puzzles.txt`.
-- The game's text uses the [Liberation Serif](https://github.com/liberationfonts/liberation-fonts) font (SIL Open Font License, see `game/fonts/`).
+- The game's text uses the [Liberation Serif](https://github.com/liberationfonts/liberation-fonts) font, and Liberation Sans for the buttons in Vietnamese (SIL Open Font License, see `game/fonts/`).
 
 ## Contributing
 

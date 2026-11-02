@@ -227,6 +227,24 @@ JS_HELPERS = r'''
 _jsReady = False
 
 
+def language():
+    """The language the browser or the system is set to, as two lower-case letters ('vi', 'en'); '' when unknown."""
+    value = _eval("navigator.language || ''", "") if inBrowser() else _systemLanguage()
+    return str(value or '')[:2].lower()
+
+
+def _systemLanguage():
+    try:
+        import os
+        import locale
+        if sys.platform == 'win32':
+            import ctypes
+            return locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), '')
+        return (os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or '').split('.')[0]
+    except Exception:
+        return ''
+
+
 def inBrowser():
     return WASM and js is not None
 
