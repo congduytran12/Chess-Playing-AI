@@ -74,7 +74,7 @@ AI_MIN_THINK_MS = 400  # the computer's move (even an instant opening book move)
 IMAGES = {}
 SMALL_IMAGES = {}  # piece icons for the captured pieces row
 SMALL_PIECE_SIZE = 22
-CAPTURED_ICONS = {}  # (piece, halo color) -> a captured piece's icon with its halo (capturedIcon)
+CAPTURED_ICONS = {}  # (piece, halo color, size) -> a captured piece's icon with its halo (capturedIcon)
 HELP_IMAGES = {}  # piece icons for the How to play window
 HELP_ICON_SIZE = 40
 DIAGRAM_IMAGES = {}  # pieces for the How to play window's board diagrams (HELP_DIAGRAM_SQ)
@@ -93,6 +93,7 @@ HALF_WIDTH = (CONTROL_WIDTH - 10) // 2
 ROW_HEIGHT = 40
 ROW_GAP = 8
 STRIP_HEIGHT = 52
+TURN_BAR_WIDTH = 5  # the accent bar on the strip of the player to move
 STATUS_HEIGHT = 46  # the status message slot above the lower player strip
 CONTROL_WEIGHTS = {'menu': 0.45}  # share of a row's width, against 1 for other controls (the menu is an icon)
 INFO_HEIGHT = 54  # the review info box after the game
@@ -108,8 +109,8 @@ INFO_HEIGHT = 54  # the review info box after the game
 # Settings) keep their own layout in a board-sized frame, drawn scaled up in portrait (windowTransform, drawWindow).
 PORTRAIT_WIDTH = BOARD_WIDTH
 PORTRAIT_HEIGHTS = (1400, 1700)  # the portrait canvas's height, from the window's shape, within these
-PORTRAIT_SCALES = (1.0, 1.4)  # the portrait panel's scale: the largest (in steps of 0.05) at which the review fits
-PORTRAIT_MIN_LIST_ROWS = 2  # rows of the move list the review must leave in portrait
+PORTRAIT_SCALES = (1.0, 1.4)  # the portrait panel's scale: the largest (in steps of 0.05) at which it all fits
+PORTRAIT_MIN_LIST_ROWS = 2  # rows of the move list every portrait panel must leave
 LAYOUT = None  # the live Layout; made at the end of the module (it reads constants from all over it), see setLayout
 
 
@@ -161,8 +162,8 @@ def scaled(n):
     return round(n * LAYOUT.scale)
 
 
-# switches the live layout; portrait takes the largest scale at which the busiest panel (a reviewed game against the
-# computer with its graph) still leaves PORTRAIT_MIN_LIST_ROWS rows of moves
+# switches the live layout; portrait takes the largest scale at which the busiest panels (PORTRAIT_BUSIEST: during
+# a game and in the review after it) all still leave PORTRAIT_MIN_LIST_ROWS rows of moves
 def setLayout(kind='landscape', height=None):
     global LAYOUT
     if kind != 'portrait':
@@ -172,11 +173,25 @@ def setLayout(kind='landscape', height=None):
     scale = PORTRAIT_SCALES[1]
     while True:
         LAYOUT = Layout('portrait', height, scale)
-        rects = panelLayout(0, False, reviewing=True, graph=True)
-        listTop, listBottom = panelAreas(min(rect.y for rect in rects.values()), True)['list']
-        if scale <= PORTRAIT_SCALES[0] or listBottom - listTop >= LAYOUT.movePadding + PORTRAIT_MIN_LIST_ROWS * LAYOUT.moveRow:
+        if scale <= PORTRAIT_SCALES[0] or portraitListRows() >= PORTRAIT_MIN_LIST_ROWS:
             return LAYOUT
         scale = round(scale - 0.05, 2)
+
+
+# panelLayout arguments of the tallest panels: vs the computer during the game, online setup with Rejoin, online in
+# a room during the game and, after the game, the host's review with the graph
+PORTRAIT_BUSIEST = [(0, False, False, False, False, False), (2, False, True, False, False, False),
+                    (2, True, False, False, False, False), (2, True, False, True, True, False)]
+
+
+# the fewest rows of moves any of PORTRAIT_BUSIEST leaves in the live layout
+def portraitListRows():
+    rows = []
+    for args in PORTRAIT_BUSIEST:
+        rects = panelLayout(*args)
+        listTop, listBottom = panelAreas(min(rect.y for rect in rects.values()), args[3])['list']
+        rows.append((listBottom - listTop - LAYOUT.movePadding) // LAYOUT.moveRow)
+    return min(rows)
 
 
 # (kind, height) of the layout for a browser window of viewport (width, height) CSS px; None (desktop): landscape
@@ -190,7 +205,8 @@ def layoutFor(viewport):
 # the parts of the panel around the controls (controlsTop: the first row's y), by name: 'topStrip' and 'bottomStrip'
 # (the player strips), 'status' (the status slot), 'info' (the review info, after the game) and 'list' (the move
 # list's top and bottom y). Landscape: the strips at the top and above the controls, the moves between them;
-# portrait: the strips above and below the board, then the status slot, the moves, the info and the controls
+# portrait: the strips above and below the board, then the status slot (after the game the review info in its
+# place), the moves and the controls
 def panelAreas(controlsTop, gameOver):
     layout, panel = LAYOUT, LAYOUT.panel
     if layout.kind == 'portrait':
@@ -198,9 +214,9 @@ def panelAreas(controlsTop, gameOver):
         bottom = p.Rect(panel.x, layout.board.bottom, panel.width, layout.stripHeight)
         inset = scaled(10)
         status = p.Rect(panel.x + inset, bottom.bottom + scaled(6), panel.width - 2 * inset, layout.statusHeight)
-        info = p.Rect(panel.x + inset, controlsTop - layout.rowGap - layout.infoHeight, panel.width - 2 * inset,
-                      layout.infoHeight)
-        listSpan = (status.bottom + scaled(4), (info.y if gameOver else controlsTop) - scaled(6))
+        # after the game the review info takes the status slot's place (a status message shows over it)
+        info = p.Rect(status.x, status.y, status.width, layout.infoHeight)
+        listSpan = ((info if gameOver else status).bottom + scaled(4), controlsTop - scaled(6))
     else:
         stripY = controlsTop - ROW_GAP - STRIP_HEIGHT
         top = p.Rect(panel.x, 0, panel.width, STRIP_HEIGHT)
@@ -306,11 +322,17 @@ LIGHT_SQUARE_COLOR = (237, 238, 209)
 DARK_SQUARE_COLOR = (119, 153, 82)
 MOVE_HIGHLIGHT_COLOR = (84, 115, 161)
 POSSIBLE_MOVE_COLOR = (255, 255, 51)
-LAST_MOVE_COLOR = (205, 210, 106)
+LAST_MOVE_COLOR = (205, 210, 106)  # the move list's highlight in the light theme (UI['logHighlight'])
+# the board's highlights: the last move and the selected piece's square in one warm yellow (stronger on the
+# selected square), which reads on every board theme
+SQUARE_TINT = (246, 222, 70)
+LAST_MOVE_ALPHA = 120
+SELECTED_ALPHA = 175
 HINT_COLOR = (64, 160, 220)
+COORD_SIZE = 17  # the board's rank and file letters (scaled up in portrait, where the board shows smaller)
 ARROW_COLOR = HINT_COLOR + (190,)  # hint arrows, and the better move in the analysis
 ARROW_LAYER = None  # see-through board-sized surface the arrows are drawn on, made on first use
-MOVE_MARKER_COLOR = (20, 60, 20, 90)  # dots and rings showing where the selected piece can go
+MOVE_MARKER_COLOR = (0, 0, 0, 62)  # dots and rings showing where the selected piece can go (dark: any board)
 MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
 DRAG_THRESHOLD = 6  # px the pointer moves with the button held before a press on a piece becomes a drag
 DRAG_TARGET_COLOR = (30, 30, 30, 110)  # outline of the square under a dragged piece
@@ -362,7 +384,7 @@ PALETTES = {
         'clockTextIdle': (0, 0, 0), 'clockLow': (220, 0, 0),
         'blunder': (200, 30, 30), 'mistake': (225, 110, 0), 'inaccuracy': (185, 150, 0),
         'segment': (222, 222, 214), 'segmentText': (45, 45, 45), 'accentText': (255, 255, 255),
-        'bannerBg': MOVE_HIGHLIGHT_COLOR + (205,), 'bannerText': (255, 255, 255),
+        'bannerBg': (30, 40, 58, 230), 'bannerText': (255, 255, 255),
         'scrollTrack': (219, 221, 190), 'scrollThumb': (150, 160, 124),
         'graphWhite': (250, 250, 244), 'graphBlack': (98, 102, 90), 'graphEdge': (150, 152, 140),
         'graphMiddle': (160, 162, 150),
@@ -387,7 +409,7 @@ PALETTES = {
         'clockTextIdle': (200, 202, 195), 'clockLow': (200, 30, 30),
         'blunder': (240, 96, 86), 'mistake': (245, 152, 64), 'inaccuracy': (222, 196, 76),
         'segment': (64, 67, 61), 'segmentText': (222, 224, 214), 'accentText': (18, 22, 30),
-        'bannerBg': (112, 148, 204, 210), 'bannerText': (18, 22, 30),
+        'bannerBg': (30, 40, 58, 230), 'bannerText': (255, 255, 255),
         'scrollTrack': (54, 57, 51), 'scrollThumb': (112, 118, 104),
         'graphWhite': (214, 216, 206), 'graphBlack': (24, 25, 22), 'graphEdge': (130, 133, 124),
         'graphMiddle': (110, 113, 104),
@@ -571,6 +593,12 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
             rows.append(['rejoin'])
     else:  # Online, in a room: Copy link (host), the quick chat and the hint under the room's line
         rows = [['mode'], ['roomInfo'], ['chat', 'hint'] if guest else ['invite', 'chat', 'hint']]
+    if reviewing and LAYOUT is not None and LAYOUT.kind == 'portrait':
+        # a phone has no room to spare: after the game the rows that set up a game, the hint (off now), the room's
+        # line and Copy link (the opponent is here; the strip's note says if they leave) give way to the review;
+        # they come back with the next game
+        rows = [[name for name in row if name not in ('hint', 'invite')] for row in rows
+                if not set(row) & {'level', 'side', 'clock', 'roomInfo'}]
     if reviewing:  # after the game: analysis and stepping through the moves
         rows += [['graph' if graph else 'analyze'], ['first', 'prev', 'next', 'last']]
     elif modeIndex != 2 or connected:  # online without a room there is no game to resign or draw yet
@@ -2815,7 +2843,7 @@ async def main():
         if reviewGs is not None:
             drawGameState(boardSurface, reviewGs, [], (), flip_board, arrows, rings=rings)
             if lookingBack:
-                drawLookBackBanner(boardSurface, lookBackText(gs.moveLog, reviewPly))
+                drawLookBackBanner(boardSurface, lookBackText(gs.moveLog, reviewPly, browser.touchScreen()))
         else:
             # the premove's squares, or the piece picked up for one and where it could go
             premoveShown = {'squares': list(premove) if premove else [], 'moves': []}
@@ -2863,11 +2891,13 @@ async def main():
             notes['b' if myColor() == 'w' else 'w'] = presenceStatus(multiplayerRole, opponentSeen, net.server_time,
                                                                      net.last_status)[2]
         stripSpans = {}  # color -> the strip's free span after the name (portrait's chat bubbles go there)
+        gameLive = not gameOver and (currentModeIndex != 2 or networkConnected)  # a game whose turn to show
         for color, y in ((('w' if flip_board else 'b'), areas['topStrip'].y), (('b' if flip_board else 'w'), stripY)):
             stripSpans[color] = drawPlayerStrip(screen, y, color, playerName(color), taken[color],
                                                 balance if color == 'w' else -balance,
                                                 shownClocks[color] if timeControl else None,
-                                                clockRunning() and sideToMove == color, notes.get(color))
+                                                clockRunning() and sideToMove == color, notes.get(color),
+                                                toMove=gameLive and (gs.whiteToMove == (color == 'w')))
 
         mouse_pos = pointerPos()
         states = controlStates()
@@ -3058,14 +3088,19 @@ def drawButton(screen, rect, text, enabled=True, mouse_pos=(-1, -1), arrow=None,
 
 # name, captured pieces, material lead and clock of one player, and an optional note after the name
 # y: the strip's top (panelAreas); it spans the panel's width, and its insides grow with the layout's scale
+# toMove: this player moves next (a game in progress): an accent bar at the strip's edge and a ring round the
+# marker say so, with the clock off too
 # returns the strip's free span (left, right): from the end of the name (and note) to the clock or the strip's end
-def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockActive, note=None):
+def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockActive, note=None, toMove=False):
     rect = p.Rect(LAYOUT.panel.x, y, LAYOUT.panel.width, LAYOUT.stripHeight)
     p.draw.rect(screen, p.Color(UI['strip']), rect)
     p.draw.line(screen, p.Color(UI['stripLine']), (rect.x, rect.bottom - 1), (rect.right, rect.bottom - 1))
 
     # side marker and name
     marker, nameY = (rect.x + scaled(18), rect.y + scaled(15)), rect.y + scaled(15)
+    if toMove:
+        p.draw.rect(screen, p.Color(UI['accent']), p.Rect(rect.x, rect.y, scaled(TURN_BAR_WIDTH), rect.height - 1))
+        p.draw.circle(screen, p.Color(UI['accent']), marker, scaled(7) + scaled(3))
     p.draw.circle(screen, p.Color('white' if color == 'w' else 'black'), marker, scaled(7))
     p.draw.circle(screen, p.Color(UI['text']), marker, scaled(7), 1)
     nameObj = get_text_surface(name, scaled(18), UI['text'], True)
@@ -3078,16 +3113,17 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
 
     # captured pieces, grouped by type, then the material lead
     x = rect.x + scaled(10)
+    size = scaled(SMALL_PIECE_SIZE)
     previous = None
     for piece in captured:
         if previous is not None:
-            x += 10 if piece == previous else 18
-        screen.blit(capturedIcon(piece), (x - 1, rect.y + scaled(26)))
+            x += scaled(10) if piece == previous else scaled(18)
+        screen.blit(capturedIcon(piece, size), (x - 1, rect.y + scaled(26)))
         previous = piece
     if advantage > 0:
         leadObj = get_text_surface("+" + str(advantage), scaled(16), UI['textDim'], True)
-        screen.blit(leadObj, (x + (SMALL_PIECE_SIZE + 4 if captured else 0),
-                              rect.y + scaled(26) + 12 - leadObj.get_height() / 2))
+        screen.blit(leadObj, (x + (size + scaled(4) if captured else 0),
+                              rect.y + scaled(26) + scaled(12) - leadObj.get_height() / 2))
 
     if clockMs is not None:
         clockRect = p.Rect(rect.right - scaled(12) - scaled(96), rect.y + scaled(8), scaled(96), scaled(36))
@@ -3102,14 +3138,17 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
     return nameEnd, rect.right - scaled(10)
 
 
-# a captured piece's icon for the player strips, 2 px larger than SMALL_IMAGES': Black's pieces get a thin halo in
-# UI['capturedHalo'], or they would vanish into the dark theme's strip (White's have their own dark outline)
-def capturedIcon(piece):
+# a captured piece's icon for the player strips, 2 px larger than the piece (size: SMALL_IMAGES' size, larger in
+# portrait): Black's pieces get a thin halo in UI['capturedHalo'], or they would vanish into the dark theme's strip
+# (White's have their own dark outline)
+def capturedIcon(piece, size=SMALL_PIECE_SIZE):
     halo = UI['capturedHalo']
-    key = (piece, halo)
+    key = (piece, halo, size)
     if key not in CAPTURED_ICONS:
         icon = SMALL_IMAGES[piece]
-        surface = p.Surface((SMALL_PIECE_SIZE + 2, SMALL_PIECE_SIZE + 2), p.SRCALPHA)
+        if size != SMALL_PIECE_SIZE:
+            icon = p.transform.smoothscale(IMAGES[piece], (size, size))
+        surface = p.Surface((size + 2, size + 2), p.SRCALPHA)
         if piece[0] == 'b':
             shape = p.mask.from_surface(icon, 100).to_surface(setcolor=halo, unsetcolor=(0, 0, 0, 0))
             for dx, dy in ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)):
@@ -3878,7 +3917,7 @@ def drawMiniBoard(screen, pos, diagram):
             p.draw.rect(screen, p.Color(BOARD_COLORS[0 if light else 1]), square(f + r).move(board.topleft))
     layer = p.Surface(board.size, p.SRCALPHA)  # see-through tints, marks and arrows
     for name in diagram.get('tints', ()):
-        layer.fill(LAST_MOVE_COLOR + (170,), square(name))
+        layer.fill(SQUARE_TINT + (LAST_MOVE_ALPHA,), square(name))
     if diagram.get('check'):
         layer.fill((255, 0, 0, 110), square(diagram['check']))
     for arrow in diagram.get('arrows', ()):  # under the pieces: a ghost at the end still shows
@@ -3948,8 +3987,8 @@ def drawGameState(screen, gs, validMoves, squareSelected, flip=False, arrows=(),
     # last move played (unless switched off in Settings)
     if gs.moveLog and settings.get('lastMove'):
         lastMove = gs.moveLog[-1]
-        tintSquare(screen, lastMove.startRow, lastMove.startCol, LAST_MOVE_COLOR, 170, flip)
-        tintSquare(screen, lastMove.endRow, lastMove.endCol, LAST_MOVE_COLOR, 170, flip)
+        tintSquare(screen, lastMove.startRow, lastMove.startCol, SQUARE_TINT, LAST_MOVE_ALPHA, flip)
+        tintSquare(screen, lastMove.endRow, lastMove.endCol, SQUARE_TINT, LAST_MOVE_ALPHA, flip)
     highlightSquares(screen, gs, squareSelected, flip)
     for row, col in (premove['squares'] if premove else ()):
         tintSquare(screen, row, col, PREMOVE_COLOR, PREMOVE_ALPHA, flip)
@@ -4118,7 +4157,7 @@ def drawSquare(screen, flip=False):
         rank_num = (row + 1) if flip else (8 - row)
         rank_text = str(rank_num)
         text_color = BOARD_COLORS[1] if row % 2 == 0 else BOARD_COLORS[0]
-        text_obj = get_text_surface(rank_text, 15, text_color, True)
+        text_obj = get_text_surface(rank_text, scaled(COORD_SIZE), text_color, True)
         text_loc = p.Rect(0, row * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(4, 2)
         screen.blit(text_obj, text_loc)
 
@@ -4127,7 +4166,7 @@ def drawSquare(screen, flip=False):
         file_char = chr(ord('h') - col) if flip else chr(ord('a') + col)
         file_text = file_char
         text_color = BOARD_COLORS[1] if (7 + col) % 2 == 0 else BOARD_COLORS[0]
-        text_obj = get_text_surface(file_text, 15, text_color, True)
+        text_obj = get_text_surface(file_text, scaled(COORD_SIZE), text_color, True)
         text_loc = p.Rect(col * SQ_SIZE, 7 * SQ_SIZE, SQ_SIZE, SQ_SIZE).move(SQ_SIZE - text_obj.get_width() - 4, SQ_SIZE - text_obj.get_height() - 2)
         screen.blit(text_obj, text_loc)
 
@@ -4145,7 +4184,7 @@ def ownPieceSelected(gs, squareSelected):
 def highlightSquares(screen, gs, squareSelected, flip=False):
     if ownPieceSelected(gs, squareSelected):
         row, col = squareSelected
-        tintSquare(screen, row, col, MOVE_HIGHLIGHT_COLOR, 100, flip)
+        tintSquare(screen, row, col, SQUARE_TINT, SELECTED_ALPHA, flip)
 
 
 # marks where the selected piece can go: a dot on an empty square, a ring around a piece it can take
@@ -5011,13 +5050,15 @@ async def animateMove(move, screen, board, clock, flip=False):
 # buttons on the result card, by name; which ones show depends on the mode (see resultButtons in main)
 RESULT_BUTTONS = {'new': "New game", 'switch': "Switch sides"}
 RESULT_CARD_NOTE = "Click the board to see the final position"
+RESULT_CARD_NOTE_TOUCH = "Tap the board to see the final position"  # phones and tablets (browser.touchScreen)
 
 
 # (title, note, rects) of the result card: rects has the 'card' and one rect per button name
 # (on the canvas, in the middle of the board; as large as the panel's buttons in portrait, for touch)
 def resultCardLayout(text, buttons):
     titleObj = get_fitting_text(text, BOARD_WIDTH - 120, scaled(42), "white")
-    noteObj = get_text_surface(RESULT_CARD_NOTE, scaled(17), (205, 205, 205), False)
+    note = RESULT_CARD_NOTE_TOUCH if browser.touchScreen() else RESULT_CARD_NOTE
+    noteObj = get_text_surface(note, scaled(19), (228, 228, 228), False)
     buttonWidth, gap, rowHeight = scaled(170), scaled(16), LAYOUT.rowHeight
     rowWidth = len(buttons) * buttonWidth + (len(buttons) - 1) * gap
     width = max(titleObj.get_width(), noteObj.get_width(), rowWidth) + scaled(60)
@@ -5191,12 +5232,15 @@ def drawEndGameText(screen, text, buttons, mouse_pos):
 
 
 # what the Looking back banner says while the board shows the position after ply moves of moveLog
-def lookBackText(moveLog, ply):
+# touch: on a phone or tablet, which has no End key and taps rather than clicks
+def lookBackText(moveLog, ply, touch=False):
     if ply == 0:
         shown = "the start position"
     else:
         i = ply - 1
         shown = "after %d.%s %s" % (i // 2 + 1, "" if i % 2 == 0 else "..", moveLog[i].san or str(moveLog[i]))
+    if touch:
+        return "Looking back: %s  -  tap the board to return" % shown
     return "Looking back: %s  -  click here or press End to return" % shown
 
 

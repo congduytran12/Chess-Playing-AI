@@ -3318,11 +3318,14 @@ class GameLoopTest(unittest.TestCase):
                     self.assertEqual(areas['bottomStrip'].top, layout.board.bottom, where)
                     listTop, listBottom = areas['list']
                     rows = (listBottom - listTop - layout.movePadding) // layout.moveRow
-                    self.assertGreaterEqual(rows, main.PORTRAIT_MIN_LIST_ROWS if height >= 1500 else 1, where)
+                    self.assertGreaterEqual(rows, main.PORTRAIT_MIN_LIST_ROWS, where)
                     self.assertGreaterEqual(listTop, areas['status'].bottom, where)
-                    if reviewing:
-                        self.assertGreaterEqual(areas['info'].y, listBottom, where)
-                        self.assertLess(areas['info'].bottom, top, where)
+                    if reviewing:  # the review info takes the status slot's place, above the moves
+                        self.assertEqual(areas['info'].topleft, areas['status'].topleft, where)
+                        self.assertGreaterEqual(listTop, areas['info'].bottom, where)
+                        names = {name for name in rects}
+                        self.assertFalse(names & {'level', 'side', 'clock', 'hint', 'roomInfo', 'invite'},
+                                         (where, "a phone's review keeps only what it needs"))
                     for name, rect in rects.items():
                         self.assertTrue(canvas.contains(rect), (where, name))
                         self.assertGreaterEqual(rect.height, main.ROW_HEIGHT, (where, name, "touch-sized"))
@@ -3401,6 +3404,63 @@ class GameLoopTest(unittest.TestCase):
                     self.assertFalse(any(box.colliderect(rect) for rect in rects.values()), (where, "the controls"))
         finally:
             main.setLayout('landscape')
+
+    def test_the_strip_of_the_side_to_move_is_marked(self):
+        main = self.main
+        main.loadImages()
+        screen = p.Surface(main.WINDOW_SIZE)
+        accent = tuple(p.Color(main.UI['accent']))[:3]
+        bar = (main.PANEL_X + 2, main.STRIP_HEIGHT // 2)
+        main.drawPlayerStrip(screen, 0, 'w', "White", [], 0, None, False, toMove=True)
+        self.assertEqual(tuple(screen.get_at(bar))[:3], accent, "with the clock off too")
+        main.drawPlayerStrip(screen, 0, 'w', "White", [], 0, None, False)
+        self.assertEqual(tuple(screen.get_at(bar))[:3], tuple(p.Color(main.UI['strip']))[:3])
+        # in the game: White's strip at the start, Black's after White's move
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[1].center, 0.5)
+            stripY = main.panelAreas(min(r.y for r in main.panelLayout(1, False).values()), False)['bottomStrip'].y
+            at = lambda y: tuple(p.display.get_surface().get_at((main.PANEL_X + 2, y + main.STRIP_HEIGHT // 2)))[:3]
+            seen['start'] = (at(stripY), at(0))
+            await self.move((6, 4), (4, 4), 0.6)
+            seen['after e4'] = (at(stripY), at(0))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+        self.runGame(script)
+        self.assertEqual(seen['start'][0], accent, "White to move: the lower strip")
+        self.assertNotEqual(seen['start'][1], accent)
+        self.assertEqual(seen['after e4'][1], accent, "then Black's")
+        self.assertNotEqual(seen['after e4'][0], accent)
+
+    def test_captured_pieces_and_touch_texts(self):
+        main = self.main
+        import browser
+        main.loadImages()
+        self.assertEqual(main.capturedIcon('bN', 31).get_size(), (33, 33), "larger in portrait")
+        self.assertIsNot(main.capturedIcon('bN', 31), main.capturedIcon('bN'))
+        self.assertTrue(main.lookBackText([], 0).endswith("click here or press End to return"))
+        self.assertTrue(main.lookBackText([], 0, touch=True).endswith("tap the board to return"))
+        real = browser.touchScreen
+        try:
+            browser.touchScreen = lambda: True
+            touchNote = main.resultCardLayout("White wins", ['new'])[1]
+            browser.touchScreen = lambda: False
+            clickNote = main.resultCardLayout("White wins", ['new'])[1]
+        finally:
+            browser.touchScreen = real
+        expected = [main.get_text_surface(text, 19, (228, 228, 228), False).get_width()
+                    for text in (main.RESULT_CARD_NOTE_TOUCH, main.RESULT_CARD_NOTE)]
+        self.assertEqual([touchNote.get_width(), clickNote.get_width()], expected)
+        self.assertFalse(browser.touchScreen(), "desktop has a mouse")
+        for theme in ('light', 'dark'):
+            main.setUiTheme(theme)
+            self.assertGreaterEqual(main.UI['bannerBg'][3], 220, "the Looking back banner is nearly solid")
+            self.assertEqual(tuple(main.UI['bannerText']), (255, 255, 255))
+        main.setUiTheme('light')
 
     def test_portrait_chat_bubbles_stay_in_the_strips(self):
         main = self.main

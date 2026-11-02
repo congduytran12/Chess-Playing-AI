@@ -181,6 +181,17 @@ def siteUrl():
 
 # --- the tab and the window
 
+_touch = None  # touchScreen()'s answer, asked once
+
+
+def touchScreen():
+    """The browser's main pointer is a finger (a phone or tablet), so texts say "tap"; False on desktop."""
+    global _touch
+    if _touch is None:
+        _touch = bool(_eval("window.matchMedia && matchMedia('(pointer: coarse)').matches ? 1 : 0", 0))
+    return _touch
+
+
 def pageHidden():
     """The browser tab is in the background (desktop: False; the game listens for window focus there)."""
     return bool(_eval("document.hidden ? 1 : 0", 0))
