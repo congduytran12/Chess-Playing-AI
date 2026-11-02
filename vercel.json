@@ -5,7 +5,8 @@
   "framework": null,
   "functions": {
     "api/account.py": {
-      "maxDuration": 15
+      "maxDuration": 15,
+      "includeFiles": "game/engine.py"
     }
   },
   "headers": [

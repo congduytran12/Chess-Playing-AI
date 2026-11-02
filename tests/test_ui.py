@@ -2757,7 +2757,7 @@ class GameLoopTest(unittest.TestCase):
             restoreRoom()
         self.assertEqual(len(seen['hosted']), 1)
         self.assertNotEqual(seen['hosted'][0], "FRIEND", "a room of its own")
-        self.assertEqual(len(seen['hosted'][0]), 6)
+        self.assertEqual(len(seen['hosted'][0]), main.ROOM_CODE_HOST_LENGTH)
 
     def test_chat_from_the_rooms_history_stays_hidden(self):
         # the backlog's newest message is an old chat (both players left after 'Good game!'); only when our own
@@ -3058,6 +3058,178 @@ class GameLoopTest(unittest.TestCase):
             main.CLOCK_OPTIONS[:] = saved
         self.assertEqual(seen['waiting'], [], "no flag fall within the grace")
         self.assertEqual(seen['answered'], ['move'], "their move counted, and nobody lost on time")
+
+    def test_a_room_made_by_the_host_has_a_long_code(self):
+        main = self.main
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        try:
+            self.runGame(script)
+        finally:
+            restoreRoom()
+        self.assertEqual(len(topics[0]), main.ROOM_CODE_HOST_LENGTH)
+        self.assertGreaterEqual(main.ROOM_CODE_HOST_LENGTH, 10)
+        self.assertLessEqual(main.ROOM_CODE_HOST_LENGTH, main.ROOM_CODE_LENGTH, "a room code that can be typed in")
+
+    def test_heartbeats_come_less_often_when_nobody_answers(self):
+        main = self.main
+        every = [main.heartbeatInterval(quiet, False) for quiet in range(5)]
+        self.assertEqual(every, [15000, 30000, 60000, 60000, 60000])
+        self.assertEqual(main.heartbeatInterval(0, True), 30000, "after the game: half as often")
+        self.assertLess(main.HEARTBEAT_MS * 2 ** main.HEARTBEAT_BACKOFFS, main.PRESENCE_MS + 1)
+        self.assertGreater(main.OPPONENT_GONE_SECONDS * 1000, 2 * main.PRESENCE_MS,
+                           "a player who pings that often isn't taken for gone")
+
+    def test_rejoin_names_the_color_last_played(self):
+        main = self.main
+        import network
+        seen = {}
+        texts = []
+        realDraw = main.drawButton
+
+        def spy(screen, rect, text, *args, **kwargs):
+            texts.append(text)
+            return realDraw(screen, rect, text, *args, **kwargs)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            await self.move((6, 4), (4, 4), 0.4)
+            await self.click(main.panelLayout(2, True)['resign'].center)
+            await self.click(main.promptRects()[1].center, 0.4)
+            card = main.resultCardLayout("Black wins by resignation", ['rematch', 'new'])[2]
+            await self.click(card['rematch'].center, 0.5)  # the host plays Black now
+            seen['saved'] = network.net.load_session()
+            await self.click(main.panelLayout(2, True)['restart'].center)
+            await self.click(main.promptRects()[1].center, 0.4)
+            seen['label'] = [text for text in texts if text.startswith("Rejoin ")][-1:]
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        main.drawButton = spy
+        try:
+            self.runGame(script)
+        finally:
+            main.drawButton = realDraw
+            restoreRoom()
+        self.assertEqual((seen['saved']['role'], seen['saved']['color']), ('host', 'b'))
+        self.assertEqual(len(seen['label']), 1)
+        self.assertTrue(seen['label'][0].endswith("as Black"), seen['label'])
+
+    def test_a_second_host_in_the_room_is_noticed(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            shown['status'].clear()
+            net.incoming_messages.append({'type': 'ping', 'game': 0, 'version': 0, 'role': 'client',
+                                          'sender': 'the-guest', '_time': 1})
+            await asyncio.sleep(0.4)
+            seen['guest'] = [t for t in shown['status'] if t.startswith("Someone else")]
+            net.incoming_messages.append({'type': 'ping', 'game': 0, 'version': 0, 'role': 'host',
+                                          'sender': 'another-tab', '_time': 1})
+            await asyncio.sleep(0.4)
+            seen['second host'] = sorted(set(t for t in shown['status'] if t.startswith("Someone else")))
+            await self.click(main.panelLayout(2, True)['restart'].center)
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            restoreRoom()
+        self.assertEqual(seen['guest'], [], "the opponent is no second host")
+        self.assertEqual(seen['second host'], ["Someone else is in this room as the host: your games won't match"])
+
+    def test_a_game_with_a_hint_is_not_rated(self):
+        main = self.main
+        reports, saves, seen = [], [], {}
+
+        async def reportOnline(whiteId, blackId, gameId, moves, result):
+            reports.append((whiteId, blackId, moves, result))
+            return False, True, None
+
+        async def saveGame(game):
+            saves.append(game['result'])
+            return 1
+
+        async def playOnline(useHint):
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            await self.move((6, 4), (4, 4), 0.4)  # 1. e4
+            state = dict([m for m in sent if m.get('type') == 'state'][-1])
+            player = {'uid': 'THEM', 'name': 'Them', 'rating': 1300}
+            net.incoming_messages.append({'type': 'state', 'game': 0, 'version': state['version'] + 1,
+                                          'role': 'client', 'sender': 'guest-of-test', 'gid': state['gid'],
+                                          'moves': 'e2e4 e7e5', 'tc': None, 'clocks': None, 'result': None,
+                                          'player': player})
+            await asyncio.sleep(0.5)
+            if useHint:
+                await self.click(main.panelLayout(2, True)['hint'].center, 2.5)
+                seen['hint'] = [t for t in shown['status'] if t.startswith("Hint: ")]
+            await self.move((7, 6), (5, 5), 0.4)  # 2. Nf3
+            state = dict([m for m in sent if m.get('type') == 'state'][-1])
+            net.incoming_messages.append({'type': 'state', 'game': 0, 'version': state['version'] + 1,
+                                          'role': 'client', 'sender': 'guest-of-test', 'gid': state['gid'],
+                                          'moves': 'e2e4 e7e5 g1f3 b8c6', 'tc': None, 'clocks': None,
+                                          'result': ['White wins by resignation', '1-0'], 'player': player})
+            await asyncio.sleep(1.0)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        import network
+        net = network.net
+        for useHint in (False, True):
+            del reports[:], saves[:]
+            sent, topics, restoreRoom = self.offlineRoom()
+            shown, restoreShown = self.recordShown()
+            account, restoreAccount = self.fakeAccount(reportOnline=reportOnline, saveGame=saveGame)
+            account.profile = {'id': 'ME', 'username': 'Me', 'rating': 1200, 'rated_games': 0}
+
+            async def script():
+                await playOnline(useHint)
+            try:
+                self.runGame(script)
+            finally:
+                restoreAccount()
+                restoreShown()
+                restoreRoom()
+            seen[useHint] = (list(reports), list(saves))
+        import hints
+        hints._store({})
+        hints._saved = None
+        self.assertEqual(len(seen[False][0]), 1, "without a hint the result is reported")
+        self.assertEqual(seen[False][0][0][3], '1-0')
+        self.assertEqual(seen[True][0], [], "with a hint it isn't")
+        self.assertEqual(seen[True][1], ['1-0'], "but the game is still saved to the account")
+        self.assertTrue(seen['hint'][0].endswith("this game won't be rated"), seen['hint'])
 
     def test_a_rematch_swaps_the_colors(self):
         main = self.main

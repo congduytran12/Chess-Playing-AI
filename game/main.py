@@ -262,11 +262,13 @@ PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
 # online: the player waiting for the opponent re-sends the game state this often (ms), so a dropped
 # message is noticed and the side that is behind catches up; ntfy.sh allows about one message per 5s
 HEARTBEAT_MS = 15000
+HEARTBEAT_BACKOFFS = 2  # a heartbeat nobody answers makes the next come later: 15 s, 30 s, then 60 s
 SYNC_REPLY_MS = 2000  # at most one state reply to a player who is behind per this many ms
-PRESENCE_MS = 20000  # a player who has sent nothing for this long sends a 'ping', to show they're still there
-OPPONENT_GONE_SECONDS = 60  # no message from the opponent for this long (server clock): they may have left
+PRESENCE_MS = 60000  # a player who has sent nothing for this long sends a 'ping', to show they're still there
+OPPONENT_GONE_SECONDS = 150  # no message from the opponent for this long (server clock): they may have left
 ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
-ROOM_CODE_LENGTH = 12
+ROOM_CODE_LENGTH = 12  # the most a room code can have (a code typed or pasted)
+ROOM_CODE_HOST_LENGTH = 10  # a room the host makes: the topic is public, so the code is what keeps others out
 # quick chat in an online room: canned messages sent by their index, so nothing typed ever goes out
 QUICK_CHAT = ["Hello!", "Good luck!", "Good game!", "Thanks!", "Well played!", "Oops", "One moment, please"]
 CHAT_INTERVAL_MS = 3000  # at most one chat message per this many ms (Chat is disabled in between)
@@ -274,6 +276,7 @@ CHAT_FRESH_SECONDS = 30  # a received chat older than this (server clock) is his
 # online: our own sync_request coming back marks when we joined (ntfy's clock); without it after this long, the
 # room's latest time stands in for it
 JOIN_ECHO_MS = 10000
+DUPLICATE_WARNING_MS = 60000  # the warning about a second host (or guest) is shown at most this often
 # online, the room is public and the opponent isn't trusted (see judgeState): a time-out claimed against us needs our
 # own clock to be this close to 0, the opponent's clock in a state may be this much more than we think it is
 # (their message was on its way) and may not have grown by more than their increment, and their flag falls on our
@@ -1034,6 +1037,10 @@ async def main():
     liveGameId = None  # id of the online game we saw in progress; a game that was already over when we joined isn't saved again
     lastStateSent = 0  # ticks when we last sent our state
     lastStateHeard = 0  # ticks when we last heard a state matching ours
+    lastHeartbeat = 0  # ticks of our last heartbeat, and how many in a row went unanswered (they come less often)
+    quietHeartbeats = 0
+    lastDuplicateWarning = -DUPLICATE_WARNING_MS  # ticks when we last said someone else has our place in the room
+    hintUsedOnline = False  # a hint was shown in this online game: it isn't rated
     lastSyncReply = 0  # ticks when we last answered a player who is behind
     savedSession = net.load_session()  # last room and role, offered as Rejoin
     opponentInfo = None  # {'uid', 'name', 'rating'} of a signed-in online opponent
@@ -1310,11 +1317,11 @@ async def main():
         nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll, resultCardHidden
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
-        nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered
+        nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered, hintUsedOnline
         clearReview()
         clearAnnotations()
         puzzle = None
-        undoAsked = drawOffered = False
+        undoAsked = drawOffered = hintUsedOnline = False
         endSoundPlayed = False
         lowTimeWarned = set()
         drag = None
@@ -1541,6 +1548,7 @@ async def main():
         if swapColors:  # a rematch: each plays the other color
             hostWhite = not hostWhite
             showStatus("Rematch: you play " + ("White" if ourColor() == 'w' else "Black"))
+            rememberSide()
         onlineGame += 1
         onlineVersion = 0
         onlineGameId = newOnlineGameId()
@@ -1570,7 +1578,7 @@ async def main():
         onlineGameId = newOnlineGameId()  # replaced by the opponent's when we catch up with their game
         lastStateHeard = p.time.get_ticks()
         net.save_session(roomCode, role)
-        savedSession = {'room': roomCode, 'role': role}
+        savedSession = {'room': roomCode, 'role': role, 'color': 'w' if role == 'host' else 'b'}
         # the opponent answers with the current game, so a rejoining player catches up; it comes back to us after
         # the room's history (joinedAt)
         joinId, joinedAt, connectedAt = newOnlineGameId(), None, p.time.get_ticks()
@@ -1590,6 +1598,8 @@ async def main():
         swapped = trusted and (state.get('hw') is not False) != hostWhite
         if trusted:
             hostWhite = state.get('hw') is not False  # older games had the host as White
+            if swapped:
+                rememberSide()
         adoptedOnce = True
         if newGame:
             # the opponent started the next game; catching up after joining isn't a start (joining already was one)
@@ -1654,6 +1664,12 @@ async def main():
     # our color in an online game: the host plays White unless a rematch swapped the colors
     def ourColor():
         return 'w' if (multiplayerRole == 'host') == hostWhite else 'b'
+
+    # Rejoin says which color we played last: a rematch changes it
+    def rememberSide():
+        if savedSession is not None and multiplayerRole is not None:
+            savedSession['color'] = ourColor()
+            net.save_session(roomCode, multiplayerRole, ourColor())
 
     def myColor():
         if currentModeIndex == 2:
@@ -2294,7 +2310,8 @@ async def main():
         startRequest(account.saveGame(game), onDone=saved, inWindow=False,
                      onError=lambda message: showStatus("Couldn't save the game: " + message))
 
-        if mode == 'online' and opponentInfo and result != '*' and not ratingReported:
+        # a game with a hint in it isn't rated (the opponent can't tell that we used one), so it's not reported
+        if mode == 'online' and opponentInfo and result != '*' and not ratingReported and not hintUsedOnline:
             ratingReported = True
             mine, theirs = account.profile['id'], opponentInfo['uid']
             white, black = (mine, theirs) if color == 'w' else (theirs, mine)
@@ -2384,6 +2401,15 @@ async def main():
                     joinedAt = net.server_time
             messages = [msg for msg in incoming if msg.get('sender') != myPlayerId]
             for msg in messages:
+                # someone else with our role, now (not a replay of our own earlier visit): their games would never
+                # match ours (judgeState only believes the opponent's side)
+                if (msg.get('role') == multiplayerRole and joinedAt is not None and isinstance(msg.get('_time'), (int, float))
+                        and msg['_time'] >= joinedAt and net.server_time - msg['_time'] <= CHAT_FRESH_SECONDS
+                        and now - lastDuplicateWarning > DUPLICATE_WARNING_MS):
+                    lastDuplicateWarning = now
+                    showStatus("Someone else is in this room as the host: your games won't match"
+                               if multiplayerRole == 'host' else
+                               "Someone else is in this room as the guest: your games won't match", 6000)
                 print(f"Main: Received message type='{msg.get('type')}' from {msg.get('role')} sender={msg.get('sender', '???')}")
                 if msg.get('role') == opponentRole and msg.get('_time') is not None:
                     opponentSeen = max(opponentSeen or 0, msg['_time'])  # server time of their latest message
@@ -2505,9 +2531,13 @@ async def main():
         # online: while waiting for the opponent (or after the game), keep re-sending our state so a
         # lost message can't leave both players waiting for each other
         if multiplayerMode and networkConnected:
-            interval = HEARTBEAT_MS * (2 if gameOver else 1)
+            if max(lastStateSent, lastStateHeard) > lastHeartbeat:
+                quietHeartbeats = 0  # a change of ours, or an answer: back to the quick pace
+            interval = heartbeatInterval(quietHeartbeats, gameOver)
             if (gameOver or not humanTurn) and p.time.get_ticks() - max(lastStateSent, lastStateHeard) > interval:
                 sendState('heartbeat')
+                lastHeartbeat = p.time.get_ticks()
+                quietHeartbeats += 1
             # a player who has sent nothing for a while (say, thinking about a move) says they're still here,
             # so the opponent can tell them apart from a player who left
             if p.time.get_ticks() - lastMessageSent > PRESENCE_MS:
@@ -2810,7 +2840,8 @@ async def main():
                     print("DEBUG: Host button clicked.")
                     # a new room, unless one was typed in (the invite's room has its host: the friend)
                     if not roomCode or roomCode == invitedRoom:
-                        roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+                        roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits,
+                                                          k=ROOM_CODE_HOST_LENGTH))
                     connectOnline('host')
                     await asyncio.sleep(0)  # yield so poll task can start
                 elif clicked == 'join':
@@ -3059,11 +3090,15 @@ async def main():
                     suggestion = findRandomMoves(validMoves)
                 hintMove = suggestion
                 san = gs.getSan(suggestion, validMoves)
+                unrated = multiplayerMode and networkConnected and account.signedIn  # it would have been rated
+                if multiplayerMode and networkConnected:
+                    hintUsedOnline = True
                 if account.isAdmin:
-                    showStatus("Hint: %s" % san, 4000)
+                    showStatus("Hint: %s" % san + (" - this game won't be rated" if unrated else ""), 4000)
                 else:
                     hints.use()
-                    showStatus("Hint: %s (%d left today)" % (san, hints.remaining()), 4000)
+                    showStatus("Hint: %s (%d left today)" % (san, hints.remaining())
+                               + (" - this game won't be rated" if unrated else ""), 4000)
 
         # genetare new set of valid move if valid move is made
         if moveMade:
@@ -3229,7 +3264,8 @@ async def main():
             labels['hint'] = "Hint"
             labels['skip'] = "Next puzzle" if puzzle is not None and puzzle['done'] else "Skip"
         if savedSession:
-            labels['rejoin'] = "Rejoin %s as %s" % (savedSession['room'], "White" if savedSession['role'] == 'host' else "Black")
+            lastColor = savedSession.get('color') or ('w' if savedSession['role'] == 'host' else 'b')
+            labels['rejoin'] = "Rejoin %s as %s" % (savedSession['room'], "White" if lastColor == 'w' else "Black")
         labelSizes = evenLabelSizes(panelRows(currentModeIndex, networkConnected, canRejoin, gameOver,
                                               analysis is not None, guest), layout, labels)
         # under an open menu, dropdown or window the panel's buttons don't light up: the click goes to the overlay
@@ -5536,6 +5572,12 @@ def wellFormedState(msg):
                                    and all(isinstance(x, str) and len(x) <= 100 and x.isprintable() for x in result)):
         return False
     return isinstance(msg.get('moves') or "", str) and isinstance(msg.get('hw', True), bool)
+
+
+# how long to wait before the next heartbeat: it doubles for every HEARTBEAT_BACKOFFS heartbeats in a row that nobody
+# answered, so a long wait doesn't use up the message service's limits; after the game it is twice that
+def heartbeatInterval(quiet, gameOver):
+    return HEARTBEAT_MS * 2 ** min(quiet, HEARTBEAT_BACKOFFS) * (2 if gameOver else 1)
 
 
 # the color that lost on time in a result, or None when it isn't one

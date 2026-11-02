@@ -253,11 +253,13 @@ class NetworkManager:
             self.incoming_messages = []
         return res
 
-    def save_session(self, room, role):
+    def save_session(self, room, role, color=None):
         """
-        Remembers the room and role so the player can rejoin after a page refresh or restart.
+        Remembers the room and role (and the color last played: a rematch swaps it) so the player can rejoin after a
+        page refresh or restart.
         """
-        data = json.dumps({'room': room, 'role': role, 'time': time.time()})
+        data = json.dumps({'room': room, 'role': role, 'color': color or ('w' if role == 'host' else 'b'),
+                           'time': time.time()})
         try:
             if WASM:
                 js.eval("localStorage.setItem('chess_ai_session', %s)" % json.dumps(data))

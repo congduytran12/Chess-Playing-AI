@@ -30,7 +30,7 @@ Switch modes with the **Mode** dropdown:
 ### Playing a game
 
 - **Chess clock:** play untimed or with 1+0, 3+2, 5+0, 10+5, or 15+10. Running out of time loses, unless your opponent has only a king left, in which case it's a draw.
-- **Hints:** the **Hint** button highlights a good move for you, up to 5 times a day (online too, on your turn).
+- **Hints:** the **Hint** button highlights a good move for you, up to 5 times a day (online too, on your turn: a hint in an online game makes it unrated).
 - **Resign or offer a draw:** against the AI, the computer accepts a draw only when it's losing. In 2-player and online games, the opponent gets an Accept / Decline prompt.
 - **Undo:** use the button or press `Z`. Against the AI, it takes back your last move and the AI's reply. Online, it asks your opponent first.
 - **On the board:** the last move and a king in check are highlighted. Each player's panel shows the pieces they've captured, the material lead, and their clock.

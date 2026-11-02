@@ -116,6 +116,40 @@ class AccountApiTest(unittest.TestCase):
                 self.assertEqual((caught.exception.status, caught.exception.message), (401, api.BAD_LOGIN))
 
 
+    # --- the games reported for ratings are replayed
+
+    def test_a_reported_game_must_be_a_legal_one(self):
+        self.assertIsNotNone(api.engine, "the rules engine is found next to the function")
+        self.assertTrue(self.report('W', '1-0', moves='e2e4 e7e5 g1f3 b8c6')['pending'])
+        for moves in ('e2e4 e7e5 e2e4 b8c6', 'e2e4 e7e5 g1f3 d8d4', 'e2e4 e7e5 f1b5 b8c6 b5c6 d7c6 c6c7'):
+            with self.subTest(moves=moves):
+                with self.assertRaises(api.ApiError) as caught:
+                    self.report('W', '1-0', moves=moves)
+                self.assertEqual(caught.exception.message, 'The moves are not a legal game')
+        # the same moves in any language: promotion pieces and castling are the engine's own
+        self.assertTrue(self.report('W', '0-1', moves='e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 e1g1 f6e4')['pending'])
+
+    def test_a_reported_result_must_fit_a_checkmate_or_a_stalemate(self):
+        mate = 'f2f3 e7e5 g2g4 d8h4'  # Black mates in two moves
+        self.assertTrue(self.report('W', '0-1', moves=mate)['pending'])
+        for result in ('1-0', '1/2-1/2'):
+            with self.subTest(result=result):
+                with self.assertRaises(api.ApiError) as caught:
+                    self.report('W', result, moves=mate)
+                self.assertEqual(caught.exception.message, 'The result does not fit the moves')
+        stalemate = ('e2e3 a7a5 d1h5 a8a6 h5a5 h7h5 h2h4 a6h6 a5c7 f7f6 c7d7 e8f7 d7b7 d8d3 b7b8 d3h7 b8c8 f7g6 c8e6')
+        self.assertTrue(self.report('W', '1/2-1/2', moves=stalemate)['pending'])
+        with self.assertRaises(api.ApiError):
+            self.report('W', '1-0', moves=stalemate)
+        # a game that was still going can end any way: resigned, out of time, a draw agreed
+        for result in ('1-0', '0-1', '1/2-1/2'):
+            self.assertTrue(self.report('W', result, moves='e2e4 e7e5 g1f3 b8c6')['pending'])
+
+    def test_very_long_reports_are_not_replayed(self):
+        moves = ' '.join(['g1f3', 'g8f6', 'f3g1', 'f6g8'] * 160)  # 640 plies, shuffling the knights
+        self.assertGreater(len(moves.split()), api.MAX_CHECKED_PLIES)
+        self.assertTrue(self.report('W', '1/2-1/2', moves=moves)['pending'], "past the limit: accepted as it was")
+
     # --- forgot password
 
     def test_reset_link_is_sent_for_any_email(self):

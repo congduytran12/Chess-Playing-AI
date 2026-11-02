@@ -63,6 +63,10 @@ EXACT = {
     "Waiting for your opponent: send the link or the code": "Đang chờ đối thủ: hãy gửi liên kết hoặc mã phòng",
     "Waiting for the host to answer...": "Đang chờ chủ phòng trả lời...",
     "Opponent connected": "Đối thủ đã kết nối",
+    "Someone else is in this room as the host: your games won't match":
+        "Có người khác trong phòng này với vai chủ phòng: các ván của hai bạn sẽ không khớp nhau",
+    "Someone else is in this room as the guest: your games won't match":
+        "Có người khác trong phòng này với vai khách: các ván của hai bạn sẽ không khớp nhau",
     "That email link has expired or was already used. Ask for a new one":
         "Liên kết email này đã hết hạn hoặc đã được dùng. Hãy xin liên kết mới",
     "That email link didn't work. Ask for a new one": "Liên kết email này không dùng được. Hãy xin liên kết mới",
@@ -109,7 +113,10 @@ EXACT = {
     "Usernames are 3-20 letters, digits or _": "Tên người dùng gồm 3-20 chữ, số hoặc _",
     "That username is taken": "Tên người dùng này đã có người dùng",
     "Accounts are not set up on this server": "Máy chủ này chưa bật tài khoản", "Unknown action": "Thao tác không rõ",
-    "Game not found": "Không tìm thấy ván", "You didn't play in this game": "Bạn không chơi trong ván này",
+    "Game not found": "Không tìm thấy ván",
+    "The moves are not a legal game": "Các nước đi không tạo thành một ván hợp lệ",
+    "The result does not fit the moves": "Kết quả không khớp với các nước đi",
+    "The moves are not in coordinate notation": "Các nước đi không ở dạng tọa độ", "You didn't play in this game": "Bạn không chơi trong ván này",
     # settings
     "Board": "Bàn cờ", "Game": "Ván", "Board colors": "Màu bàn cờ", "Pieces": "Quân cờ", "Coordinates": "Tọa độ",
     "Move hints": "Gợi ý nước đi", "Last move": "Nước vừa đi", "Animation": "Hiệu ứng", "Theme": "Giao diện",
@@ -285,6 +292,8 @@ EXACT = {
 TEMPLATES = {
     "Mode: %s": "Chế độ: {0}", "AI: %s": "Máy: {0}", "Play as: %s": "Chơi quân: {0}", "Clock: %s": "Đồng hồ: {0}",
     "Room: %s": "Phòng: {0}", "Rejoin %s as %s": "Vào lại phòng {0}, quân {1}", "Hint (%d left)": "Gợi ý (còn {0})",
+    "Hint: %s - this game won't be rated": "Gợi ý: {0} - ván này sẽ không tính điểm",
+    "Hint: %s (%d left today) - this game won't be rated": "Gợi ý: {0} (hôm nay còn {1}) - ván này sẽ không tính điểm",
     "Hint: %s": "Gợi ý: {0}", "Hint: %s (%d left today)": "Gợi ý: {0} (hôm nay còn {1})",
     "Hint: %s (%d left)": "Gợi ý: {0} (còn {1})",
     "Find the best move for %s": "Tìm nước đi tốt nhất cho quân {0}", "Rematch: you play %s": "Đấu lại: bạn chơi quân {0}",

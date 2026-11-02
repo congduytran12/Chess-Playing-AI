@@ -9,6 +9,7 @@
 
 import os
 import re
+import importlib.util
 import hashlib
 import requests
 from flask import Flask, request, jsonify
@@ -30,6 +31,7 @@ GAMES_LISTED = 50  # the newest saved games shown in the game's My games list
 RESET_LINK_EXPIRED = 'This reset link has expired, ask for a new one'
 RESULTS = ('1-0', '0-1', '1/2-1/2')
 MIN_RATED_PLIES = 4  # shorter online games don't change ratings
+MAX_CHECKED_PLIES = 600  # longer reports aren't replayed (a game is at most about this long)
 MOVE_PATTERN = re.compile(r'^[a-h][1-8][a-h][1-8][qrbn]?$')  # Move.getCode in the game
 ADMIN_USERNAMES = {'congduytran12'}  # lower case; their profiles say 'admin' (the game gives them unlimited hints)
 CORS_HEADERS = {
@@ -291,6 +293,42 @@ def getGame(data):
 # Online games have no server watching them, so a result only changes ratings when both players reported
 # the same result for the same game (game_id is the id both clients share for it, see main.py), and at most
 # 3 games per pair of players a day (enforced in apply_rated_game) so two accounts can't farm rating
+# The game's own rules engine (game/engine.py has no imports; vercel.json brings it into the function), loaded under a
+# name of its own so nothing else on the path is shadowed. Without it the moves aren't replayed.
+def loadEngine():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'game', 'engine.py')
+    try:
+        spec = importlib.util.spec_from_file_location('chess_engine', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception as e:
+        print(f"[account] the rules engine isn't available, reported games aren't replayed: {e}")
+        return None
+
+
+engine = loadEngine()
+
+
+# A reported game is replayed with the game's rules: every move must be legal in turn, and a game that ended in
+# checkmate or stalemate must be reported that way. (A resignation, a time-out or an agreed draw can't be seen in the
+# moves, so any result fits a game that was still going.)
+def checkGame(moves, result):
+    if engine is None or len(moves) > MAX_CHECKED_PLIES:
+        return
+    game = engine.GameState()
+    for code in moves:
+        move = game.findMoveByCode(code, game.getValidMoves())
+        if move is None:
+            raise ApiError('The moves are not a legal game')
+        game.makeMove(move)
+    game.getValidMoves()  # finds out whether the game is over
+    if game.checkmate and result != ('0-1' if game.whiteToMove else '1-0'):
+        raise ApiError('The result does not fit the moves')
+    if game.stalemate and result != '1/2-1/2':
+        raise ApiError('The result does not fit the moves')
+
+
 def reportOnline(data):
     userId = currentUser(data)
     white = text(data, 'white_id', 64)
@@ -308,6 +346,7 @@ def reportOnline(data):
         raise ApiError('The moves are not in coordinate notation')
     if len(moves) < MIN_RATED_PLIES:
         return {'rated': False, 'reason': 'too short', 'profile': getProfile(userId)}
+    checkGame(moves, result)
 
     gameHash = hashlib.sha256(('%s|%s|%s|%s' % (white, black, gameId, ' '.join(moves))).encode()).hexdigest()
     # insert first, then read: when both players report at the same moment, the later read sees both reports
