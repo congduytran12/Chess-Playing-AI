@@ -40,6 +40,20 @@ class TextField:
         self.caret = len(self.value)
         self.touch()
 
+    def replace(self, text, caret=None):
+        """Sets the whole text as typed in another input (a phone's on-screen keyboard): cleaned like typed text,
+        cut to maxLength, with the caret at caret (default: the end) in the text as it is now. Returns whether
+        the text or the caret changed."""
+        before = (self.value, self.caret)
+        raw = str(text or "")
+        caret = len(raw) if caret is None else min(max(int(caret), 0), len(raw))
+        # the caret goes where it was in the typed text, less what cleaning took out before it
+        self.value = self.clean(raw)[:self.maxLength]
+        self.caret = min(len(self.clean(raw[:caret])), len(self.value))
+        if (self.value, self.caret) != before:
+            self.touch()
+        return (self.value, self.caret) != before
+
     def touch(self):
         try:
             self.edited = p.time.get_ticks()

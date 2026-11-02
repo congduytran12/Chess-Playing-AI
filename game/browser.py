@@ -24,6 +24,7 @@ JS_HELPERS = r'''
     if (!window.__chessPasteListener) {
         window.__chessPasteListener = true;
         document.addEventListener('paste', function(e) {
+            if (window.chessKb && e.target === window.chessKb.input) return;  // the phone keyboard's input takes it
             const text = e.clipboardData ? e.clipboardData.getData('text') : '';
             if (text) {
                 window.__chessPasted = text;
@@ -34,6 +35,7 @@ JS_HELPERS = r'''
             // the V key: by its letter, or by its place while the layout types another alphabet (Russian 'м')
             const vKey = e.key === 'v' || e.key === 'V' || (e.code === 'KeyV' && !/^[a-zA-Z]$/.test(e.key));
             if (!(e.ctrlKey || e.metaKey) || e.altKey || !vKey) return;
+            if (window.chessKb && document.activeElement === window.chessKb.input) return;  // pastes into it itself
             if (!navigator.clipboard || !navigator.clipboard.readText) return;
             const asked = Date.now();
             navigator.clipboard.readText().then(function(text) {
@@ -45,6 +47,138 @@ JS_HELPERS = r'''
         const text = window.__chessPasted;
         window.__chessPasted = null;
         return text === null ? '' : text;
+    }
+
+    // a phone's on-screen keyboard. The game draws its own text fields, so nothing on the page asks the phone for a
+    // keyboard: an invisible <input> does. It has to take the focus inside the tap itself (iOS shows the keyboard
+    // for nothing else), so the game publishes where its fields are (chessKbSync) and the page finds the tapped
+    // one. What is typed goes back to the game, which polls it (chessKbTake) and cleans it like typed text.
+    // rev counts what was typed; the game answers with ack, and the page takes the game's text back only once
+    // the game has seen everything typed (or typing in between would be lost).
+    if (!window.chessKb) {
+        const kb = window.chessKb = {fields: {}, bound: null, rev: 0, pending: null, composing: false,
+                                     frozenSize: '', thaw: 0, lastCaret: -1, input: null};
+        const canvas = function() { return document.querySelector('canvas'); };
+        const place = function(f) {  // the input lies over the field on the screen, where the phone looks for it
+            const c = canvas();
+            if (!c || !kb.input) return;
+            const r = c.getBoundingClientRect(), sx = r.width / c.width, sy = r.height / c.height;
+            const s = kb.input.style;
+            s.left = (r.left + f.x * sx) + 'px';
+            s.top = (r.top + f.y * sy) + 'px';
+            s.width = Math.max(1, f.w * sx) + 'px';
+            s.height = Math.max(1, f.h * sy) + 'px';
+        };
+        const report = function(extra) {
+            const input = kb.input;
+            kb.rev++;
+            kb.lastCaret = input.selectionStart;
+            kb.pending = Object.assign({id: kb.bound, value: input.value, caret: input.selectionStart}, extra || {});
+        };
+        const unbind = function() {
+            if (kb.input) kb.input.blur();
+            kb.bound = null;
+            clearTimeout(kb.thaw);  // the window settles a moment after the keyboard goes
+            kb.thaw = setTimeout(function() { if (!kb.bound) kb.frozenSize = ''; }, 600);
+        };
+        const ensureInput = function() {
+            if (kb.input) return kb.input;
+            const input = document.createElement('input');
+            input.id = 'chess-kb-input';
+            input.setAttribute('autocorrect', 'off');
+            input.setAttribute('spellcheck', 'false');
+            input.setAttribute('enterkeyhint', 'go');
+            input.setAttribute('aria-hidden', 'true');
+            input.tabIndex = -1;
+            Object.assign(input.style, {position: 'fixed', left: '0', top: '0', width: '1px', height: '1px',
+                opacity: '0', pointerEvents: 'none', border: '0', padding: '0', margin: '0', outline: 'none',
+                fontSize: '16px', background: 'transparent', color: 'transparent', caretColor: 'transparent',
+                zIndex: '-1'});  // 16px: iOS zooms the page in for smaller text
+            input.addEventListener('input', function() { report(); });
+            input.addEventListener('compositionstart', function() { kb.composing = true; });
+            input.addEventListener('compositionend', function() { kb.composing = false; });
+            // the game's own key handling (SDL, on the window) must not see these keys: it would type them into the
+            // game's field as well, and it cancels the key's default, which is the text going into this input
+            ['keydown', 'keyup', 'keypress'].forEach(function(type) {
+                input.addEventListener(type, function(e) { e.stopPropagation(); });
+            });
+            input.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                report({enter: true});
+                unbind();
+            });
+            input.addEventListener('blur', function() {
+                if (kb.bound) unbind();
+            });
+            document.addEventListener('selectionchange', function() {  // the caret moved (an arrow key)
+                if (document.activeElement === input && !kb.composing && input.selectionStart !== kb.lastCaret) {
+                    report();
+                }
+            });
+            document.body.appendChild(input);
+            kb.input = input;
+            return input;
+        };
+        document.addEventListener('touchend', function(e) {
+            const c = canvas(), t = e.changedTouches && e.changedTouches[0];
+            if (!c || !t) return;
+            const r = c.getBoundingClientRect();
+            const x = (t.clientX - r.left) * c.width / r.width, y = (t.clientY - r.top) * c.height / r.height;
+            let found = null;
+            for (const id in kb.fields) {
+                const f = kb.fields[id];
+                if (x >= f.x && x < f.x + f.w && y >= f.y && y < f.y + f.h) found = id;
+            }
+            if (!found) {
+                if (kb.bound) unbind();  // a tap anywhere else puts the keyboard away
+                return;
+            }
+            const f = kb.fields[found], input = ensureInput();
+            if (!kb.frozenSize) kb.frozenSize = window.innerWidth + 'x' + window.innerHeight;
+            clearTimeout(kb.thaw);
+            kb.bound = found;
+            input.type = f.type;
+            input.setAttribute('inputmode', f.mode);
+            input.setAttribute('autocapitalize', f.caps);
+            input.setAttribute('autocomplete', f.auto);
+            input.maxLength = f.max;
+            input.value = f.value;
+            place(f);
+            input.focus();  // inside the tap: this is what makes the phone show its keyboard
+            try { input.setSelectionRange(f.caret, f.caret); } catch (err) {}
+            kb.lastCaret = f.caret;
+        }, {capture: true, passive: true});
+        window.chessKbSync = function(text) {
+            const state = JSON.parse(text);
+            kb.fields = state.fields;
+            if (!kb.bound || !kb.input) return;
+            const f = kb.fields[kb.bound];
+            if (!f) { unbind(); return; }
+            place(f);
+            if (kb.input.type !== f.type) kb.input.type = f.type;
+            if (state.ack === kb.rev && !kb.composing) {
+                if (kb.input.value !== f.value) kb.input.value = f.value;
+                if (document.activeElement === kb.input && kb.input.selectionStart !== f.caret) {
+                    try { kb.input.setSelectionRange(f.caret, f.caret); } catch (err) {}
+                    kb.lastCaret = f.caret;
+                }
+            }
+        };
+        window.chessKbTake = function() {
+            if (!kb.pending) return '';
+            const msg = kb.pending;
+            msg.rev = kb.rev;
+            kb.pending = null;
+            return JSON.stringify(msg);
+        };
+        // the keyboard overlays the page (Chrome on Android) instead of shrinking it, which would shrink the game
+        if (window.matchMedia && matchMedia('(pointer: coarse)').matches) {
+            const meta = document.querySelector('meta[name=viewport]');
+            if (meta && meta.content.indexOf('interactive-widget') < 0) {
+                meta.content += ', interactive-widget=overlays-content';
+            }
+        }
     }
 
     // the canvas never overflows the window, not even for the moment between a phone turning and the page fitting
@@ -192,6 +326,23 @@ def touchScreen():
     return _touch
 
 
+def keyboardSync(state):
+    """Publishes the game's text fields for a phone's on-screen keyboard: state is JSON text, {'fields': {id: {x,
+    y, w, h (canvas px), type, mode, caps, auto, max, value, caret}}, 'ack': the last typing the game has seen}.
+    The page focuses an invisible input when one of the fields is tapped (see JS_HELPERS)."""
+    _eval("window.chessKbSync(%s)" % json.dumps(state))
+
+
+def keyboardTake():
+    """What was typed since the last call, as {'id', 'value', 'caret', 'rev', 'enter'?}, or None."""
+    raw = str(_eval("window.chessKbTake()", "") or "")
+    try:
+        message = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return message if isinstance(message, dict) else None
+
+
 def pageHidden():
     """The browser tab is in the background (desktop: False; the game listens for window focus there)."""
     return bool(_eval("document.hidden ? 1 : 0", 0))
@@ -199,7 +350,8 @@ def pageHidden():
 
 def viewportSize():
     """The browser window's inside (width, height) in CSS px, which picks the game's layout; None on desktop."""
-    size = _eval("window.innerWidth + 'x' + window.innerHeight", "")
+    # while the keyboard is up the size from before it came: a smaller window must not turn the game sideways
+    size = _eval("(window.chessKb && window.chessKb.frozenSize) || (window.innerWidth + 'x' + window.innerHeight)", "")
     try:
         width, height = (int(float(part)) for part in str(size).split('x'))
     except (TypeError, ValueError):

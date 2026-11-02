@@ -1000,6 +1000,9 @@ async def main():
     accountFields = {'username': TextField(maxLength=20, allowed=USERNAME_CHARACTERS), 'email': TextField(),
                      'login': TextField(), 'password': TextField(password=True)}
     accountFocus = 'login'  # the form field being typed into
+    kbOn = browser.touchScreen()  # a phone or tablet: its on-screen keyboard types into the fields (browser.py)
+    kbAck = 0  # the last typing from that keyboard the game has seen (see browser.keyboardSync)
+    kbPublished = ""  # the fields last published to the page
     accountShowPassword = False  # the password field's Show / Hide
     accountMessage = ""  # error or notice shown in the account window
     accountTone = 'error'  # how it reads: 'error' or 'success'
@@ -1887,6 +1890,47 @@ async def main():
             return roomField
         return None
 
+    # the text fields a phone's on-screen keyboard can type into now, by id, where they are on the canvas
+    def keyboardFields(panel):
+        fields = {}
+        if accountView in ACCOUNT_FORMS:
+            rects, box = accountRects(), windowBox()
+            for name in accountFieldNames(accountView):
+                mode, caps, auto = KEYBOARD_KINDS[name]
+                if name == 'password' and accountView in ('register', 'newPassword'):
+                    auto = 'new-password'  # a new one: the phone offers to make and keep it
+                fields['account:' + name] = keyboardSpec(fromWindow(rects['field:' + name], box), accountFields[name],
+                                                         mode, caps, auto,
+                                                         hidden=accountFields[name].password and not accountShowPassword)
+        elif not (accountView or helpPage is not None or settingsTab):
+            if 'room' in panel and currentModeIndex == 2 and not networkConnected:
+                fields['room'] = keyboardSpec(panel['room'], roomField, *KEYBOARD_KINDS['room'])
+        return fields
+
+    # applies what was typed on the phone's keyboard to the field it was typed in (like typed or pasted text)
+    def applyKeyboardInput():
+        nonlocal kbAck, roomCode, inputBoxActive, accountFocus
+        message = browser.keyboardTake()
+        if not message:
+            return
+        kbAck = message.get('rev', kbAck)
+        fieldId, value = str(message.get('id') or ""), message.get('value', "")
+        if fieldId == 'room' and currentModeIndex == 2 and not networkConnected and not (
+                accountView or helpPage is not None or settingsTab):
+            inputBoxActive = True
+            roomField.replace(value, message.get('caret'))
+            roomCode = roomField.value
+            if message.get('enter'):
+                inputBoxActive = False  # as Enter does at a keyboard
+        elif fieldId.startswith('account:') and accountView in ACCOUNT_FORMS and not accountBusy():
+            name = fieldId[len('account:'):]
+            if name in accountFieldNames(accountView):
+                accountFocus = name
+                if accountFields[name].replace(value, message.get('caret')) and accountTone == 'error':
+                    setAccountMessage("")  # the error was about what they're now changing
+                if message.get('enter'):
+                    submitAccountForm()
+
     def submitAccountForm():
         password = accountFields['password'].value
         if accountView == 'signin':
@@ -2250,6 +2294,8 @@ async def main():
                 showCopyResult(bool(copied), copyPending[1])
                 copyPending = None
         # in the browser a paste (Ctrl+V) arrives as the page's paste event; desktop reads the clipboard in handleKey
+        if kbOn:
+            applyKeyboardInput()
         pasted = browser.takePastedText()
         if pasted and focusedField() is not None:
             focusedField().paste(pasted)
@@ -2858,6 +2904,11 @@ async def main():
 
         # side panel (in portrait everything around the board)
         layout = panelLayout(currentModeIndex, networkConnected, canRejoin, gameOver, analysis is not None, guest)
+        if kbOn:  # tell the page where the text fields are (and their text), for the phone's keyboard
+            state = json.dumps({'fields': keyboardFields(layout), 'ack': kbAck}, sort_keys=True)
+            if state != kbPublished:
+                kbPublished = state
+                browser.keyboardSync(state)
         for rect in LAYOUT.panelFill:
             p.draw.rect(screen, p.Color(UI['panel']), rect)
         # the player strips, a slot for status messages, and after the game the review info (see panelAreas)
@@ -3280,6 +3331,20 @@ CARET_STEADY_MS = 600  # the caret stays lit this long after typing or moving it
 
 
 # size: the text's size (the panel's room box grows with the layout's scale; the windows' fields keep theirs)
+# how each text field asks the phone's keyboard to behave: (inputmode, autocapitalize, autocomplete)
+KEYBOARD_KINDS = {'login': ('email', 'off', 'username'), 'email': ('email', 'off', 'email'),
+                  'username': ('text', 'off', 'username'), 'password': ('text', 'off', 'current-password'),
+                  'room': ('text', 'characters', 'off')}
+
+
+# one text field as the page needs it (browser.keyboardSync): its rect on the canvas, how to type into it, its text
+# hidden: a password that isn't shown (the input is a password input too)
+def keyboardSpec(rect, field, mode='text', caps='off', auto='off', hidden=False):
+    return {'x': rect.x, 'y': rect.y, 'w': rect.width, 'h': rect.height, 'type': 'password' if hidden else 'text',
+            'mode': mode, 'caps': caps, 'auto': auto, 'max': field.maxLength, 'value': field.value,
+            'caret': field.caret}
+
+
 def fieldFont(size=FIELD_TEXT_SIZE):
     return get_font(size, False)
 

@@ -3569,6 +3569,182 @@ class GameLoopTest(unittest.TestCase):
         finally:
             main.setLayout('landscape')
 
+    # --- a phone's on-screen keyboard (browser.keyboardSync / keyboardTake)
+
+    def phoneKeyboard(self):
+        """Makes the game believe it is on a touch screen, with stand-ins for the page's keyboard input.
+        Returns (published, typed, restore): published is the list of states the game sent (decoded), typed a
+        list the test fills with messages the page would send."""
+        import browser
+        published, typed = [], []
+        real = browser.touchScreen, browser.keyboardSync, browser.keyboardTake
+        browser.touchScreen = lambda: True
+        browser.keyboardSync = lambda state: published.append(json.loads(state))
+        browser.keyboardTake = lambda: typed.pop(0) if typed else None
+
+        def restore():
+            browser.touchScreen, browser.keyboardSync, browser.keyboardTake = real
+        return published, typed, restore
+
+    def test_phone_keyboard_types_into_the_account_form(self):
+        main = self.main
+        published, typed, restoreKeyboard = self.phoneKeyboard()
+        signIns, seen = [], {}
+
+        async def signIn(login, password):
+            signIns.append((login, password))
+            raise main.AccountError("No such account")
+
+        def last():
+            return published[-1]
+
+        async def script():
+            await asyncio.sleep(1.0)
+            seen['no fields'] = last()['fields']  # the board: nothing to type into
+            await self.click(main.panelLayout(0, False)['account'].center, 0.5)
+            seen['signin'] = last()
+            typed.append({'id': 'account:login', 'value': 'duy@example.com', 'caret': 15, 'rev': 1})
+            await asyncio.sleep(0.3)
+            seen['login typed'] = (frames[-1]['values']['login'], frames[-1]['focus'], last()['ack'],
+                                   last()['fields']['account:login']['value'])
+            typed.append({'id': 'account:password', 'value': 'secret123', 'caret': 9, 'rev': 2})
+            await asyncio.sleep(0.3)
+            seen['password typed'] = (frames[-1]['values']['password'], last()['ack'])
+            typed.append({'id': 'account:password', 'value': 'secret123', 'caret': 4, 'rev': 3})  # the caret moved
+            await asyncio.sleep(0.3)
+            seen['caret'] = last()['fields']['account:password']['caret']
+            typed.append({'id': 'account:password', 'value': 'secret123', 'caret': 9, 'rev': 4, 'enter': True})
+            await asyncio.sleep(0.5)
+            seen['signed in'] = list(signIns)
+            await self.key(p.K_ESCAPE)
+            await self.key(p.K_h, "h", 0.4)  # a window over the board: no field to type into
+            seen['help open'] = last()['fields']
+            await self.key(p.K_ESCAPE, "", 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        frames, restoreWindow = self.recordAccountWindow()
+        account, restoreAccount = self.fakeAccount(signIn=signIn)
+        try:
+            self.runGame(script)
+        finally:
+            restoreAccount()
+            restoreWindow()
+            restoreKeyboard()
+        self.assertEqual(seen['no fields'], {})
+        fields = seen['signin']['fields']
+        self.assertEqual(set(fields), {'account:login', 'account:password'})
+        layout = main.accountLayout('signin')
+        for name in ('login', 'password'):
+            rect = layout['field:' + name]
+            self.assertEqual((fields['account:' + name]['x'], fields['account:' + name]['y'],
+                              fields['account:' + name]['w'], fields['account:' + name]['h']),
+                             (rect.x, rect.y, rect.width, rect.height), "where the field is on the canvas")
+        self.assertEqual(fields['account:login']['mode'], 'email', "a keyboard with @")
+        self.assertEqual((fields['account:password']['type'], fields['account:password']['auto']),
+                         ('password', 'current-password'))
+        self.assertEqual(seen['login typed'], ('duy@example.com', 'login', 1, 'duy@example.com'),
+                         "typed text arrives, is acknowledged, and is what the page is told it is")
+        self.assertEqual(seen['password typed'], ('secret123', 2))
+        self.assertEqual(seen['caret'], 4, "the caret follows the keyboard's")
+        self.assertEqual(seen['signed in'], [('duy@example.com', 'secret123')], "Enter submits the form")
+        self.assertEqual(seen['help open'], {})
+
+    def test_phone_keyboard_cleans_typing_and_types_the_room_code(self):
+        main = self.main
+        published, typed, restoreKeyboard = self.phoneKeyboard()
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            seen['room field'] = published[-1]['fields'].get('room')
+            typed.append({'id': 'room', 'value': 'ab-12 x!', 'caret': 8, 'rev': 1})
+            await asyncio.sleep(0.3)
+            seen['room typed'] = published[-1]['fields']['room']
+            typed.append({'id': 'room', 'value': seen['room typed']['value'] + 'cd', 'caret': 6, 'rev': 2})
+            await asyncio.sleep(0.3)
+            seen['room more'] = (published[-1]['fields']['room'], published[-1]['ack'])
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)  # a room: no box to type in
+            seen['in a room'] = published[-1]['fields']
+            await self.click(main.panelLayout(2, True)['restart'].center, 0.3)
+            await self.click(main.promptRects()[1].center, 0.3)
+            # the register form's username takes only username characters
+            await self.click(main.panelLayout(2, False)['account'].center, 0.4)
+            await self.click(main.accountLayout('signin')['switch'].center, 0.4)
+            typed.append({'id': 'account:username', 'value': 'Duy T!_9', 'caret': 8, 'rev': 3})
+            await asyncio.sleep(0.3)
+            seen['username'] = published[-1]['fields']['account:username']
+            seen['register password'] = published[-1]['fields']['account:password']
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        try:
+            self.runGame(script)
+        finally:
+            restoreRoom()
+            restoreKeyboard()
+        room = seen['room field']
+        panel = main.panelLayout(2, False)['room']
+        self.assertEqual((room['x'], room['y'], room['w'], room['h']), (panel.x, panel.y, panel.width, panel.height))
+        self.assertEqual((room['caps'], room['max']), ('characters', main.ROOM_CODE_LENGTH))
+        self.assertEqual(seen['room typed']['value'], 'AB-12X'[:main.ROOM_CODE_LENGTH], "cleaned like typed text")
+        self.assertNotIn('!', seen['room typed']['value'])
+        self.assertEqual(seen['room more'][1], 2)
+        self.assertTrue(seen['room more'][0]['value'].startswith('AB-12'))
+        self.assertEqual(seen['in a room'], {}, "once in a room the box is gone")
+        self.assertEqual(seen['username']['value'], 'DuyT_9', "only username characters")
+        self.assertEqual(seen['register password']['auto'], 'new-password')
+
+    def test_phone_keyboard_fields_in_portrait_are_where_the_window_is_shown(self):
+        main = self.main
+        restorePortrait = self.portrait((430, 932))  # an iPhone 15 Pro Max
+        published, typed, restoreKeyboard = self.phoneKeyboard()
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.panelLayout(0, False)['account'].center, 0.5)
+            seen['fields'] = published[-1]['fields']
+            seen['layout'] = main.LAYOUT.size
+            layout = main.accountLayout('signin')
+            seen['window'] = {name: layout['field:' + name] for name in ('login', 'password')}
+            seen['shown'] = {name: main.fromWindow(rect, layout['box']) for name, rect in seen['window'].items()}
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        try:
+            self.runGame(script)
+        finally:
+            restoreKeyboard()
+            restorePortrait()
+        self.assertEqual(seen['layout'], (main.PORTRAIT_WIDTH, 1665), "430 x 932 CSS px is a portrait canvas")
+        for name in ('login', 'password'):
+            shown, got = seen['shown'][name], seen['fields']['account:' + name]
+            self.assertEqual((got['x'], got['y'], got['w'], got['h']), (shown.x, shown.y, shown.width, shown.height))
+            self.assertGreater(got['w'], seen['window'][name].width, "the window is shown larger on a phone")
+            self.assertTrue(p.Rect(0, 0, *seen['layout']).contains(shown))
+
+    def test_a_desktop_browser_publishes_no_fields(self):
+        import browser
+        published = []
+        real = browser.keyboardSync
+        browser.keyboardSync = lambda state: published.append(state)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(self.main.panelLayout(0, False)['account'].center, 0.4)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.4)
+        try:
+            self.runGame(script)
+        finally:
+            browser.keyboardSync = real
+        self.assertEqual(published, [], "a mouse and keyboard type into the canvas as before")
+
     def test_portrait_chat_bubbles_stay_in_the_strips(self):
         main = self.main
         main.loadImages()
