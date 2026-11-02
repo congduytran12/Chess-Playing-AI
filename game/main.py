@@ -32,6 +32,7 @@ import asyncio
 from network import net
 import pgn
 import hints
+import puzzles
 import settings
 import browser
 from textfield import TextField
@@ -236,12 +237,16 @@ def toBoard(pos):
 def onBoard(pos):
     return LAYOUT.board.collidepoint(pos)
 
-MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer"]
+MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer", "Puzzles"]
+PUZZLE_MODE = 3  # the index of Puzzles in MODE_OPTIONS
+PUZZLE_REPLY_MS = 500  # the opponent's answer in a puzzle comes this long after the player's move
+PUZZLE_UNDO_MS = 900  # a wrong move stays on the board this long, and is taken back
 LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
 SIDE_OPTIONS = ["White", "Black", "Random"]
 # (label, (starting seconds, increment seconds per move)), None for no clock
-CLOCK_OPTIONS = [("Off", None), ("1+0", (60, 0)), ("3+2", (180, 2)), ("5+0", (300, 0)),
-                 ("10+5", (600, 5)), ("15+10", (900, 10))]
+CLOCK_OPTIONS = [("Off", None), ("1+0", (60, 0)), ("1+1", (60, 1)), ("2+1", (120, 1)), ("3+0", (180, 0)),
+                 ("3+2", (180, 2)), ("5+0", (300, 0)), ("5+3", (300, 3)), ("10+0", (600, 0)), ("10+5", (600, 5)),
+                 ("15+10", (900, 10)), ("30+0", (1800, 0))]
 HINT_SECONDS = 1.0  # thinking time for hints, independent of the AI difficulty
 ANALYSIS_SECONDS = 0.8  # thinking time per position when analyzing a finished game
 # a move that loses at least this much (in pawns, against the best move) is marked in the move log
@@ -587,6 +592,8 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
         rows = [['mode'], ['level', 'side'], ['clock', 'hint']]
     elif modeIndex == 1:  # Local 2-Player
         rows = [['mode'], ['clock', 'hint']]
+    elif modeIndex == PUZZLE_MODE:  # the puzzle's text, the hint, and skipping to the next one
+        rows = [['mode'], ['puzzleInfo'], ['hint', 'skip']]
     elif not connected:  # Online, choosing a room
         rows = [['mode'], ['room', 'clock'], ['host', 'join']]
         if canRejoin:
@@ -601,7 +608,7 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
                 if not set(row) & {'level', 'side', 'clock', 'roomInfo'}]
     if reviewing:  # after the game: analysis and stepping through the moves
         rows += [['graph' if graph else 'analyze'], ['first', 'prev', 'next', 'last']]
-    elif modeIndex != 2 or connected:  # online without a room there is no game to resign or draw yet
+    elif modeIndex in (0, 1) or (modeIndex == 2 and connected):  # online without a room: no game to resign yet
         rows.append(['resign', 'draw'])
     rows.append(['undo', 'restart', 'account', 'menu'])  # the menu holds the rarer actions (MENU_ITEMS)
     return rows
@@ -971,6 +978,7 @@ async def main():
     # online games are synced by sending the whole game state; the newer (game, version) wins
     onlineGame = 0  # game number in the room, bumped by every new game
     onlineVersion = 0  # bumped by every change to the game: move, undo, resignation, draw
+    hostWhite = True  # the host plays White in this game; a rematch swaps the colors (the state's 'hw')
     onlineGameId = ""  # random id of the current game, shared by both players (rating reports are matched by it)
     liveGameId = None  # id of the online game we saw in progress; a game that was already over when we joined isn't saved again
     lastStateSent = 0  # ticks when we last sent our state
@@ -1027,7 +1035,11 @@ async def main():
     resultCardHidden = False  # the player clicked beside the result card to see the final position
     outcome = None  # (text, PGN result) once the game is over, worked out every frame
     hintMove = None  # suggested move shown on the board
+    # the puzzle being solved (mode Puzzles): {'data': Puzzle, 'seen': moves of the game already judged, 'wait':
+    # (ticks, 'reply' | 'undo') for what happens next, 'failed', 'hinted', 'done'}
+    puzzle = None
     hintState = None  # 'requested' -> 'searching' -> None
+    puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
     # after the game: stepping through the moves, and the AI's analysis of them
@@ -1104,7 +1116,7 @@ async def main():
             moveLogScroll = 0  # back to the latest moves
             return
         reviewPly = ply
-        reviewGs = GameState()
+        reviewGs = GameState.fromFen(puzzle['data'].fen) if puzzle is not None else GameState()
         if reviewGs.playerWantsToPlayAsBlack:
             reviewGs.board = reviewGs.board1
         for move in gs.moveLog[:ply]:
@@ -1145,6 +1157,101 @@ async def main():
             aiSearch['task'].cancel()
             aiSearch = None
 
+    # puzzle mode: the puzzle (the next one unless data is given) with the opponent's first move played and the
+    # player to move
+    def startPuzzle(data=None):
+        nonlocal gs, validMoves, positionHistory, playerWhiteHuman, playerBlackHuman, puzzle, puzzleNext
+        nonlocal moveMade, animate, timeControl, clocks, clockHistory
+        puzzleNext = None
+        data = data or puzzles.pick()
+        timeControl = None
+        if data is None:
+            showStatus("No puzzles found")
+            return
+        gs, first = data.start()
+        validMoves = gs.getValidMoves()
+        positionHistory = [GameState.fromFen(data.fen).getPositionKey()]
+        clocks = {'w': 0, 'b': 0}
+        clockHistory = [dict(clocks)]
+        playerWhiteHuman, playerBlackHuman = data.color == 'w', data.color == 'b'
+        puzzle = {'data': data, 'seen': 1, 'wait': None, 'failed': False, 'hinted': False, 'done': False}
+        moveMade = animate = True  # the opponent's move slides into place
+        playSound(moveSoundName(first))
+        showStatus("Find the best move for " + ("White" if data.color == 'w' else "Black"))
+
+    # the next puzzle is the same one when the player starts it over
+    def restartPuzzle():
+        nonlocal puzzleNext
+        if puzzle is not None:
+            puzzleNext = puzzle['data']
+        resetGame(startSound=False)
+
+    # the player's move was right (or mated): the opponent answers, or the puzzle is solved
+    def puzzleCorrect(count):
+        nonlocal puzzle
+        data = puzzle['data']
+        if count >= len(data.moves) or gs.checkmate:
+            puzzle['done'] = True
+            if puzzle['failed']:
+                showStatus("Solved, after a mistake: your rating stays", 4000)
+            else:
+                change = puzzles.finish(data, True, hinted=puzzle['hinted'])
+                showStatus("Solved!" + (" Rating %+d" % change if change else ""), 4000)
+            playSound('game-end')
+        else:
+            puzzle['wait'] = (p.time.get_ticks() + PUZZLE_REPLY_MS, 'reply')
+
+    # not the move: it stays a moment, then comes back; the first mistake lowers the rating
+    def puzzleWrong():
+        puzzle['wait'] = (p.time.get_ticks() + PUZZLE_UNDO_MS, 'undo')
+        if puzzle['failed']:
+            showStatus("Not that one. Try again", 2500)
+        else:
+            puzzle['failed'] = True
+            change = puzzles.finish(puzzle['data'], False)
+            showStatus("Not that one. Rating %+d. Try again" % change, 3000)
+
+    # the puzzle's moves are judged and answered once the move is on the board
+    def puzzleStep():
+        nonlocal hintMove, moveMade, animate
+        now = p.time.get_ticks()
+        data = puzzle['data']
+        if puzzle['wait'] is None and not puzzle['done'] and len(gs.moveLog) > puzzle['seen']:
+            count = len(gs.moveLog)
+            puzzle['seen'] = count
+            expected, code = data.moves[count - 1], gs.moveLog[-1].getCode()
+            if (code[:4] == expected[:4] and (len(expected) < 5 or code[4:5] == expected[4:5])) or gs.checkmate:
+                puzzleCorrect(count)
+            else:
+                puzzleWrong()
+        elif puzzle['wait'] is not None and now >= puzzle['wait'][0]:
+            kind = puzzle['wait'][1]
+            puzzle['wait'] = None
+            if kind == 'reply':
+                reply = gs.findMoveByCode(data.moves[len(gs.moveLog)], validMoves)
+                if reply is not None:
+                    playMove(reply)
+                    puzzle['seen'] = len(gs.moveLog)
+                    moveMade = animate = True
+            else:
+                takeBack(1)
+                puzzle['seen'] = len(gs.moveLog)
+
+    # the hint shows the next move of the solution; a puzzle solved with a hint doesn't change the rating
+    def puzzleHint():
+        nonlocal hintMove
+        move = gs.findMoveByCode(puzzle['data'].moves[len(gs.moveLog)], validMoves)
+        if move is not None:
+            hintMove = move
+            puzzle['hinted'] = True
+            showStatus("Hint: move the piece shown. Solving it with a hint doesn't change your rating", 4000)
+
+    # Skip counts as a miss unless the puzzle was solved or already failed; Next puzzle (after it) is free
+    def skipPuzzle():
+        if puzzle is not None and not puzzle['done'] and not puzzle['failed']:
+            puzzles.finish(puzzle['data'], False)
+        resetGame(startSound=False)
+
     # startSound: the player started this game (New game, Switch sides, Restart, a mode change, a room...), so it
     # plays 'game-start'; not online without a room, where there is no game
     def resetGame(startSound=False):
@@ -1152,9 +1259,10 @@ async def main():
         nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll, resultCardHidden
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
-        nonlocal endSoundPlayed, lowTimeWarned
+        nonlocal endSoundPlayed, lowTimeWarned, puzzle
         clearReview()
         clearAnnotations()
+        puzzle = None
         endSoundPlayed = False
         lowTimeWarned = set()
         drag = None
@@ -1194,11 +1302,16 @@ async def main():
         clocks = {'w': startMs, 'b': startMs}
         clockHistory = [dict(clocks)]
         lastClockTick = p.time.get_ticks()
+        if currentModeIndex == PUZZLE_MODE:
+            startPuzzle(puzzleNext)
+            return
         if startSound and not (currentModeIndex == 2 and not networkConnected):
             playSound('game-start')
 
     # the result card's buttons: against the computer the player can also switch sides
     def resultButtons():
+        if multiplayerMode and networkConnected:
+            return ['rematch', 'new']  # a rematch swaps the colors; a new game keeps them
         return ['new', 'switch'] if currentModeIndex == 0 else ['new']
 
     # Restart button / r key: a new game, and in online play leaving the room so a new one can be hosted
@@ -1214,7 +1327,9 @@ async def main():
     # asks first when that would throw away a game in progress or leave an online room
     def askToRestart():
         nonlocal pendingPrompt
-        if multiplayerMode and networkConnected:
+        if currentModeIndex == PUZZLE_MODE:
+            restartPuzzle()
+        elif multiplayerMode and networkConnected:
             pendingPrompt = {'kind': 'restart', 'text': "Leave this room?", 'yes': "Leave", 'no': "Stay",
                              'confirm': True}
         elif gs.moveLog and not gameOver:
@@ -1303,6 +1418,8 @@ async def main():
 
     # Undo button / z key outside online play
     def playerUndo():
+        if currentModeIndex == PUZZLE_MODE:
+            return
         if currentModeIndex == 0:
             # take back the AI's reply too, so it's the player's turn again
             takeBackMoveOf('w' if playerWhiteHuman else 'b')
@@ -1329,6 +1446,7 @@ async def main():
             'tc': list(timeControl) if timeControl else None,
             'clocks': dict(clocks) if timeControl else None,
             'result': list(gameResult) if gameResult else None,
+            'hw': hostWhite,
         })
         lastStateSent = p.time.get_ticks()
 
@@ -1364,10 +1482,13 @@ async def main():
     def newOnlineGameId():
         return "".join(random.choices(string.ascii_letters + string.digits, k=12))
 
-    def startOnlineGame():  # a new game in the same room, keeping the time control
-        nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, clockHistory
+    def startOnlineGame(swapColors=False):  # a new game in the same room, keeping the time control
+        nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, clockHistory, hostWhite
         keptTimeControl = timeControl
         resetGame(startSound=True)
+        if swapColors:  # a rematch: each plays the other color
+            hostWhite = not hostWhite
+            showStatus("Rematch: you play " + ("White" if ourColor() == 'w' else "Black"))
         onlineGame += 1
         onlineVersion = 0
         onlineGameId = newOnlineGameId()
@@ -1379,8 +1500,9 @@ async def main():
 
     def connectOnline(role):
         nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, onlineGameId, savedSession, lastStateHeard
-        nonlocal opponentInfo, opponentSeen, caughtUp, chatOpen, joinId, joinedAt, connectedAt
+        nonlocal opponentInfo, opponentSeen, caughtUp, chatOpen, joinId, joinedAt, connectedAt, hostWhite
         multiplayerRole = role
+        hostWhite = True
         opponentInfo = None
         opponentSeen = None
         caughtUp = False
@@ -1404,9 +1526,11 @@ async def main():
     # rebuilds the game from a newer state: undo back to the common moves, then play the rest
     def adoptState(state):
         nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, gameResult, moveMade, animate
-        nonlocal lastClockTick, pendingPrompt, squareSelected, playerClicks, caughtUp
+        nonlocal lastClockTick, pendingPrompt, squareSelected, playerClicks, caughtUp, hostWhite
         codes = str(state.get('moves') or "").split()
         newGame = state['game'] != onlineGame
+        swapped = (state.get('hw') is not False) != hostWhite
+        hostWhite = state.get('hw') is not False  # older games had the host as White
         if newGame:
             # the opponent started the next game; catching up after joining isn't a start (joining already was one)
             resetGame(startSound=not codes and caughtUp)
@@ -1447,21 +1571,31 @@ async def main():
         playerClicks = []
         if undone or newGame:
             pendingPrompt = None
-        if newGame and not codes:
+        if newGame and not codes and swapped:
+            showStatus("Rematch: you play " + ("White" if ourColor() == 'w' else "Black"))
+        elif newGame and not codes:
             showStatus("New game started")
         elif state.get('reason') == 'undo':
             showStatus("Undo accepted")
         elif undone or added > 1 or (newGame and codes):
             showStatus("Caught up with the game (move %d)" % (len(gs.moveLog) // 2 + 1))
 
+    # our color in an online game: the host plays White unless a rematch swapped the colors
+    def ourColor():
+        return 'w' if (multiplayerRole == 'host') == hostWhite else 'b'
+
     def myColor():
         if currentModeIndex == 2:
-            return 'w' if multiplayerRole == 'host' else 'b'
-        if currentModeIndex == 0:
+            return ourColor()
+        if currentModeIndex in (0, PUZZLE_MODE):
             return 'w' if playerWhiteHuman else 'b'
         return 'w' if gs.whiteToMove else 'b'  # local game: the side to move
 
     def playerName(color, forPgn=False):
+        if currentModeIndex == PUZZLE_MODE and puzzle is not None:
+            if (color == 'w') == playerWhiteHuman:
+                return "You (%d)" % puzzles.current()['rating']
+            return "Puzzle (%d)" % puzzle['data'].rating
         if currentModeIndex == 0:
             if (color == 'w') == playerWhiteHuman:
                 if account.signedIn:
@@ -1485,6 +1619,10 @@ async def main():
     def controlStates():
         inProgress = not gameOver
         online = currentModeIndex == 2
+        if currentModeIndex == PUZZLE_MODE:
+            return {'hint': puzzle is not None and not puzzle['done'] and humanTurn, 'skip': puzzle is not None,
+                    'undo': False, 'save': False, 'load': False, 'analyze': False, 'first': shownPly() > 0,
+                    'prev': shownPly() > 0, 'next': shownPly() < len(gs.moveLog), 'last': shownPly() < len(gs.moveLog)}
         return {
             'hint': (inProgress and humanTurn and (not online or networkConnected) and hintState is None
                      and hintsLeft() > 0),
@@ -1506,6 +1644,11 @@ async def main():
         return len(gs.moveLog) if reviewPly is None else reviewPly
 
     def reasonDisabled(name):
+        if currentModeIndex == PUZZLE_MODE:
+            if name in ('undo', 'save', 'load'):
+                return "Not in puzzles"
+            if name == 'hint':
+                return "The puzzle is solved" if puzzle is not None and puzzle['done'] else "Wait for your turn"
         return disabledReason(name, gameOver=gameOver, online=currentModeIndex == 2, connected=networkConnected,
                               humanTurn=humanTurn, hintsLeft=hintsLeft(), hintBusy=hintState is not None,
                               prompt=pendingPrompt is not None,
@@ -1574,7 +1717,7 @@ async def main():
                     return 'result:' + name, None, True
         for name, rect in layout.items():
             if rect.collidepoint(pos):
-                if name == 'roomInfo':
+                if name in ('roomInfo', 'puzzleInfo'):
                     return None, None, False
                 if name == 'room':  # a text field: the I-beam, and its tooltip
                     return name, tooltipText(name), 'ibeam'
@@ -2217,7 +2360,7 @@ async def main():
                 if mtype == 'chat':  # any time in the room, but only fresh ones from the opponent
                     index = incomingChat(msg, opponentRole, net.server_time, joinedAt)
                     if index is not None:
-                        chatBubbles['b' if multiplayerRole == 'host' else 'w'] = (QUICK_CHAT[index], now)
+                        chatBubbles['b' if ourColor() == 'w' else 'w'] = (QUICK_CHAT[index], now)
                     continue
                 current = (msg.get('role') == opponentRole and msg.get('game') == onlineGame
                            and msg.get('version') == onlineVersion)
@@ -2240,10 +2383,12 @@ async def main():
         humanTurn = (gs.whiteToMove and playerWhiteHuman) or (
             not gs.whiteToMove and playerBlackHuman)
         if multiplayerMode and networkConnected:
-            humanTurn = (gs.whiteToMove and multiplayerRole == 'host') or (not gs.whiteToMove and multiplayerRole == 'client')
+            humanTurn = gs.whiteToMove == (ourColor() == 'w')
+        if currentModeIndex == PUZZLE_MODE:  # not while the opponent's answer or a wrong move's undo is due
+            humanTurn = (puzzle is not None and not puzzle['done'] and puzzle['wait'] is None and humanTurn)
         # Black at the bottom for the online guest, and when playing Black against the AI
-        flip_board = (multiplayerMode and networkConnected and multiplayerRole == 'client') or \
-            (currentModeIndex == 0 and playerBlackHuman and not playerWhiteHuman)
+        flip_board = (multiplayerMode and networkConnected and ourColor() == 'b') or \
+            (currentModeIndex in (0, PUZZLE_MODE) and playerBlackHuman and not playerWhiteHuman)
         flip_board = flip_board != boardFlipped  # Flip board (F) turns it around from there
         canRejoin = currentModeIndex == 2 and not networkConnected and savedSession is not None
         guest = currentModeIndex == 2 and networkConnected and multiplayerRole == 'client'  # no Copy link
@@ -2476,7 +2621,7 @@ async def main():
                         if kind == 'undo':
                             if accepted:
                                 # the opponent's last move comes back, and our reply after it
-                                takeBackMoveOf('b' if multiplayerRole == 'host' else 'w')
+                                takeBackMoveOf('b' if ourColor() == 'w' else 'w')
                                 publishChange('undo')
                             else:
                                 sendOnline({'type': 'undo_declined'})
@@ -2528,6 +2673,10 @@ async def main():
                         playerUndo()
                 elif clicked == 'restart':
                     askToRestart()
+                elif clicked == 'skip':
+                    skipPuzzle()
+                elif clicked == 'hint' and currentModeIndex == PUZZLE_MODE:
+                    puzzleHint()
                 elif clicked == 'hint':
                     hintState = 'requested'
                     showStatus("Looking for a good move...", 10000)
@@ -2621,7 +2770,9 @@ async def main():
                             continue
                         # the result card's buttons start the next game; a click beside them hides the card
                         _, _, cardRects = resultCardLayout(outcome[0], resultButtons())
-                        if cardRects['new'].collidepoint(location):
+                        if 'rematch' in cardRects and cardRects['rematch'].collidepoint(location):
+                            startOnlineGame(swapColors=True)
+                        elif 'new' in cardRects and cardRects['new'].collidepoint(location):
                             if multiplayerMode and networkConnected:
                                 startOnlineGame()
                             else:
@@ -2826,7 +2977,9 @@ async def main():
             animate = False
             moveUndone = False
 
-        outcome = getOutcome(gs, positionHistory, gameResult)
+        if currentModeIndex == PUZZLE_MODE and puzzle is not None:
+            puzzleStep()
+        outcome = None if currentModeIndex == PUZZLE_MODE else getOutcome(gs, positionHistory, gameResult)
         gameOver = outcome is not None
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
             pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
@@ -2974,6 +3127,9 @@ async def main():
             'first': "", 'prev': "", 'next': "", 'last': "",  # drawn as arrow icons
         }
         labels['analyze'] = "Analyze game"  # once the analysis starts its graph takes the button's place
+        if currentModeIndex == PUZZLE_MODE:
+            labels['hint'] = "Hint"
+            labels['skip'] = "Next puzzle" if puzzle is not None and puzzle['done'] else "Skip"
         if savedSession:
             labels['rejoin'] = "Rejoin %s as %s" % (savedSession['room'], "White" if savedSession['role'] == 'host' else "Black")
         labelSizes = evenLabelSizes(panelRows(currentModeIndex, networkConnected, canRejoin, gameOver,
@@ -2988,6 +3144,9 @@ async def main():
                               radius=BUTTON_RADIUS, size=scaled(FIELD_TEXT_SIZE))
             elif name == 'graph':
                 pass  # drawn with the review info above
+            elif name == 'puzzleInfo':
+                if puzzle is not None:
+                    drawPuzzleInfo(screen, rect, puzzleInfoLines(puzzle, puzzles.current()))
             elif name == 'roomInfo':
                 textObj = get_text_surface(f"Room: {roomCode}", scaled(20), UI['text'], True)
                 textLoc = rect.move(rect.width / 2 - textObj.get_width() / 2, 0)
@@ -4391,6 +4550,25 @@ def scrollForListDrag(startScroll, dy):
 
 # what the move list says before the first move, as (heading, text): how to move, and what to do online
 # touch: a phone or tablet (tap, and no keyboard for the How to play key)
+# the two lines of the puzzle's panel row: what to do (or how it went), and the ratings (or what the puzzle was about)
+def puzzleInfoLines(state, progress):
+    data = state['data']
+    if state['done']:
+        first = ("Solved after a mistake" if state['failed'] else "Solved with a hint" if state['hinted']
+                 else "Solved!")
+        second = (data.themeText + "  ·  " if data.themes else "") + "Streak %d" % progress['streak']
+        return first, second
+    return ("Find the best move for " + ("White" if data.color == 'w' else "Black"),
+            "Puzzle %d  ·  You %d" % (data.rating, progress['rating']))
+
+
+def drawPuzzleInfo(screen, rect, lines):
+    first = get_fitting_text(lines[0], rect.width, scaled(20), UI['text'], True)
+    screen.blit(first, (rect.centerx - first.get_width() / 2, rect.y))
+    second = get_fitting_text(lines[1], rect.width, scaled(16), UI['textDim'], False)
+    screen.blit(second, (rect.centerx - second.get_width() / 2, rect.y + scaled(24)))
+
+
 def emptyListNote(modeIndex, connected, guest=False, touch=False):
     moving = "Drag a piece, or %s it and then a square." % ("tap" if touch else "click")
     if modeIndex == 2 and not connected:
@@ -4926,6 +5104,7 @@ TOOLTIPS = {
     'side': "Your color against the computer",
     'clock': "Time for each player: minutes + seconds per move",
     'hint': "Show a good move on the board",
+    'skip': "Skip this puzzle (it counts as a miss), or go on to the next",
     'room': "Type or paste the room code your friend sent",
     'host': "Create a room and play White",
     'join': "Join this room and play Black",
@@ -5188,7 +5367,7 @@ async def animateMove(move, screen, board, clock, flip=False):
 
 
 # buttons on the result card, by name; which ones show depends on the mode (see resultButtons in main)
-RESULT_BUTTONS = {'new': "New game", 'switch': "Switch sides"}
+RESULT_BUTTONS = {'new': "New game", 'switch': "Switch sides", 'rematch': "Rematch"}
 RESULT_CARD_NOTE = "Click the board to see the final position"
 RESULT_CARD_NOTE_TOUCH = "Tap the board to see the final position"  # phones and tablets (browser.touchScreen)
 
@@ -5239,7 +5418,7 @@ def wellFormedState(msg):
     if result is not None and not (isinstance(result, list) and len(result) == 2
                                    and all(isinstance(x, str) and len(x) <= 100 and x.isprintable() for x in result)):
         return False
-    return isinstance(msg.get('moves') or "", str)
+    return isinstance(msg.get('moves') or "", str) and isinstance(msg.get('hw', True), bool)
 
 
 # what the online status line says: (text, palette key of its color, note for the opponent's name or None)

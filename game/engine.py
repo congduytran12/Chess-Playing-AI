@@ -59,6 +59,39 @@ class GameState():
         self.castleRightsLog = [castleRights(
             self.whiteCastleKingside, self.whiteCastleQueenside, self.blackCastleKingside, self.blackCastleQueenside)]
 
+    @classmethod
+    def fromFen(cls, fen):
+        """The game at the position of a FEN string (board, side to move, castling rights, en passant square); its
+        move log starts empty, the move counters of the FEN are ignored."""
+        parts = fen.split()
+        gs = cls()
+        gs.board = []
+        for rank in parts[0].split('/'):
+            row = []
+            for ch in rank:
+                if ch.isdigit():
+                    row += ['--'] * int(ch)
+                else:
+                    row.append(('w' if ch.isupper() else 'b') + ('p' if ch in 'pP' else ch.upper()))
+            gs.board.append(row)
+        gs.whiteToMove = parts[1] == 'w'
+        for r in range(8):
+            for c in range(8):
+                if gs.board[r][c] == 'wK':
+                    gs.whiteKinglocation = (r, c)
+                elif gs.board[r][c] == 'bK':
+                    gs.blackKinglocation = (r, c)
+        rights = parts[2] if len(parts) > 2 else '-'
+        gs.whiteCastleKingside, gs.whiteCastleQueenside = 'K' in rights, 'Q' in rights
+        gs.blackCastleKingside, gs.blackCastleQueenside = 'k' in rights, 'q' in rights
+        gs.castleRightsLog = [castleRights(gs.whiteCastleKingside, gs.whiteCastleQueenside,
+                                           gs.blackCastleKingside, gs.blackCastleQueenside)]
+        target = parts[3] if len(parts) > 3 else '-'
+        gs.enpasantPossible = ((Move.ranksToRows[target[1]], Move.filesToCols[target[0]])
+                               if len(target) == 2 and target != '-' else ())
+        gs.enpasantPossibleLog = [gs.enpasantPossible]
+        return gs
+
     def makeMove(self, move):
         self.board[move.startRow][move.startCol] = "--"
         self.board[move.endRow][move.endCol] = move.pieceMoved

@@ -2854,6 +2854,267 @@ class GameLoopTest(unittest.TestCase):
         self.assertIsNotNone(seen['result'], "the host resigned")
         self.assertEqual(seen['next game'], ['game-start'])
 
+    def test_a_rematch_swaps_the_colors(self):
+        main = self.main
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            await self.move((6, 4), (4, 4), 0.4)
+            await self.click(main.panelLayout(2, True)['resign'].center)
+            await self.click(main.promptRects()[1].center, 0.4)
+            states = [m for m in sent if m.get('type') == 'state']
+            seen['first'] = (states[-1].get('hw'), states[-1]['game'])
+            card = main.resultCardLayout("Black wins by resignation", ['rematch', 'new'])[2]
+            await self.click(card['rematch'].center, 0.5)
+            states = [m for m in sent if m.get('type') == 'state']
+            seen['rematch'] = (states[-1].get('hw'), states[-1]['game'], states[-1]['moves'])
+            seen['status'] = [text for text in shown['status'] if text.startswith("Rematch")]
+            seen['black'] = main.panelLayout(2, True)['hint'] is not None
+            await self.click(main.panelLayout(2, True)['restart'].center)  # leave the room
+            await self.click(main.promptRects()[1].center, 0.3)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            restoreRoom()
+        self.assertEqual(seen['first'], (True, 0), "the host plays White in the first game")
+        self.assertEqual(seen['rematch'], (False, 1, ""), "the next game, with the host playing Black")
+        self.assertEqual(set(seen['status']), {"Rematch: you play Black"})
+
+    def test_the_guest_follows_a_rematch(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+        realSetTopic, realSend = net.set_topic, net.send
+
+        def fakeSetTopic(topic):
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+
+        async def fakeSend(data):
+            pass
+
+        def hostState(game, version, moves, **more):
+            state = {'type': 'state', 'game': game, 'version': version, 'role': 'host', 'sender': 'host-of-test',
+                     'gid': "game%d" % game, 'moves': moves, 'tc': None, 'clocks': None, 'result': None}
+            return dict(state, **more)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['room'].center)
+            for letter in "ab12":
+                await self.key(getattr(p, 'K_' + letter), letter, 0.05)
+            await self.click(main.panelLayout(2, False)['join'].center, 0.3)
+            net.incoming_messages.append(hostState(0, 0, ""))
+            await asyncio.sleep(0.4)
+            seen['first'] = [text for text in shown['status'] if text.startswith("Rematch")]
+            net.incoming_messages.append(hostState(1, 0, "", hw=False))  # the host asks for a rematch
+            await asyncio.sleep(0.5)
+            seen['rematch'] = sorted(set(text for text in shown['status'] if text.startswith("Rematch")))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        shown, restoreShown = self.recordShown()
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)
+        self.assertEqual(seen['first'], [])
+        self.assertEqual(seen['rematch'], ["Rematch: you play White"], "the host plays Black, so the guest is White")
+
+    def test_a_state_with_the_colors_swapped_is_checked(self):
+        main = self.main
+        good = {'moves': "e2e4", 'tc': None}
+        self.assertTrue(main.wellFormedState(dict(good, hw=False)))
+        self.assertTrue(main.wellFormedState(dict(good, hw=True)))
+        self.assertTrue(main.wellFormedState(good), "older games send no colors")
+        self.assertFalse(main.wellFormedState(dict(good, hw="no")))
+        self.assertFalse(main.wellFormedState(dict(good, hw=1)))
+
+    def test_clocks_with_increments(self):
+        main = self.main
+        labels = [label for label, _ in main.CLOCK_OPTIONS]
+        self.assertEqual(len(labels), len(set(labels)))
+        self.assertEqual(dict(main.CLOCK_OPTIONS)["5+3"], (300, 3))
+        for label, control in main.CLOCK_OPTIONS:
+            if control:
+                self.assertEqual(label, "%d+%d" % (control[0] // 60, control[1]), "the label says what it is")
+        self.assertGreaterEqual(len([c for _, c in main.CLOCK_OPTIONS if c and c[1]]), 5, "several with an increment")
+        rect = main.panelLayout(0, False)['clock']
+        options = main.dropdownOptionRects(rect, len(main.CLOCK_OPTIONS))
+        self.assertTrue(p.Rect(0, 0, *main.WINDOW_SIZE).contains(options[0]), "the list fits the window")
+
+    # --- puzzles
+
+    def puzzleKit(self, color='w', length=4):
+        """A puzzle of a color and length with plain moves, the progress in a temporary file, and what to call to
+        put everything back. Returns (puzzle, other puzzle, restore)."""
+        import puzzles
+        plain = [x for x in puzzles.load() if len(x.moves) == length and x.color == color
+                 and all(len(code) == 4 for code in x.moves)]
+        chosen, other = plain[0], plain[1]
+        folder = tempfile.TemporaryDirectory()
+        saved = puzzles.STORAGE_FILE, puzzles._saved, puzzles.pick
+        puzzles.STORAGE_FILE, puzzles._saved = os.path.join(folder.name, 'puzzles.json'), None
+        queue = [chosen, other]
+        puzzles.pick = lambda *args, **kwargs: queue.pop(0)
+
+        def restore():
+            puzzles.STORAGE_FILE, puzzles._saved, puzzles.pick = saved
+            folder.cleanup()
+        return chosen, other, restore
+
+    def puzzleCell(self, code, color='w'):
+        """The (row, col) to click for a square of a UCI code (the board is turned round when the player is Black)."""
+        main = self.main
+        row, col = main.Move.ranksToRows[code[1]], main.Move.filesToCols[code[0]]
+        return (7 - row, 7 - col) if color == 'b' else (row, col)
+
+    async def openPuzzles(self):
+        main = self.main
+        modeRect = main.panelLayout(0, False)['mode']
+        await self.click(modeRect.center)
+        await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[main.PUZZLE_MODE].center, 1.0)
+
+    def test_a_puzzle_is_solved_move_by_move(self):
+        main = self.main
+        import puzzles
+        for color in ('w', 'b'):
+            with self.subTest(color=color):
+                chosen, other, restore = self.puzzleKit(color)
+                seen = {}
+
+                async def script():
+                    await asyncio.sleep(1.0)
+                    await self.openPuzzles()
+                    seen['start'] = [t for t in shown['status'] if t.startswith("Find")]
+                    seen['panel'] = sorted(main.panelLayout(main.PUZZLE_MODE, False))
+                    for code in (chosen.moves[1], chosen.moves[3]):  # the player's moves; the opponent answers
+                        await self.move(self.puzzleCell(code[:2], color), self.puzzleCell(code[2:4], color), 1.8)
+                    seen['solved'] = [t for t in shown['status'] if t.startswith("Solved")]
+                    seen['progress'] = dict(puzzles.current())
+                    p.event.post(p.event.Event(p.QUIT))
+                    await asyncio.sleep(0.5)
+
+                shown, restoreShown = self.recordShown()
+                try:
+                    self.runGame(script)
+                finally:
+                    restoreShown()
+                    progress = dict(puzzles.current())
+                    restore()
+                word = "White" if color == 'w' else "Black"
+                self.assertEqual(seen['start'][:1], ["Find the best move for " + word])
+                self.assertNotIn('resign', seen['panel'], "no resigning in puzzles")
+                self.assertTrue({'puzzleInfo', 'hint', 'skip', 'restart'} <= set(seen['panel']))
+                self.assertTrue(seen['solved'] and seen['solved'][0].startswith("Solved! Rating +"), seen['solved'])
+                self.assertEqual((progress['streak'], progress['attempts'], progress['solved']), (1, 1, [chosen.id]))
+                self.assertGreater(progress['rating'], puzzles.START_RATING)
+
+    def test_a_wrong_move_comes_back_and_costs_rating(self):
+        import puzzles
+        chosen, other, restore = self.puzzleKit('w')
+        gs, _ = chosen.start()
+        right = chosen.moves[1]
+        wrong = next(m.getCode() for m in gs.getValidMoves() if m.getCode()[:4] != right[:4] and not m.isPawnPromotion)
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.openPuzzles()
+            await self.move(self.puzzleCell(wrong[:2]), self.puzzleCell(wrong[2:4]), 0.4)
+            seen['wrong'] = [t for t in shown['status'] if t.startswith("Not that one")]
+            seen['rating'] = puzzles.current()['rating']
+            await asyncio.sleep(1.2)  # the wrong move is taken back
+            for code in (right, chosen.moves[3]):
+                await self.move(self.puzzleCell(code[:2]), self.puzzleCell(code[2:4]), 1.8)
+            seen['solved'] = [t for t in shown['status'] if t.startswith("Solved")]
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            progress = dict(puzzles.current())
+            restore()
+        self.assertTrue(seen['wrong'] and "Rating -" in seen['wrong'][0], seen['wrong'])
+        self.assertLess(seen['rating'], puzzles.START_RATING)
+        self.assertEqual(seen['solved'][:1], ["Solved, after a mistake: your rating stays"])
+        self.assertEqual((progress['rating'], progress['streak'], progress['solved']), (seen['rating'], 0, []),
+                         "one mistake counted once, and the puzzle is not marked solved")
+
+    def test_a_hint_and_skipping_in_puzzles(self):
+        main = self.main
+        import puzzles
+        chosen, other, restore = self.puzzleKit('w')
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.openPuzzles()
+            layout = main.panelLayout(main.PUZZLE_MODE, False)
+            await self.click(layout['hint'].center, 0.5)
+            seen['hint'] = [t for t in shown['status'] if t.startswith("Hint")]
+            await self.click(layout['skip'].center, 1.0)  # a miss, and the next puzzle
+            seen['after skip'] = (puzzles.current()['rating'], puzzles.current()['streak'], puzzles.current()['attempts'])
+            seen['starts'] = [t for t in shown['status'] if t.startswith("Find")]
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            restore()
+        self.assertTrue(seen['hint'] and "doesn't change your rating" in seen['hint'][0])
+        rating, streak, attempts = seen['after skip']
+        self.assertEqual((streak, attempts), (0, 1))
+        self.assertLess(rating, puzzles.START_RATING, "skipping counts as a miss")
+        self.assertGreaterEqual(len(seen['starts']), 1)
+
+    def test_the_puzzle_panel_texts(self):
+        main = self.main
+        import puzzles
+        data = puzzles.Puzzle('x', "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", ['h7h6', 'a1a8'], 800, ['mate', 'backRankMate'])
+        progress = {'rating': 1010, 'streak': 2}
+        state = {'data': data, 'failed': False, 'hinted': False, 'done': False}
+        self.assertEqual(main.puzzleInfoLines(state, progress),
+                         ("Find the best move for White", "Puzzle 800  ·  You 1010"))
+        state['done'] = True
+        self.assertEqual(main.puzzleInfoLines(state, progress), ("Solved!", "Mate · BackRankMate  ·  Streak 2"))
+        state['hinted'] = True
+        self.assertEqual(main.puzzleInfoLines(state, progress)[0], "Solved with a hint")
+        state['failed'] = True
+        self.assertEqual(main.puzzleInfoLines(state, progress)[0], "Solved after a mistake")
+        self.assertEqual(main.MODE_OPTIONS[main.PUZZLE_MODE], "Puzzles")
+        self.assertEqual([row for row in main.panelRows(main.PUZZLE_MODE, False)][:3],
+                         [['mode'], ['puzzleInfo'], ['hint', 'skip']])
+        self.assertEqual(main.panelRows(main.PUZZLE_MODE, False)[-1], ['undo', 'restart', 'account', 'menu'])
+        self.assertIn('skip', main.TOOLTIPS)
+
     def test_hint_in_an_online_game(self):
         main = self.main
         import hints
