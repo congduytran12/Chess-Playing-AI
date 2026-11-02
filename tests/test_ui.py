@@ -2855,6 +2855,210 @@ class GameLoopTest(unittest.TestCase):
         self.assertIsNotNone(seen['result'], "the host resigned")
         self.assertEqual(seen['next game'], ['game-start'])
 
+    # --- online: states from the opponent are checked (the room is public, and the opponent has their own interest)
+
+    def test_judging_a_state_from_the_opponent(self):
+        main = self.main
+
+        def view(**changes):  # we are White (the host), and have played 1. e4
+            base = {'game': 0, 'moves': ['e2e4'], 'result': None, 'color': 'w', 'joining': False,
+                    'undoAsked': False, 'drawOffered': False, 'clocks': {'w': 300000, 'b': 300000}}
+            return dict(base, **changes)
+
+        def state(moves, **changes):
+            return dict({'game': 0, 'version': 4, 'moves': moves, 'result': None, 'tc': None, 'clocks': None},
+                        **changes)
+        judge = main.judgeState
+        # the opponent's own moves
+        self.assertIsNone(judge(state("e2e4 e7e5"), view()))
+        self.assertIsNone(judge(state("e2e4"), view()), "the same game again")
+        # not ours, not illegal ones, and nothing taken back that nobody agreed to
+        self.assertIn("a move of ours", judge(state("e2e4 e7e5 g1f3 b8c6"), view()))
+        self.assertIn("illegal move", judge(state("e2e4 e7e6 e2e4"), view()))
+        self.assertIn("takes moves back", judge(state("d2d4"), view()))
+        self.assertIn("takes moves back", judge(state(""), view()))
+        self.assertIsNone(judge(state(""), view(undoAsked=True)), "we asked for the undo")
+        self.assertIn("a move of ours", judge(state("d2d4"), view(undoAsked=True)), "an undo doesn't rewrite our moves")
+        # a new game: its moves must be the opponent's too
+        self.assertIsNone(judge(state("", game=1), view()))
+        self.assertIn("a move of ours", judge(state("e2e4", game=1), view()))
+        self.assertIsNone(judge(state("e2e4", game=1), view(color='b', moves=['e2e4', 'e7e5'])), "a guest's view")
+        # nothing of ours yet (joining, or rejoining): the game is taken as it is
+        joining = view(moves=[], joining=True)
+        self.assertIsNone(judge(state("e2e4 e7e5 g1f3 b8c6"), joining))
+        self.assertIn("illegal move", judge(state("e2e5"), joining))
+        self.assertIsNone(judge(state("e2e4 e7e5", result=['Black wins by resignation', '0-1']), joining),
+                          "our own resignation, before a reload")
+        # results the opponent can have caused: their own resignation, a draw we offered, a time-out the clocks show
+        white = ['White wins by resignation', '1-0']  # Black resigns
+        black = ['Black wins by resignation', '0-1']  # White resigns
+        self.assertIsNone(judge(state("e2e4 e7e5", result=white), view()))
+        self.assertIn("nobody can have caused", judge(state("e2e4 e7e5", result=black), view()), "they can't resign us")
+        draw = ['Draw by agreement', '1/2-1/2']
+        self.assertIn("never agreed", judge(state("e2e4 e7e5", result=draw), view()))
+        self.assertIsNone(judge(state("e2e4 e7e5", result=draw), view(drawOffered=True)))
+        slow = ['Black wins on time', '0-1']  # we are out of time
+        self.assertIn("nobody can have caused", judge(state("e2e4 e7e5", result=slow), view()), "we still have time")
+        self.assertIsNone(judge(state("e2e4 e7e5", result=slow), view(clocks={'w': 1500, 'b': 100000})))
+        theirs = ['White wins on time', '1-0']  # they are out of time
+        self.assertIn("nobody can have caused", judge(state("e2e4", result=theirs), view()), "no clocks to show it")
+        self.assertIn("nobody can have caused",
+                      judge(state("e2e4", result=theirs, clocks={'w': 1000, 'b': 90000}), view()))
+        self.assertIsNone(judge(state("e2e4", result=theirs, clocks={'w': 1000, 'b': 0}), view()))
+        self.assertIn("nobody can have caused", judge(state("e2e4", result=['You lose', '1-0']), view()))
+        self.assertIn("nobody can have caused", judge(state("e2e4", result=['x', 'y']), view()))
+        # a result stays, except a time-out against the opponent, which their move undoes
+        ended = view(result=tuple(white))
+        self.assertIn("changes the result", judge(state("e2e4 e7e5", result=draw), dict(ended, drawOffered=True)))
+        self.assertIn("ends the end", judge(state("e2e4 e7e5"), ended))
+        flagged = view(result=tuple(theirs))
+        self.assertIsNone(judge(state("e2e4 e7e5"), flagged), "their move came in time")
+        self.assertIn("ends the end", judge(state("e2e4"), flagged), "but nothing new from them")
+        self.assertIn("ends the end", judge(state("e2e4 e7e5"), view(result=tuple(slow))), "a time-out against us stays")
+
+    def test_a_stranger_cannot_end_the_game(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            await self.move((6, 4), (4, 4), 0.4)  # 1. e4
+            state = dict([m for m in sent if m.get('type') == 'state'][-1])
+            version = state['version']
+
+            def post(**changes):
+                message = {'type': 'state', 'game': 0, 'version': version, 'role': 'client', 'sender': 'someone',
+                           'gid': state['gid'], 'moves': 'e2e4', 'tc': None, 'clocks': None, 'result': None}
+                message.update(changes)
+                net.incoming_messages.append(message)
+            del plays[:]
+            # they rewrite our move, play it for us, claim we resigned: none of it happens
+            post(version=version + 1, moves='f2f3 e7e5 g2g4 d8h4')
+            post(version=version + 2, moves='e2e4 e7e5 g1f3 b8c6')
+            post(version=version + 3, moves='e2e4 e7e5', result=['Black wins by resignation', '0-1'])
+            post(version=version + 4, moves='e2e4 e7e5', result=['Draw by agreement', '1/2-1/2'])
+            post(version=version + 5, role='host')  # not from the opponent's side
+            await asyncio.sleep(1.0)
+            seen['forged'] = list(plays)
+            # the opponent's own move comes in, and then their resignation
+            post(version=version + 6, moves='e2e4 e7e5')
+            await asyncio.sleep(0.8)
+            seen['move'] = list(plays)
+            post(version=version + 7, moves='e2e4 e7e5', result=['White wins by resignation', '1-0'])
+            await asyncio.sleep(0.8)
+            seen['resigned'] = list(plays)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        plays, restore = self.fakeSounds()
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreRoom()
+        self.assertEqual(seen['forged'], [], "nothing of it was believed")
+        self.assertEqual(seen['move'], ['move'])
+        self.assertEqual(seen['resigned'], ['move', 'game-end'], "their resignation counts")
+
+    def test_the_colors_belong_to_a_new_game(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+        realSetTopic, realSend = net.set_topic, net.send
+        sentStates = []
+
+        def fakeSetTopic(topic):
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+
+        async def fakeSend(data):
+            sentStates.append(data)
+
+        def hostState(version, moves, **more):
+            return dict({'type': 'state', 'game': 0, 'version': version, 'role': 'host', 'sender': 'host-of-test',
+                         'gid': "game0", 'moves': moves, 'tc': None, 'clocks': None, 'result': None}, **more)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['room'].center)
+            for letter in "ab12":
+                await self.key(getattr(p, 'K_' + letter), letter, 0.05)
+            await self.click(main.panelLayout(2, False)['join'].center, 0.3)
+            net.incoming_messages.append(hostState(0, ""))
+            await asyncio.sleep(0.4)
+            net.incoming_messages.append(hostState(1, "e2e4", hw=False))  # the host says the colors are swapped
+            await asyncio.sleep(0.6)
+            # we are still Black: e7-e5 is ours to play (the board is turned round for Black)
+            await self.move((6, 3), (4, 3), 0.6)
+            seen['moves'] = [s['moves'] for s in sentStates if s.get('type') == 'state']
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        try:
+            self.runGame(script)
+        finally:
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)
+        self.assertIn("e2e4 e7e5", seen['moves'], "still Black: the colors didn't change in the middle of the game")
+
+    def test_the_opponents_flag_waits_for_their_move(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+        saved = list(main.CLOCK_OPTIONS)
+        main.CLOCK_OPTIONS.append(("0+0", (2, 0)))  # two seconds each
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            clockRect = main.panelLayout(2, False)['clock']
+            await self.click(clockRect.center)
+            await self.click(main.dropdownOptionRects(clockRect, len(main.CLOCK_OPTIONS))[-1].center, 0.4)
+            await self.click(main.panelLayout(2, False)['host'].center, 0.5)
+            await self.move((6, 4), (4, 4), 0.1)  # 1. e4: Black's two seconds run
+            state = dict([m for m in sent if m.get('type') == 'state'][-1])
+            del plays[:]
+            await asyncio.sleep(3.0)  # their clock has been out for a second: not yet their flag
+            seen['waiting'] = list(plays)
+            # their move was on its way: it comes in now
+            net.incoming_messages.append({'type': 'state', 'game': 0, 'version': state['version'] + 1,
+                                          'role': 'client', 'sender': 'guest-of-test', 'gid': state['gid'],
+                                          'moves': 'e2e4 e7e5', 'tc': [2, 0], 'clocks': {'w': 1800, 'b': 0},
+                                          'result': None})
+            await asyncio.sleep(0.8)
+            seen['answered'] = list(plays)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        sent, topics, restoreRoom = self.offlineRoom()
+        plays, restore = self.fakeSounds()
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreRoom()
+            main.CLOCK_OPTIONS[:] = saved
+        self.assertEqual(seen['waiting'], [], "no flag fall within the grace")
+        self.assertEqual(seen['answered'], ['move'], "their move counted, and nobody lost on time")
+
     def test_a_rematch_swaps_the_colors(self):
         main = self.main
         seen = {}
