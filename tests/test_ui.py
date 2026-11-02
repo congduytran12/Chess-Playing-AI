@@ -3231,6 +3231,14 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen[True][1], ['1-0'], "but the game is still saved to the account")
         self.assertTrue(seen['hint'][0].endswith("this game won't be rated"), seen['hint'])
 
+    def test_games_started_together_get_different_random_numbers(self):
+        main = self.main
+        first, second = main.entropySeed(), main.entropySeed()
+        self.assertNotEqual(first, second, "not even in the same millisecond")
+        import random
+        a, b = random.Random(first), random.Random(second)
+        self.assertNotEqual([a.random() for _ in range(3)], [b.random() for _ in range(3)])
+
     def test_a_rematch_swaps_the_colors(self):
         main = self.main
         seen = {}

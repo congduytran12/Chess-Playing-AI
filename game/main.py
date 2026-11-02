@@ -43,8 +43,19 @@ import string
 import time
 from urllib.parse import parse_qsl
 
-# Explicitly seed random to fix deterministic room codes in WASM environments (Vercel)
-random.seed(int(time.time() * 1000))
+# What the random numbers (the room codes, the player id of an online game) start from. The browser build doesn't seed
+# them well by itself, so they are seeded here: from several clocks and the process, and not from the time in
+# milliseconds alone, because two games started in the same millisecond (two players, or two processes on one
+# machine) would then get the same player id, and each would take the other's messages for its own.
+def entropySeed():
+    try:
+        extra = os.urandom(16).hex()
+    except Exception:  # not everywhere
+        extra = ""
+    return "%d-%d-%d-%s" % (time.time_ns(), time.perf_counter_ns(), os.getpid(), extra)
+
+
+random.seed(entropySeed())
 
 # Initialize the mixer
 try:
@@ -554,6 +565,9 @@ def lowTimeSides(clocks, humanColors, warned):
 
 
 GAME_TITLE = "Chess Playing AI"
+# tools and tests that watch the game set this to a dict, and the frame keeps it up to date (see main()): the moves
+# played, whose turn it is, the result, the room and the open question. None in the game itself: nothing is done.
+GAME_VIEW = None
 YOUR_MOVE_TITLE = "Your move · Chess Playing AI"  # while the player is away and it's their turn
 
 
@@ -3114,6 +3128,13 @@ async def main():
             puzzleStep()
         outcome = None if currentModeIndex == PUZZLE_MODE else getOutcome(gs, positionHistory, gameResult)
         gameOver = outcome is not None
+        if GAME_VIEW is not None:
+            GAME_VIEW.update(moves=[move.getCode() for move in gs.moveLog], whiteToMove=gs.whiteToMove,
+                             humanTurn=humanTurn, over=gameOver, result=outcome, online=bool(
+                                 multiplayerMode and networkConnected), room=roomCode, game=onlineGame,
+                             version=onlineVersion, color=ourColor() if multiplayerMode and networkConnected else None,
+                             prompt=pendingPrompt['kind'] if pendingPrompt else None,
+                             status=statusText if p.time.get_ticks() < statusUntil else "", frames=p.time.get_ticks())
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
             pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
         if gameOver or not settings.get('premoves'):

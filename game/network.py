@@ -81,6 +81,9 @@ class NetworkManager:
         self.server_time = 0  # latest ntfy server time of any message in the room, our own included
 
         self.server = "ntfy.sh"
+        # the desktop game's relay; CHESS_NTFY_URL points it at another ntfy-compatible server (tools/e2e_online.py
+        # runs two games against one of its own). The browser build always uses ntfy.sh (see JS_HELPERS).
+        self.base_url = os.environ.get('CHESS_NTFY_URL', '').rstrip('/') or "https://" + self.server
         
         # Diagnostics
         self.msg_count = 0      # Total message events processed
@@ -156,7 +159,7 @@ class NetworkManager:
         """
         if not self.topic: return
         
-        ntfy_url = f"https://{self.server}/{self.topic}"
+        ntfy_url = f"{self.base_url}/{self.topic}"
         raw = json.dumps(data)
         
         if WASM:
@@ -182,7 +185,7 @@ class NetworkManager:
         generation = self._generation  # a rejoin of the same room starts a new generation, so this thread stops
         while self.running and self._generation == generation:
             since = self.last_since
-            url = f"https://{self.server}/{topic_snapshot}/json?since={since}"
+            url = f"{self.base_url}/{topic_snapshot}/json?since={since}"
             self.last_status = "CONNECTING"
             print(f"Network: Opening stream connection (since={since})...")
             try:

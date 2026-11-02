@@ -290,9 +290,6 @@ def getGame(data):
     return rows[0]
 
 
-# Online games have no server watching them, so a result only changes ratings when both players reported
-# the same result for the same game (game_id is the id both clients share for it, see main.py), and at most
-# 3 games per pair of players a day (enforced in apply_rated_game) so two accounts can't farm rating
 # The game's own rules engine (game/engine.py has no imports; vercel.json brings it into the function), loaded under a
 # name of its own so nothing else on the path is shadowed. Without it the moves aren't replayed.
 def loadEngine():
@@ -329,6 +326,9 @@ def checkGame(moves, result):
         raise ApiError('The result does not fit the moves')
 
 
+# Online games have no server watching them, so a result only changes ratings when both players reported
+# the same result for the same game (game_id is the id both clients share for it, see main.py), and at most
+# 3 games per pair of players a day (enforced in apply_rated_game) so two accounts can't farm rating
 def reportOnline(data):
     userId = currentUser(data)
     white = text(data, 'white_id', 64)
