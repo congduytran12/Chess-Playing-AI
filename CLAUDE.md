@@ -22,7 +22,7 @@ Build the web (WASM) bundle. This is what Vercel runs. The output goes to `game/
 npm run build
 ```
 
-The build pins pygbag 0.9.3. It also downloads stockfish.js 17.1.0 (the lite single-threaded build, its `.wasm` and its GPL license) from unpkg into `game/build/web/stockfish/` (jsDelivr refuses the package: it is over 150 MB), and the pygbag runtime JS files locally and uses `sed` to rewrite `index.html` so the page loads them from the local copies instead of the CDN. Keep those versions in sync if you change one.
+The build pins pygbag 0.9.3. It also downloads stockfish.js 19.0.1 (Stockfish 19: the lite single-threaded build, `bin/stockfish-19-lite-single.js` and its `.wasm` of about 1.8 MB, and its GPL license) from unpkg into `game/build/web/stockfish/` (jsDelivr refuses the package: it is over 150 MB), and the pygbag runtime JS files locally and uses `sed` to rewrite `index.html` so the page loads them from the local copies instead of the CDN. Keep those versions in sync if you change one.
 
 Run the tests from the repository root (standard library `unittest`, no extra packages; the account API tests need `flask` and `requests`, and the UI tests need `pygame`):
 
@@ -30,7 +30,7 @@ Run the tests from the repository root (standard library `unittest`, no extra pa
 python -m unittest discover -s tests
 ```
 
-They cover move generation (perft counts), the AI search, the Stockfish bridge (against a stand-in UCI engine; `tests/support.py` sets `CHESS_NO_STOCKFISH=1`, so every other test plays `chessAi`'s moves whether or not Stockfish is installed), PGN, network message handling, the hint and settings storage, the account API against an in-memory Supabase stand-in, and the game loop itself, run headless with scripted clicks. There is no linter configured.
+They cover move generation (perft counts), the AI search, the Stockfish bridge (against a stand-in UCI engine; `tests/support.py` sets `CHESS_NO_STOCKFISH=1`, so every other test plays `chessAi`'s moves whether or not Stockfish is installed), and, when a real Stockfish is found (`STOCKFISH_PATH`, `PATH` or `engines/`), the bridge against it too (`tests/test_stockfish_real.py`: the UCI options the levels use, scores and mates, every level's move; skipped without one, so a new Stockfish version is checked by running the tests with it installed), plus that the browser engine `WORKER_URL` names is the one the build downloads, PGN, network message handling, the hint and settings storage, the account API against an in-memory Supabase stand-in, and the game loop itself, run headless with scripted clicks. There is no linter configured.
 
 The Online Multiplayer mode has an end-to-end check, which takes about 80 seconds and needs `pygame`, `flask` and `requests`:
 

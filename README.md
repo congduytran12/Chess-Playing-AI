@@ -17,7 +17,7 @@ Switch modes with the **Mode** dropdown:
 
 ### The AI
 
-- **Stockfish:** the computer's moves, the hints and the game analysis come from [Stockfish](https://stockfishchess.org/). In the browser it is [stockfish.js](https://github.com/nmrugg/stockfish.js) (17.1, the lite single-threaded build), which runs in the background while you play. On the desktop the game uses a Stockfish program on your computer (see [Installation](#installation--how-to-play)).
+- **Stockfish:** the computer's moves, the hints and the game analysis come from [Stockfish](https://stockfishchess.org/). In the browser it is [stockfish.js](https://github.com/nmrugg/stockfish.js) (19, the lite single-threaded build: about 1.8 MB), which runs in the background while you play. On the desktop the game uses a Stockfish program on your computer (see [Installation](#installation--how-to-play)).
 - **Levels:** each level holds Stockfish to a playing strength: about 1320 Elo on Easy, 1600 on Normal, 1900 on Hard and 2300 on Very Hard. Impossible is full strength. Each level also has a time budget, from 0.3 s on Easy to 5 s on Impossible. Hints and the analysis always use full strength.
 - **The built-in AI:** when there is no Stockfish (a desktop without it, or a browser that can't load it), the game's own AI plays instead. It thinks for the same time budgets, searching one move deeper at a time, so it never freezes the game. Easy and Normal also add some randomness, so they stay beatable.
 - **The built-in AI's search:** NegaMax with alpha-beta pruning. It also:

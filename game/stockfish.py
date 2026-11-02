@@ -28,7 +28,7 @@ if WASM:
 
 # the tests turn Stockfish off (CHESS_NO_STOCKFISH=1), so the computer plays the same moves on every machine
 ENABLED = os.environ.get('CHESS_NO_STOCKFISH') != '1'
-WORKER_URL = "stockfish/stockfish-17.1-lite-single-03e3232.js"  # the browser build; its .wasm sits next to it
+WORKER_URL = "stockfish/stockfish-19-lite-single.js"  # the browser build; its .wasm sits next to it
 ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines')  # desktop
 LEVEL_ELO = [1320, 1600, 1900, 2300, None]  # the strength of each of chessAi.LEVELS; None: full strength
 START_SECONDS = 30  # the engine has this long to answer 'uci' (the browser downloads 7 MB first)

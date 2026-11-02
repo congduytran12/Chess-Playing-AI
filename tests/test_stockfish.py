@@ -134,6 +134,21 @@ class StockfishTest(unittest.TestCase):
         self.assertFalse(asyncio.run(stockfish.engine.ready(1)))
         self.assertEqual(stockfish.engine.state, 'off', "never started")
 
+    def test_the_browser_engine_is_the_one_the_build_downloads(self):
+        import json
+        import re
+        with open(os.path.join(support.ROOT, 'package.json'), encoding='utf-8') as f:
+            build = json.load(f)['scripts']['build']
+        name = os.path.basename(stockfish.WORKER_URL)  # stockfish-19-lite-single.js
+        self.assertTrue(name.endswith('-lite-single.js'), "the single-threaded build runs without special headers")
+        wasm = name[:-len('.js')] + '.wasm'
+        for file in (name, wasm):
+            self.assertIn('game/build/web/stockfish/%s https://unpkg.com/stockfish@' % file, build)
+            self.assertIn('/bin/%s' % file, build)
+        self.assertIn('game/build/web/stockfish/Copying.txt', build, "the GPL license goes with the engine")
+        self.assertEqual(re.search(r'stockfish@(\d+)\.', build).group(1), re.search(r'stockfish-(\d+)-', name).group(1),
+                         "the version in the file name is the package's")
+
     def test_finding_the_executable(self):
         saved = os.environ.get('STOCKFISH_PATH')
         try:
