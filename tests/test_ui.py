@@ -282,10 +282,15 @@ class GameLoopTest(unittest.TestCase):
             layout = main.helpPageLayout(page)
             self.assertEqual(len(layout), len(items))
             y = box.y + 82
+            self.assertLessEqual(layout[0]['top'] - y, main.HELP_MAX_TOP_SHIFT, title)
+            y = layout[0]['top']  # a short page starts a little lower, and spreads (see helpPageLayout)
             for item, placed in zip(items, layout):
                 icon, heading, text = item[:3]
                 textX = x + (main.HELP_ICON_SIZE + 12 if icon else 0)
-                self.assertEqual((placed['top'], placed['textX']), (y, textX), title)
+                self.assertGreaterEqual(placed['top'], y, title)
+                self.assertLessEqual(placed['top'] - y, main.HELP_MAX_EXTRA_GAP, title)
+                y = placed['top']
+                self.assertEqual(placed['textX'], textX, title)
                 right = x + width
                 diagram = placed['diagram']
                 if len(item) > 3:  # a diagram at the right, beside the text and clear of everything else
@@ -3461,6 +3466,108 @@ class GameLoopTest(unittest.TestCase):
             self.assertGreaterEqual(main.UI['bannerBg'][3], 220, "the Looking back banner is nearly solid")
             self.assertEqual(tuple(main.UI['bannerText']), (255, 255, 255))
         main.setUiTheme('light')
+
+    def test_small_text_contrast_and_hint_label(self):
+        main = self.main
+
+        def luminance(color):
+            channels = [c / 255 for c in color[:3]]
+            linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+        def contrast(a, b):
+            high, low = sorted((luminance(a), luminance(b)), reverse=True)
+            return (high + 0.05) / (low + 0.05)
+        try:
+            for theme in ('light', 'dark'):
+                main.setUiTheme(theme)
+                for ground in ('panel', 'strip', 'infoBox'):
+                    self.assertGreaterEqual(contrast(main.UI['textDim'], main.UI[ground]), 4.5, (theme, ground))
+                self.assertGreaterEqual(contrast(main.UI['fieldBorder'], main.UI['panel']), 2.5, "the room box shows")
+        finally:
+            main.setUiTheme('light')
+        self.assertEqual(main.hintLabel(4, False, False), "Hint (4 left)")
+        self.assertEqual(main.hintLabel(4, False, True), "Hint", "no count once the game is over")
+        self.assertEqual(main.hintLabel(0, True, False), "Hint", "an admin has no count")
+
+    def test_empty_move_list_says_how_to_begin(self):
+        main = self.main
+        main.loadImages()
+        notes = {(mode, connected, guest): main.emptyListNote(mode, connected, guest)
+                 for mode, connected, guest in ((0, False, False), (1, False, False), (2, False, False),
+                                                (2, True, False), (2, True, True))}
+        self.assertEqual(len(set(notes.values())), len(notes), "each situation has its own note")
+        self.assertIn("Press H", notes[(0, False, False)][1])
+        self.assertNotIn("Press H", main.emptyListNote(0, False, touch=True)[1], "a phone has no H key")
+        self.assertIn("tap", main.emptyListNote(1, False, touch=True)[1])
+        self.assertIn("Host", notes[(2, False, False)][1], "online setup: host or join")
+        try:
+            for kind, height in (('landscape', None), ('portrait', 1400), ('portrait', 1662)):
+                layout = main.setLayout(kind, height)
+                screen = p.Surface(layout.size)
+                for (mode, connected, guest), note in notes.items():
+                    rects = main.panelLayout(mode, connected, False, False, False, guest)
+                    areas = main.panelAreas(min(r.y for r in rects.values()), False)
+                    top, bottom = areas['list']
+                    screen.fill((1, 2, 3))
+                    main.drawEmptyListNote(screen, areas['list'], note)
+                    drawn = [(x, y) for x in range(layout.panel.x, layout.panel.right, 3)
+                             for y in range(0, layout.size[1], 3) if tuple(screen.get_at((x, y)))[:3] != (1, 2, 3)]
+                    self.assertTrue(drawn, (kind, height, mode, connected, "it fits, so it's drawn"))
+                    self.assertTrue(all(top <= y < bottom for _, y in drawn), (kind, height, mode, "inside the list"))
+        finally:
+            main.setLayout('landscape')
+
+    def test_help_pages_fill_their_window(self):
+        main = self.main
+        main.loadImages()
+        floor = main.helpLayout()['prev'].y - 12
+        for height in (None, 1662):
+            try:
+                main.setLayout('portrait' if height else 'landscape', height)
+                for page in range(len(main.HELP_PAGES)):
+                    placed = main.helpPageLayout(page)
+                    natural = main.ACCOUNT_BOX.y + 82
+                    self.assertGreaterEqual(placed[0]['top'], natural, page)
+                    self.assertLessEqual(placed[0]['top'] - natural, main.HELP_MAX_TOP_SHIFT, page)
+                    for before, after in zip(placed, placed[1:]):
+                        self.assertGreaterEqual(after['top'] - before['bottom'], 12, (page, "items don't touch"))
+                        self.assertLessEqual(after['top'] - before['bottom'], 12 + main.HELP_MAX_EXTRA_GAP, page)
+                    if page in (2, 3):  # the short pages sit lower, with more between their items
+                        self.assertGreater(placed[0]['top'], natural, page)
+                        self.assertGreater(placed[1]['top'] - placed[0]['bottom'], 12, page)
+                    self.assertLessEqual(placed[-1]['bottom'], max(floor, natural + 530), page)
+                    for item in placed:
+                        if item['diagram']:
+                            self.assertLessEqual(item['diagram'].bottom, item['bottom'], page)
+                            self.assertGreaterEqual(item['diagram'].top, item['top'], page)
+            finally:
+                main.setLayout('landscape')
+
+    def test_the_graph_shows_its_scale(self):
+        main = self.main
+        main.loadImages()
+        try:
+            for kind, height in (('landscape', None), ('portrait', 1662)):
+                layout = main.setLayout(kind, height)
+                rect = main.panelLayout(0, False, False, True, True)['graph']
+                chart = main.graphChart(rect)
+                screen = p.Surface(layout.size)
+                screen.fill((1, 2, 3))
+                main.drawEvalGraph(screen, rect, [0.0, 0.2, -0.4], 2, {}, 1, True)
+                dotted = tuple(p.Color(main.UI['graphMiddle']))[:3]
+                for pawns in main.GRAPH_TICKS:
+                    for sign in (1, -1):
+                        y = main.graphY(rect, sign * pawns)
+                        self.assertTrue(any(tuple(screen.get_at((x, y)))[:3] == dotted
+                                            for x in range(chart.x + 40, chart.right - 20)), (kind, pawns, sign))
+                self.assertLess(main.graphY(rect, 3), main.graphY(rect, 1))
+                self.assertLess(main.graphY(rect, 0), main.graphY(rect, -1))
+                for pawns, text in main.GRAPH_LABELS:  # each label sits inside the chart at its level
+                    label = main.get_text_surface(text, main.scaled(main.GRAPH_LABEL_SIZE), (0, 0, 0), True, sans=True)
+                    self.assertLessEqual(label.get_height(), chart.height // 3, (kind, text, "three labels fit"))
+        finally:
+            main.setLayout('landscape')
 
     def test_portrait_chat_bubbles_stay_in_the_strips(self):
         main = self.main

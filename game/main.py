@@ -369,11 +369,11 @@ NEUTRAL_COLOR = (118, 118, 118)  # Cancel / Decline
 PALETTES = {
     'light': {
         'panel': LIGHT_SQUARE_COLOR, 'strip': STRIP_COLOR, 'stripLine': DARK_SQUARE_COLOR,
-        'text': (0, 0, 0), 'textDim': (105, 105, 105), 'textBody': (60, 60, 60),
+        'text': (0, 0, 0), 'textDim': (88, 88, 82), 'textBody': (60, 60, 60),
         'button': DARK_SQUARE_COLOR, 'buttonHover': MOVE_HIGHLIGHT_COLOR, 'buttonPressed': (62, 88, 128),
         'buttonDisabled': DISABLED_COLOR, 'buttonText': (255, 255, 255), 'buttonTextDisabled': (240, 240, 240),
         'window': LIGHT_SQUARE_COLOR, 'windowBorder': DARK_SQUARE_COLOR, 'shade': (0, 0, 0, 150),
-        'field': (225, 225, 225), 'fieldFocus': (255, 255, 255), 'fieldBorder': (190, 190, 190),
+        'field': (240, 240, 240), 'fieldFocus': (255, 255, 255), 'fieldBorder': (128, 128, 122),
         'fieldBorderFocus': MOVE_HIGHLIGHT_COLOR, 'fieldText': (0, 0, 0),
         'accent': MOVE_HIGHLIGHT_COLOR, 'selectedOption': SELECTED_OPTION_COLOR, 'confirm': CONFIRM_COLOR,
         'neutral': NEUTRAL_COLOR, 'statusBg': (40, 40, 40, 225), 'statusText': (255, 255, 255),
@@ -394,11 +394,11 @@ PALETTES = {
     },
     'dark': {
         'panel': (38, 40, 36), 'strip': (50, 53, 47), 'stripLine': (78, 104, 54),
-        'text': (232, 232, 225), 'textDim': (160, 164, 155), 'textBody': (208, 210, 201),
+        'text': (232, 232, 225), 'textDim': (182, 185, 176), 'textBody': (208, 210, 201),
         'button': (86, 118, 58), 'buttonHover': MOVE_HIGHLIGHT_COLOR, 'buttonPressed': (62, 88, 128),
         'buttonDisabled': (74, 77, 71), 'buttonText': (242, 242, 236), 'buttonTextDisabled': (146, 149, 142),
         'window': (46, 48, 44), 'windowBorder': (86, 118, 58), 'shade': (0, 0, 0, 170),
-        'field': (62, 64, 60), 'fieldFocus': (74, 77, 71), 'fieldBorder': (96, 99, 92),
+        'field': (62, 64, 60), 'fieldFocus': (74, 77, 71), 'fieldBorder': (130, 134, 124),
         'fieldBorderFocus': (112, 148, 204), 'fieldText': (235, 235, 228),
         'accent': (112, 148, 204), 'selectedOption': (62, 88, 42), 'confirm': (168, 66, 54),
         'neutral': (96, 98, 94), 'statusBg': (222, 224, 214, 238), 'statusText': (28, 30, 26),
@@ -2871,6 +2871,9 @@ async def main():
         moveLogScroll = moveList['scroll']
         figurines = settingValue('figurines')
         drawMoveList(screen, moveList, gs.moveLog, highlighted, marks, thumbGrab is not None, figurines)
+        if not gs.moveLog and not gameOver:  # nothing to list yet: say how to begin
+            drawEmptyListNote(screen, areas['list'], emptyListNote(currentModeIndex, networkConnected, guest,
+                                                                    browser.touchScreen()))
         reviewScroll = False
         if gameOver:  # the shown position, its evaluation and the analysis, and the evaluation graph
             drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate, outcome[0],
@@ -2906,7 +2909,7 @@ async def main():
             'level': "AI: " + LEVEL_OPTIONS[chessAi.LEVEL],
             'side': "Play as: " + SIDE_OPTIONS[sideIndex],
             'clock': "Clock: " + CLOCK_OPTIONS[clockIndex][0],
-            'hint': "Hint" if account.isAdmin else "Hint (%d left)" % hints.remaining(),
+            'hint': hintLabel(hints.remaining(), account.isAdmin, gameOver),
             'host': "Host (White)",
             'join': "Join (Black)",
             'menu': "",  # drawn as three lines
@@ -2930,7 +2933,7 @@ async def main():
         panelMouse = (-1, -1) if overlayOpen or dragging else mouse_pos  # nor under a dragged piece
         for name, rect in layout.items():
             if name == 'room':
-                drawTextField(screen, rect, roomField, inputBoxActive and not overlayOpen, placeholder="Type Room ID",
+                drawTextField(screen, rect, roomField, inputBoxActive and not overlayOpen, placeholder="Room code",
                               radius=BUTTON_RADIUS, size=scaled(FIELD_TEXT_SIZE))
             elif name == 'graph':
                 pass  # drawn with the review info above
@@ -2950,7 +2953,7 @@ async def main():
                 # whether the opponent is there (the connection details go to the console)
                 presenceText, presenceColor = presenceStatus(multiplayerRole, opponentSeen, net.server_time,
                                                              net.last_status)[:2]
-                presenceObj = get_fitting_text(presenceText, rect.width, scaled(15), UI[presenceColor], False)
+                presenceObj = get_fitting_text(presenceText, rect.width, scaled(16), UI[presenceColor], False)
                 screen.blit(presenceObj, (rect.centerx - presenceObj.get_width() / 2, rect.y + scaled(24)))
             else:
                 arrow = None
@@ -3107,7 +3110,7 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
     screen.blit(nameObj, (rect.x + scaled(32), nameY - nameObj.get_height() / 2))
     nameEnd = rect.x + scaled(32) + nameObj.get_width()
     if note:  # e.g. "thinking..." while the computer searches
-        noteObj = get_text_surface(note, scaled(16), UI['textDim'], False)
+        noteObj = get_text_surface(note, scaled(17), UI['textDim'], False)
         screen.blit(noteObj, (rect.x + scaled(40) + nameObj.get_width(), nameY - noteObj.get_height() / 2))
         nameEnd = rect.x + scaled(40) + nameObj.get_width() + noteObj.get_width()
 
@@ -3713,6 +3716,8 @@ EN_PASSANT_DIAGRAM = {'files': "def", 'ranks': "765", 'pieces': {'d5': 'bp', 'e5
 HELP_DIAGRAM_SQ = 36  # a diagram's squares (px)
 HELP_DIAGRAM_LABEL = 14  # room for the rank numbers on the left and the file letters below
 HELP_DIAGRAM_GAP = 16  # between an item's text and its diagram
+HELP_MAX_EXTRA_GAP = 26  # a short page: at most this much more between its items...
+HELP_MAX_TOP_SHIFT = 56  # ...and it starts at most this much lower
 
 # (title, items); an item is (piece icon or None, heading, text), or (icon, heading, text, diagram)
 HELP_PAGES = [
@@ -3899,6 +3904,17 @@ def helpPageLayout(page):
                      diagramRect.bottom if diagramRect else 0)
         layout.append({'top': y, 'textX': textX, 'lines': lines, 'diagram': diagramRect, 'bottom': bottom})
         y = bottom + 12
+    # a short page gets some more room between its items, and sits a little lower, so the window isn't left with
+    # a large empty area above its buttons (the window is as tall as the tallest page)
+    free = helpLayout()['prev'].y - 12 - layout[-1]['bottom']
+    extra = max(0, min(free // (len(layout) + 1), HELP_MAX_EXTRA_GAP))
+    shift = max(0, min((free - extra * (len(layout) - 1)) // 2, HELP_MAX_TOP_SHIFT))
+    for k, placed in enumerate(layout):
+        down = shift + k * extra
+        placed['top'] += down
+        placed['bottom'] += down
+        if placed['diagram']:
+            placed['diagram'] = placed['diagram'].move(0, down)
     return layout
 
 
@@ -4308,14 +4324,51 @@ def scrollForListDrag(startScroll, dy):
     return startScroll + round(dy / LAYOUT.moveRow)
 
 
+# what the move list says before the first move, as (heading, text): how to move, and what to do online
+# touch: a phone or tablet (tap, and no keyboard for the How to play key)
+def emptyListNote(modeIndex, connected, guest=False, touch=False):
+    moving = "Drag a piece, or %s it and then a square." % ("tap" if touch else "click")
+    if modeIndex == 2 and not connected:
+        return ("Play online",
+                "Host a game to get a room code, or type the code your friend sent and press Join.")
+    if modeIndex == 2:
+        if guest:
+            return ("You play Black", "White moves first. " + moving)
+        return ("Waiting for your friend", "You play White. Send the link or the room code, then " + moving[0].lower()
+                + moving[1:])
+    if modeIndex == 1:
+        return ("White moves first", moving)
+    return ("Your move", moving + " " + ("The menu has How to play." if touch else "Press H for How to play."))
+
+
+# draws that note centered in the empty move list's area (list: its top and bottom y); it leaves out what doesn't fit
+def drawEmptyListNote(screen, list, note):
+    panel = LAYOUT.panel
+    heading, text = note
+    width = panel.width - 2 * scaled(34)
+    headObj = get_text_surface(heading, scaled(21), UI['text'], True)
+    font = get_font(scaled(17), False)
+    lines = wrapText(text, font, width)
+    height = headObj.get_height() + scaled(8) + len(lines) * font.get_linesize()
+    y = list[0] + scaled(18)
+    if y + height > list[1]:
+        return
+    screen.blit(headObj, (panel.centerx - headObj.get_width() / 2, y))
+    y += headObj.get_height() + scaled(8)
+    for line in lines:
+        lineObj = font.render(line, True, p.Color(UI['textDim']))
+        screen.blit(lineObj, (panel.centerx - lineObj.get_width() / 2, y))
+        y += font.get_linesize()
+
+
 # the list's rows: numbers, moves (marks from the analysis after them) and the scrollbar
 # currentPly: the move to highlight (the shown position); marks: ply -> (mark, loss); thumbHeld: the thumb is dragged
 def drawMoveList(screen, layout, moveLog, currentPly=None, marks=None, thumbHeld=False, figurines=None):
     marks = marks or {}
     textSize = LAYOUT.moveText
-    numberFont = get_font(textSize - 1, False)
+    numberFont = get_font(textSize, False)
     for number, y in layout['numbers']:
-        numberObj = get_text_surface("%d." % number, textSize - 1, UI['textDim'], False)
+        numberObj = get_text_surface("%d." % number, textSize, UI['textDim'], False)
         screen.blit(numberObj, (LAYOUT.moveNumberRight - numberObj.get_width(),
                                 y + (LAYOUT.moveRow - 2 - numberFont.get_height()) // 2))
     for rect, ply in layout['cells']:
@@ -4405,6 +4458,9 @@ def sanSurface(san, color, size, textColor, bold=False, figurines=None):
 
 GRAPH_HEIGHT = 2 * ROW_HEIGHT + ROW_GAP  # takes the place of the Analyze game row, two rows high
 GRAPH_PADDING = 4  # between the frame and the chart
+GRAPH_TICKS = (1, 3)  # pawns: dotted lines above and below the middle line
+GRAPH_LABELS = ((3, "+3"), (0, "0"), (-3, "−3"))  # the scale shown at the graph's left edge
+GRAPH_LABEL_SIZE = 15  # sans
 
 
 def graphChart(rect):
@@ -4448,7 +4504,21 @@ def drawEvalGraph(screen, rect, evals, plies, marks, shownPly, done=True):
             p.draw.polygon(screen, p.Color(UI['graphWhite']),
                            [(chart.x, chart.bottom - 1)] + points + [(right, chart.bottom - 1)])
             p.draw.lines(screen, p.Color(UI['graphEdge']), False, points, 1)
+    for pawns in GRAPH_TICKS:  # a dotted line at +-1 and +-3 pawns, under the labels and the middle line
+        for sign in (1, -1):
+            y = graphY(rect, sign * pawns)
+            for dotX in range(chart.x, chart.right - 1, 6):
+                screen.set_at((dotX, y), p.Color(UI['graphMiddle']))
     p.draw.line(screen, p.Color(UI['graphMiddle']), (chart.x, middle), (chart.right - 1, middle), 1)
+    for pawns, text in GRAPH_LABELS:  # the scale: pawns, White above the line
+        label = get_text_surface(text, scaled(GRAPH_LABEL_SIZE), UI['text'], True, sans=True)
+        pill = p.Rect(0, 0, label.get_width() + 8, label.get_height())
+        pill.midleft = (chart.x + 2, graphY(rect, pawns))
+        pill.clamp_ip(chart)
+        layer = p.Surface(pill.size, p.SRCALPHA)
+        p.draw.rect(layer, UI['infoBox'] + (190,), layer.get_rect(), border_radius=4)
+        screen.blit(layer, pill.topleft)
+        screen.blit(label, (pill.x + 4, pill.y))
     x = graphX(rect, shownPly, plies)
     p.draw.line(screen, p.Color(UI['accent']), (x, chart.y), (x, chart.bottom - 1), 2)
     for ply, (mark, _) in marks.items():
@@ -4524,7 +4594,7 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
             second = analysisSummary(marks, compact=True)
     else:
         second = result if result and ply == len(moveLog) else "Step through the moves with the arrow keys"
-    screen.blit(get_fitting_text(second, width, scaled(16), UI['textDim'], False), (rect.x + inset, rect.y + scaled(29)))
+    screen.blit(get_fitting_text(second, width, scaled(17), UI['textDim'], False), (rect.x + inset, rect.y + scaled(29)))
 
 
 # --- Settings window, drawn over the board like the other windows: a Board tab and a Game tab of settings rows,
@@ -4803,7 +4873,7 @@ TOOLTIPS = {
     'resign': "Give up this game",
     'draw': "Offer your opponent a draw",
     'analyze': "Let the computer mark the mistakes",
-    'graph': "Click or drag to see that move",
+    'graph': "White is ahead above the line. Click or drag to see a move",
     'first': "First move", 'prev': "Previous move (Left)", 'next': "Next move (Right)", 'last': "Last move",
     'undo': "Undo (Z)",
     'restart': "Restart (R)",
@@ -4823,6 +4893,11 @@ def tooltipText(name, connected=False, signedIn=False):
     if signedIn and name == 'account':
         return "Your games, record and rating"
     return TOOLTIPS.get(name)
+
+
+# the Hint button's label: the hints left today, but not for an admin (no limit) or after the game (none to take)
+def hintLabel(left, unlimited, gameOver):
+    return "Hint" if unlimited or gameOver else "Hint (%d left)" % left
 
 
 # hints left today; an admin account (account.isAdmin) has no limit
