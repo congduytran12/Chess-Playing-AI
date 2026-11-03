@@ -29,6 +29,7 @@ if WASM:
 # the tests turn Stockfish off (CHESS_NO_STOCKFISH=1), so the computer plays the same moves on every machine
 ENABLED = os.environ.get('CHESS_NO_STOCKFISH') != '1'
 WORKER_URL = "stockfish/stockfish-19-lite-single.js"  # the browser build; its .wasm sits next to it
+HINT_WORKER_URL = "stockfish/stockfish-19-single.js"  # loaded only when the user asks for a hint
 ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines')  # desktop
 LEVEL_ELO = [1320, 1600, 1900, 2300, None]  # the strength of each of chessAi.LEVELS; None: full strength
 START_SECONDS = 30  # the engine has this long to answer 'uci' (the browser downloads 7 MB first)
@@ -38,9 +39,9 @@ POLL_SECONDS = 0.02
 HASH_MB = 16
 
 JS_HELPERS = '''
-    window.chessSf = window.chessSf || {worker: null, lines: [], failed: ''};
-    window.chessSfStart = function(url) {
-        const sf = window.chessSf;
+    window.chessSf = window.chessSf || {};
+    window.chessSfStart = function(key, url) {
+        const sf = window.chessSf[key] = window.chessSf[key] || {worker: null, lines: [], failed: ''};
         if (sf.worker) return;
         try {
             sf.worker = new Worker(url);
@@ -52,11 +53,20 @@ JS_HELPERS = '''
             sf.failed = String(e);
         }
     };
-    window.chessSfSend = function(line) { if (window.chessSf.worker) window.chessSf.worker.postMessage(line); };
-    window.chessSfTake = function() {
-        const lines = window.chessSf.lines;
-        window.chessSf.lines = [];
+    window.chessSfSend = function(key, line) {
+        const sf = window.chessSf[key];
+        if (sf && sf.worker) sf.worker.postMessage(line);
+    };
+    window.chessSfTake = function(key) {
+        const sf = window.chessSf[key];
+        if (!sf) return '';
+        const lines = sf.lines;
+        sf.lines = [];
         return lines.join('\\n');
+    };
+    window.chessSfFailed = function(key) {
+        const sf = window.chessSf[key];
+        return sf ? sf.failed : '';
     };
 '''
 
@@ -106,8 +116,10 @@ def scoreInPawns(score):
 
 
 class Engine:
-    def __init__(self, command=None):
+    def __init__(self, command=None, worker_url=WORKER_URL, channel='main'):
         self.command = command  # desktop: the command to run (a list); None: findExecutable()
+        self.worker_url = worker_url
+        self.channel = channel
         self.state = 'off'  # 'off' -> 'starting' -> 'ready', or 'failed'
         self.name = None  # the engine's own name, from 'id name'
         self._proc = None
@@ -231,7 +243,7 @@ class Engine:
             if js is None:
                 raise EngineError("no JavaScript bridge")
             js.eval(JS_HELPERS)
-            js.eval("window.chessSfStart(%s)" % json.dumps(WORKER_URL))
+            js.eval("window.chessSfStart(%s, %s)" % (json.dumps(self.channel), json.dumps(self.worker_url)))
             return
         command = self.command
         if command is None:
@@ -253,7 +265,7 @@ class Engine:
 
     def _send(self, line):
         if WASM:
-            js.eval("window.chessSfSend(%s)" % json.dumps(line))
+            js.eval("window.chessSfSend(%s, %s)" % (json.dumps(self.channel), json.dumps(line)))
         elif self._proc is not None:
             try:
                 self._proc.stdin.write(line + '\n')
@@ -263,10 +275,10 @@ class Engine:
 
     def _take(self):
         if WASM:
-            failed = str(js.eval("window.chessSf.failed") or '')
+            failed = str(js.eval("window.chessSfFailed(%s)" % json.dumps(self.channel)) or '')
             if failed:
                 raise EngineError(failed)
-            raw = str(js.eval("window.chessSfTake()") or '')
+            raw = str(js.eval("window.chessSfTake(%s)" % json.dumps(self.channel)) or '')
             return [line.strip() for line in raw.split('\n') if line.strip()]
         lines = []
         while True:
@@ -294,7 +306,9 @@ class Engine:
 
 
 engine = Engine()
+hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint')
 atexit.register(lambda: engine.close())  # desktop: the engine quits with the game
+atexit.register(lambda: hintEngine.close())
 
 
 def moveCodes(gs):
@@ -326,6 +340,16 @@ async def searchPosition(gs, validMoves, seconds, history=()):
         if move is not None and found[1] is not None:
             return found[1], move, 0
     return await chessAi.searchPosition(gs, validMoves, seconds, history=history)
+
+
+async def searchHintPosition(gs, validMoves, seconds, history=()):
+    """Searches a hint with the full browser build, without changing the gameplay engine."""
+    if validMoves and await hintEngine.ready(READY_WAIT):
+        found = await hintEngine.go(moveCodes(gs), seconds)
+        move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
+        if move is not None and found[1] is not None:
+            return found[1], move, 0
+    return await searchPosition(gs, validMoves, seconds, history=history)
 
 
 async def evaluate(gs, seconds):

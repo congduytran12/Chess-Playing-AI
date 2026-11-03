@@ -3152,8 +3152,8 @@ async def main():
         elif hintState == 'searching':
             hintState = None
             if humanTurn and not gameOver and gameResult is None and validMoves:
-                _, suggestion, _ = await stockfish.searchPosition(gs, validMoves, HINT_SECONDS,
-                                                                  history=positionHistory)
+                _, suggestion, _ = await stockfish.searchHintPosition(gs, validMoves, HINT_SECONDS,
+                                                                      history=positionHistory)
                 if suggestion is None:
                     suggestion = findRandomMoves(validMoves)
                 hintMove = suggestion

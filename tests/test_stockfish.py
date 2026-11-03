@@ -145,6 +145,11 @@ class StockfishTest(unittest.TestCase):
         for file in (name, wasm):
             self.assertIn('game/build/web/stockfish/%s https://unpkg.com/stockfish@' % file, build)
             self.assertIn('/bin/%s' % file, build)
+        hint_name = os.path.basename(stockfish.HINT_WORKER_URL)
+        self.assertEqual(hint_name, 'stockfish-19-single.js')
+        for file in (hint_name, hint_name[:-len('.js')] + '.wasm'):
+            self.assertIn('game/build/web/stockfish/%s https://unpkg.com/stockfish@' % file, build)
+            self.assertIn('/bin/%s' % file, build)
         self.assertIn('game/build/web/stockfish/Copying.txt', build, "the GPL license goes with the engine")
         self.assertEqual(re.search(r'stockfish@(\d+)\.', build).group(1), re.search(r'stockfish-(\d+)-', name).group(1),
                          "the version in the file name is the package's")
