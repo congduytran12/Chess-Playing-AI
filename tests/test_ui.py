@@ -742,8 +742,10 @@ class GameLoopTest(unittest.TestCase):
         load = self.menuItem('load')
         # on the Load item, in a gap between two panel rows, so it's the panel's color while the menu is closed
         layout = main.panelLayout(0, False)
-        probe = next((load.x + 10, y) for y in range(load.y + 6, load.bottom - 6)
-                     if not any(rect.collidepoint(load.x + 10, y) for rect in layout.values()))
+        areas = main.panelAreas(min(rect.y for rect in layout.values()), False)
+        covered = list(layout.values()) + [areas['topStrip'], areas['bottomStrip'], areas['status']]
+        probe = next((x, y) for y in range(load.y + 6, load.bottom - 6) for x in range(load.x + 10, load.right - 10, 8)
+                     if not any(rect.collidepoint(x, y) for rect in covered))
 
         def probeColor():
             return tuple(p.display.get_surface().get_at(probe))[:3]
@@ -1351,7 +1353,7 @@ class GameLoopTest(unittest.TestCase):
 
         async def script():
             await asyncio.sleep(1.0)
-            await self.click(main.panelLayout(0, False)['clock'].center, 0.3)
+            await self.click(main.panelLayout(0, False)['level'].center, 0.3)  # one column: a check mark on the current one
             seen['open'] = bool(marks)
             await self.key(p.K_h, 'h', 0.3)
             del marks[:]
@@ -1371,7 +1373,7 @@ class GameLoopTest(unittest.TestCase):
         finally:
             main.drawCheckMark = realMark
             restore()
-        self.assertTrue(seen['open'], "the Clock dropdown's options showed")
+        self.assertTrue(seen['open'], "the Level dropdown's options showed")
         self.assertEqual(seen['help'], (0, 0), "How to play, and no options over it")
         self.assertEqual(seen['closed'], (None, 0), "nor after it closes")
 
@@ -3077,6 +3079,9 @@ class GameLoopTest(unittest.TestCase):
         finally:
             restoreRoom()
         self.assertEqual(len(topics[0]), main.ROOM_CODE_HOST_LENGTH)
+        self.assertTrue(set(topics[0]) <= set(main.ROOM_CODE_HOST_CHARACTERS))
+        self.assertFalse(set("IO01") & set(main.ROOM_CODE_HOST_CHARACTERS), "letters and digits that look alike")
+        self.assertGreaterEqual(len(main.ROOM_CODE_HOST_CHARACTERS) ** main.ROOM_CODE_HOST_LENGTH, 10 ** 14)
         self.assertGreaterEqual(main.ROOM_CODE_HOST_LENGTH, 10)
         self.assertLessEqual(main.ROOM_CODE_HOST_LENGTH, main.ROOM_CODE_LENGTH, "a room code that can be typed in")
 
@@ -3473,6 +3478,9 @@ class GameLoopTest(unittest.TestCase):
             layout = main.panelLayout(main.PUZZLE_MODE, False)
             await self.click(layout['hint'].center, 0.5)
             seen['hint'] = [t for t in shown['status'] if t.startswith("Hint")]
+            seen['piece'] = (view['hintPiece'], view['hintMove'])
+            await self.click(layout['hint'].center, 0.5)
+            seen['move'] = (view['hintMove'], [t for t in shown['status'] if t.startswith("Hint: the move")])
             await self.click(layout['skip'].center, 0.3)  # a miss: the solution is played out
             seen['early'] = (len(view['moves']), view['puzzle'][0])
             await asyncio.sleep(0.8 * (len(chosen.moves) - 1) + 1.5)
@@ -3490,6 +3498,11 @@ class GameLoopTest(unittest.TestCase):
             restoreShown()
             restore()
         self.assertTrue(seen['hint'] and "doesn't change your rating" in seen['hint'][0])
+        first = chosen.moves[1]
+        start = (main.Move.ranksToRows[first[1]], main.Move.filesToCols[first[0]])
+        self.assertEqual(seen['piece'], (start, None), "the first step shows the piece, not the move")
+        self.assertEqual(seen['move'][0], first, "the second step shows the move")
+        self.assertTrue(seen['move'][1])
         self.assertTrue(seen['early'][1].startswith("The solution"), "at once")
         moves, info, progress = seen['shown']
         self.assertEqual(moves, chosen.moves, "every move of the puzzle was played out, the opponent's too")
@@ -3499,6 +3512,65 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['next'][0], 1, "the next puzzle, with the opponent's first move")
         self.assertTrue(seen['next'][1].startswith("Find the best move"), seen['next'])
         self.assertEqual(seen['next'][2], 1, "and Next puzzle is free")
+
+    def test_a_puzzles_restart_says_what_it_does(self):
+        main = self.main
+        self.assertEqual(main.tooltipText('restart', puzzle=True), "Try this puzzle again (R)")
+        self.assertEqual(main.tooltipText('restart'), main.TOOLTIPS['restart'])
+        self.assertEqual(main.tooltipText('restart', connected=True), "Leave the room")
+
+    def test_a_long_list_opens_in_two_columns(self):
+        main = self.main
+        rect = main.panelLayout(0, False)['clock']
+        for count in range(1, main.DROPDOWN_ONE_COLUMN + 1):
+            options = main.dropdownOptionRects(rect, count)
+            self.assertEqual({o.x for o in options}, {rect.x}, "a short list is one column")
+            self.assertEqual({o.width for o in options}, {rect.width})
+            self.assertEqual(options[-1].bottom, rect.top, "the last option is just above the button")
+        count = len(main.CLOCK_OPTIONS)
+        self.assertGreater(count, main.DROPDOWN_ONE_COLUMN)
+        options = main.dropdownOptionRects(rect, count)
+        rows = (count + 1) // 2
+        self.assertEqual(len(options), count)
+        self.assertEqual(sorted({o.x for o in options}), [rect.x, rect.x + rect.width // 2])
+        self.assertEqual(min(o.left for o in options), rect.left)
+        self.assertEqual(max(o.right for o in options), rect.right, "within the button's width")
+        self.assertEqual(options[0].top, rect.top - rows * main.LAYOUT.rowHeight, "half as tall as one column")
+        self.assertEqual(options[rows - 1].bottom, rect.top)
+        self.assertEqual(options[rows].top, options[0].top, "the second column starts at the top too")
+        for i, a in enumerate(options):
+            for b in options[i + 1:]:
+                self.assertFalse(a.colliderect(b), "no option on another")
+        self.assertEqual([main.CLOCK_OPTIONS[i][0] for i in (0, rows - 1, rows, count - 1)],
+                         ["Off", "3+2", "5+0", "30+0"], "the options keep their order, down the columns")
+
+    def test_the_language_is_in_the_menu(self):
+        main = self.main
+        import i18n
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.openMenuItem('language', wait=0.5)
+            seen['first'] = (i18n.language(), self.settings.get('language'), list(shown['status']))
+            await self.openMenuItem('language', wait=0.5)
+            seen['second'] = (i18n.language(), self.settings.get('language'))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        shown, restoreShown = self.recordShown()
+        try:
+            self.assertIn('language', [name for name, _ in main.MENU_ITEMS])
+            self.assertIn("Ngôn ngữ", main.LANGUAGE_MENU_LABEL)
+            self.assertIn("Language", main.LANGUAGE_MENU_LABEL, "it can be found by those who can't read the game's")
+            self.runGame(script)
+        finally:
+            restoreShown()
+            main.applyLanguage('en')
+            self.settings.put('language', 'en')
+        self.assertEqual(seen['first'][:2], ('vi', 'vi'), "the next language, and it is remembered")
+        self.assertIn("Language: Tiếng Việt", seen['first'][2])
+        self.assertEqual(seen['second'], ('en', 'en'), "and round again")
 
     def test_the_puzzle_panel_texts(self):
         main = self.main
@@ -4439,7 +4511,11 @@ class GameLoopTest(unittest.TestCase):
                     self.assertGreaterEqual(min(x for x, _ in tail), span[0], (where, "its tail stops short of the name"))
                     self.assertLessEqual(rect.right, span[1], (where, "it leaves the clock alone"))
                     textWidth = main.get_font(main.scaled(main.CHAT_TEXT_SIZE), True, True).size(text)[0]
-                    self.assertLessEqual(textWidth, rect.width - main.scaled(28), (where, "the text fits"))
+                    fitted = main.get_fitting_text(text, rect.width - main.scaled(28), main.scaled(main.CHAT_TEXT_SIZE),
+                                                   (0, 0, 0), sans=True).get_width()
+                    self.assertLessEqual(fitted, rect.width - main.scaled(28), (where, "the text fits"))
+                    self.assertGreaterEqual(fitted, 0.6 * min(textWidth, rect.width - main.scaled(28)),
+                                            (where, "it shrinks to fit, but not to nothing"))
                     drawn = main.drawChatBubble(screen, text, strip.y, strip is top, span=span)
                     self.assertEqual(drawn, rect)
             # a name of 20 wide letters leaves almost no room: the bubble still keeps off the clock and the edge

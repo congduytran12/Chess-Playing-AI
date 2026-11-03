@@ -162,6 +162,12 @@ EXACT = {
     "This is the start of the game": "Đây là đầu ván", "This is the final position": "Đây là thế cờ cuối",
     # puzzles and lists
     "The solution": "Lời giải",
+    "Try this puzzle again (R)": "Thử lại câu đố này (R)",
+    "Switch between English and Tiếng Việt": "Chuyển giữa English và Tiếng Việt",
+    "Show move": "Hiện nước đi",
+    "Hint: the move is shown": "Gợi ý: đã hiện nước đi",
+    "Hint: this piece moves. Hint again shows the move. Solving it with a hint doesn't change your rating":
+        "Gợi ý: quân này sẽ đi. Nhấn Gợi ý lần nữa để xem nước đi. Giải bằng gợi ý thì điểm không đổi",
     "Mate": "Chiếu hết",
     "Fork": "Đòn đôi",
     "Kingside attack": "Tấn công cánh vua",
@@ -339,7 +345,7 @@ EXACT = {
 }
 
 TEMPLATES = {
-    "Mode: %s": "Chế độ: {0}", "AI: %s": "Máy: {0}", "Mate in %d": "Chiếu hết sau {0} nước",
+    "Mode: %s": "Chế độ: {0}", "AI: %s": "Máy: {0}", "Language: %s": "Ngôn ngữ: {0}", "Mate in %d": "Chiếu hết sau {0} nước",
     "The solution. Rating %+d": "Lời giải. Điểm {0}", "Play as: %s": "Chơi quân: {0}", "Clock: %s": "Đồng hồ: {0}",
     "Room: %s": "Phòng: {0}", "Rejoin %s as %s": "Vào lại phòng {0}, quân {1}", "Hint (%d left)": "Gợi ý (còn {0})",
     "Hint: %s - this game won't be rated": "Gợi ý: {0} - ván này sẽ không tính điểm",

@@ -124,7 +124,9 @@ INFO_HEIGHT = 54  # the review info box after the game
 # Settings) keep their own layout in a board-sized frame, drawn scaled up in portrait (windowTransform, drawWindow).
 PORTRAIT_WIDTH = BOARD_WIDTH
 PORTRAIT_HEIGHTS = (1400, 1700)  # the portrait canvas's height, from the window's shape, within these
-PORTRAIT_SCALES = (1.0, 1.4)  # the portrait panel's scale: the largest (in steps of 0.05) at which it all fits
+# the portrait panel's scale: the largest (in steps of 0.05) at which it all fits. At 1.6 a button is about 32 to 36 CSS
+# px high on a current phone (the canvas is 768 wide): the board and the strips take the room that more would need
+PORTRAIT_SCALES = (1.0, 1.6)
 PORTRAIT_MIN_LIST_ROWS = 2  # rows of the move list every portrait panel must leave
 LAYOUT = None  # the live Layout; made at the end of the module (it reads constants from all over it), see setLayout
 
@@ -281,6 +283,7 @@ OPPONENT_GONE_SECONDS = 150  # no message from the opponent for this long (serve
 ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
 ROOM_CODE_LENGTH = 12  # the most a room code can have (a code typed or pasted)
 ROOM_CODE_HOST_LENGTH = 10  # a room the host makes: the topic is public, so the code is what keeps others out
+ROOM_CODE_HOST_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no I, O, 0 or 1: read aloud or typed, they look alike
 # quick chat in an online room: canned messages sent by their index, so nothing typed ever goes out
 QUICK_CHAT = ["Hello!", "Good luck!", "Good game!", "Thanks!", "Well played!", "Oops", "One moment, please"]
 CHAT_INTERVAL_MS = 3000  # at most one chat message per this many ms (Chat is disabled in between)
@@ -765,16 +768,26 @@ def dropdownLabels(name):
     return [label for label, _ in CLOCK_OPTIONS]
 
 
-# dropdown options open upwards from the dropdown button
+# dropdown options open upwards from the dropdown button; a list of more than DROPDOWN_ONE_COLUMN options (the clocks)
+# is in two columns, so it doesn't cover the whole panel: the first half down the left, the rest down the right
+DROPDOWN_ONE_COLUMN = 8
+
+
 def dropdownOptionRects(rect, count):
     height = LAYOUT.rowHeight
-    return [p.Rect(rect.x, rect.y - (count - i) * height, rect.width, height) for i in range(count)]
+    if count <= DROPDOWN_ONE_COLUMN:
+        return [p.Rect(rect.x, rect.y - (count - i) * height, rect.width, height) for i in range(count)]
+    rows = (count + 1) // 2
+    half = rect.width // 2
+    return [p.Rect(rect.x + (i // rows) * half, rect.y - (rows - i % rows) * height,
+                   half if i < rows else rect.width - half, height) for i in range(count)]
 
 
 # the menu (the three-line button at the bottom right): its items in order, top to bottom
+LANGUAGE_MENU_LABEL = "Language / Ngôn ngữ"  # in both languages: whoever can't read the game's can read this
 MENU_ITEMS = [('save', "Save game (PGN)"), ('load', "Load game (PGN)"), ('flip', "Flip board (F)"),
-              ('settings', "Settings"), ('help', "How to play (H)")]
-MENU_WIDTH = 230
+              ('language', LANGUAGE_MENU_LABEL), ('settings', "Settings"), ('help', "How to play (H)")]
+MENU_WIDTH = 250
 MENU_GAP = 4  # between the items
 MENU_PADDING = 6  # between the items and the menu's frame, and between the frame and its button
 
@@ -1266,7 +1279,7 @@ async def main():
         clockHistory = [dict(clocks)]
         playerWhiteHuman, playerBlackHuman = data.color == 'w', data.color == 'b'
         puzzle = {'data': data, 'seen': 1, 'wait': None, 'failed': False, 'hinted': False, 'done': False,
-                  'revealed': False, 'change': 0}
+                  'revealed': False, 'change': 0, 'hint': None}
         moveMade = animate = True  # the opponent's move slides into place
         playSound(moveSoundName(first))
 
@@ -1330,11 +1343,18 @@ async def main():
     # the hint shows the next move of the solution; a puzzle solved with a hint doesn't change the rating
     def puzzleHint():
         nonlocal hintMove
-        move = gs.findMoveByCode(puzzle['data'].moves[len(gs.moveLog)], validMoves)
-        if move is not None:
+        ply = len(gs.moveLog)
+        move = gs.findMoveByCode(puzzle['data'].moves[ply], validMoves)
+        if move is None:
+            return
+        puzzle['hinted'] = True
+        if puzzle['hint'] is not None and puzzle['hint'][0] == ply:  # the piece was shown: now the move
             hintMove = move
-            puzzle['hinted'] = True
-            showStatus("Hint: move the piece shown. Solving it with a hint doesn't change your rating", 4000)
+            showStatus("Hint: the move is shown", 3000)
+        else:
+            puzzle['hint'] = (ply, (move.startRow, move.startCol))
+            showStatus("Hint: this piece moves. Hint again shows the move. Solving it with a hint doesn't change "
+                       "your rating", 5000)
 
     # Skip gives the puzzle up: it counts as a miss unless it was failed already, and its solution is played out on the
     # board; the button then says Next puzzle, which is free
@@ -1851,7 +1871,8 @@ async def main():
                 if name == 'room':  # a text field: the I-beam, and its tooltip
                     return name, tooltipText(name), 'ibeam'
                 if states.get(name, True):
-                    return name, tooltipText(name, multiplayerMode and networkConnected, account.signedIn), True
+                    return name, tooltipText(name, multiplayerMode and networkConnected, account.signedIn,
+                                             currentModeIndex == PUZZLE_MODE), True
                 return name, reasonDisabled(name), False
         if not onBoard(pos):  # the moves in the log show their position, during the game too
             if scrollbarPart(moveList, pos):
@@ -1938,6 +1959,12 @@ async def main():
                 showStatus(message)
         elif name == 'flip':
             boardFlipped = not boardFlipped
+        elif name == 'language':  # the next language of the list
+            codes = [code for code, _ in i18n.LANGUAGES]
+            code = codes[(codes.index(i18n.language()) + 1) % len(codes)]
+            settings.put('language', code)
+            applyLanguage(code)
+            showStatus("Language: " + dict(i18n.LANGUAGES)[code])
         elif name == 'settings':
             settingsTab = lastSettingsTab
         elif name == 'help':
@@ -2882,8 +2909,7 @@ async def main():
                     print("DEBUG: Host button clicked.")
                     # a new room, unless one was typed in (the invite's room has its host: the friend)
                     if not roomCode or roomCode == invitedRoom:
-                        roomCode = ''.join(random.choices(string.ascii_uppercase + string.digits,
-                                                          k=ROOM_CODE_HOST_LENGTH))
+                        roomCode = ''.join(random.choices(ROOM_CODE_HOST_CHARACTERS, k=ROOM_CODE_HOST_LENGTH))
                     connectOnline('host')
                     await asyncio.sleep(0)  # yield so poll task can start
                 elif clicked == 'join':
@@ -3163,7 +3189,9 @@ async def main():
                              version=onlineVersion, color=ourColor() if multiplayerMode and networkConnected else None,
                              prompt=pendingPrompt['kind'] if pendingPrompt else None,
                              status=statusText if p.time.get_ticks() < statusUntil else "", frames=p.time.get_ticks(),
-                             puzzle=puzzleInfoLines(puzzle, puzzles.current()) if puzzle is not None else None)
+                             puzzle=puzzleInfoLines(puzzle, puzzles.current()) if puzzle is not None else None,
+                             hintMove=hintMove.getCode() if hintMove is not None else None,
+                             hintPiece=puzzle['hint'][1] if puzzle is not None and puzzle['hint'] else None)
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
             pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
         if gameOver or not settings.get('premoves'):
@@ -3218,6 +3246,10 @@ async def main():
         # and the player's own (right button), in their colors
         arrows += [(start, end, ANNOTATION_COLORS[color]) for (start, end), color in boardArrows.items()]
         rings = [(square, ANNOTATION_COLORS[color]) for square, color in boardRings.items()]
+        # a puzzle's hint, first step: the piece to move, until it is moved or the move is shown
+        if (puzzle is not None and puzzle['hint'] is not None and puzzle['hint'][0] == len(gs.moveLog)
+                and hintMove is None and not puzzle['done'] and reviewPly is None):
+            rings.append((puzzle['hint'][1], ARROW_COLOR))
         # the board shows the reviewed position while looking back (during the game, or after it)
         shownGs = reviewGs if reviewGs is not None else gs
         dragging = drag is not None and drag['active']
@@ -3311,7 +3343,8 @@ async def main():
         }
         labels['analyze'] = "Analyze game"  # once the analysis starts its graph takes the button's place
         if currentModeIndex == PUZZLE_MODE:
-            labels['hint'] = "Hint"
+            labels['hint'] = ("Show move" if puzzle is not None and puzzle['hint'] is not None
+                              and puzzle['hint'][0] == len(gs.moveLog) and hintMove is None else "Hint")
             labels['skip'] = "Next puzzle" if puzzle is not None and puzzle['done'] else "Skip"
         if savedSession:
             lastColor = savedSession.get('color') or ('w' if savedSession['role'] == 'host' else 'b')
@@ -3423,7 +3456,7 @@ async def main():
             for i, optRect in enumerate(dropdownOptionRects(layout[openDropdown], len(options))):
                 drawButton(screen, optRect, options[i], True, mouse_pos,
                            color=UI['selectedOption'] if i == current else None, size=LAYOUT.labelSize)
-                if i == current:
+                if i == current and optRect.width > scaled(120):  # a narrow column shows it by its color
                     drawCheckMark(screen, optRect)
         if menuOpen:
             drawMenu(screen, layout['menu'], states, mouse_pos)
@@ -5335,12 +5368,15 @@ TOOLTIPS = {
     'account': "Sign in to save games and get rated",
     'menu': "More: save, load, flip board, settings, help",
     'flip': "Turn the board around (F)",
+    'language': "Switch between English and Tiếng Việt",
     'settings': "Board, pieces, theme and sound",
 }
 
 
 # the tooltip of an enabled panel control; online, Undo asks the opponent and Restart leaves the room
-def tooltipText(name, connected=False, signedIn=False):
+def tooltipText(name, connected=False, signedIn=False, puzzle=False):
+    if puzzle and name == 'restart':
+        return "Try this puzzle again (R)"
     if connected and name == 'undo':
         return "Ask your opponent to undo (Z)"
     if connected and name == 'restart':

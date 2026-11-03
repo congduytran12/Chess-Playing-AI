@@ -95,7 +95,7 @@ class LanguageTest(unittest.TestCase):
             texts.add(title)
             for item in items:
                 texts |= {part for part in item[1:3] if isinstance(part, str)}
-        texts -= {"Email"}  # the same word
+        texts -= {"Email", main.LANGUAGE_MENU_LABEL}  # the same word; and the one in both languages
         missing = sorted(text for text in texts if '%' not in text and i18n.tr(text) == text)
         self.assertEqual(missing, [], "texts with no Vietnamese")
 
