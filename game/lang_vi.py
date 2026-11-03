@@ -106,6 +106,7 @@ EXACT = {
     "Accounts aren't available here": "Không dùng được tài khoản ở đây", "The server didn't answer": "Máy chủ không trả lời",
     "Can't reach the server": "Không kết nối được máy chủ", "Not signed in": "Chưa đăng nhập",
     "Invalid login credentials": "Sai thông tin đăng nhập", "Sign-in failed": "Đăng nhập thất bại",
+    "Enter your email or username and password": "Nhập email hoặc tên người dùng và mật khẩu",
     "Your session expired, please sign in again": "Phiên đăng nhập đã hết hạn, hãy đăng nhập lại",
     "Please sign in again": "Hãy đăng nhập lại",
     "The account service is busy, please try again": "Dịch vụ tài khoản đang bận, hãy thử lại",

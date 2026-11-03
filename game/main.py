@@ -2233,7 +2233,11 @@ async def main():
     def submitAccountForm():
         password = accountFields['password'].value
         if accountView == 'signin':
-            startRequest(account.signIn(accountFields['login'].value.strip(), password), onDone=lambda _: signedIn())
+            login = accountFields['login'].value.strip()
+            if not login or not password:
+                setAccountMessage("Enter your email or username and password")
+                return
+            startRequest(account.signIn(login, password), onDone=lambda _: signedIn())
         elif accountView == 'register':
             startRequest(account.register(accountFields['email'].value.strip(), password,
                                           accountFields['username'].value.strip()), onDone=registered)

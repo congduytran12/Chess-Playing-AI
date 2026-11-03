@@ -2264,6 +2264,33 @@ class GameLoopTest(unittest.TestCase):
         self.assertTrue(seen['shown'], "Show reveals the password")
         self.assertEqual(seen['toggle cursor'], 'hand', "Show is a button in the field")
 
+    def test_empty_sign_in_is_rejected_without_request(self):
+        main = self.main
+        calls = []
+
+        async def signIn(login, password):
+            calls.append((login, password))
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.click(main.panelLayout(0, False)['account'].center, 0.3)
+            await self.click(main.accountLayout('signin')['submit'].center, 0.3)
+            seen = (frames[-1]['message'], list(calls))
+            await self.key(p.K_ESCAPE)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+            return seen
+
+        frames, restore = self.recordAccountWindow()
+        account, restoreAccount = self.fakeAccount(signIn=signIn)
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+            restoreAccount()
+        self.assertEqual(frames[-1]['message'], "Enter your email or username and password")
+        self.assertEqual(calls, [])
+
     def test_forgot_password_view(self):
         main = self.main
         import browser
