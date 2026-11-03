@@ -88,6 +88,7 @@ class StockfishTest(unittest.TestCase):
         gs.undoMove()
         candidates = stockfish.hintMoves(gs, valid, [repeated, repeated])
         self.assertNotIn(move, candidates)
+        self.assertEqual(stockfish.nonRepetitionMoves(gs, valid, [repeated, repeated]), candidates)
 
     def test_moves_hints_and_levels(self):
         async def run():
@@ -111,7 +112,8 @@ class StockfishTest(unittest.TestCase):
         self.assertIn('position startpos moves f2f3 e7e5 g2g4', sent)
         self.assertIn('setoption name UCI_Elo value %d' % stockfish.LEVEL_ELO[0], sent, "Easy plays weaker")
         self.assertIn('setoption name UCI_LimitStrength value false', sent, "hints and Impossible at full strength")
-        self.assertIn('go movetime %d' % round(chessAi.LEVELS[0][1] * 1000), sent, "the level's time")
+        self.assertTrue(any(command.endswith('movetime %d' % round(chessAi.LEVELS[0][1] * 1000))
+                            for command in sent), "the level's time")
 
     def test_a_cancelled_search_doesnt_answer_the_next(self):
         async def run():

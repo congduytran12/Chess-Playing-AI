@@ -319,7 +319,7 @@ def moveCodes(gs):
     return [move.getCode() for move in gs.moveLog]
 
 
-def hintMoves(gs, validMoves, history):
+def nonRepetitionMoves(gs, validMoves, history):
     """Moves that do not immediately claim a third occurrence, unless every move does."""
     if not history:
         return validMoves
@@ -333,20 +333,26 @@ def hintMoves(gs, validMoves, history):
     return candidates or validMoves
 
 
+hintMoves = nonRepetitionMoves
+
+
 async def findBestMove(gs, validMoves, level=None, history=()):
     """The computer's move at the difficulty chessAi.LEVELS[level] (chessAi.LEVEL when None): Stockfish held to
     that level's strength (LEVEL_ELO) for the level's time, or chessAi's own search without it."""
     if not validMoves:
         return None
     level = chessAi.LEVEL if level is None else level
+    candidates = nonRepetitionMoves(gs, validMoves, history)
     if len(validMoves) > 1 and not gs.playerWantsToPlayAsBlack and await engine.ready(READY_WAIT):
         name, seconds = chessAi.LEVELS[level][:2]
-        found = await engine.go(moveCodes(gs), seconds, LEVEL_ELO[level])
+        found = await engine.go(moveCodes(gs), seconds, LEVEL_ELO[level],
+                                search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
-        if move is not None:
+        if move in candidates:
             print("AI (%s, Stockfish): %s score %s" % (name, move, found[1]))
             return move
-    return await chessAi.findBestMove(gs, validMoves, level, history)
+    move = await chessAi.findBestMove(gs, validMoves, level, history)
+    return move if move in candidates else candidates[0]
 
 
 async def searchPosition(gs, validMoves, seconds, history=()):
@@ -363,7 +369,7 @@ async def searchPosition(gs, validMoves, seconds, history=()):
 async def searchHintPosition(gs, validMoves, seconds, history=()):
     """Searches a hint with the full browser build, without changing the gameplay engine."""
     if validMoves and await hintEngine.ready(READY_WAIT):
-        candidates = hintMoves(gs, validMoves, history)
+        candidates = nonRepetitionMoves(gs, validMoves, history)
         found = await hintEngine.go(moveCodes(gs), seconds,
                                     search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
