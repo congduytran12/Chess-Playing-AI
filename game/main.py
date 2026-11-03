@@ -264,7 +264,7 @@ SIDE_OPTIONS = ["White", "Black", "Random"]
 CLOCK_OPTIONS = [("Off", None), ("1+0", (60, 0)), ("1+1", (60, 1)), ("2+1", (120, 1)), ("3+0", (180, 0)),
                  ("3+2", (180, 2)), ("5+0", (300, 0)), ("5+3", (300, 3)), ("10+0", (600, 0)), ("10+5", (600, 5)),
                  ("15+10", (900, 10)), ("30+0", (1800, 0))]
-HINT_SECONDS = 1.0  # thinking time for hints, independent of the AI difficulty
+HINT_SECONDS = 5.0  # thinking time for hints, independent of the AI difficulty
 ANALYSIS_SECONDS = 0.8  # thinking time per position when analyzing a finished game
 # a move that loses at least this much (in pawns, against the best move) is marked in the move log
 MOVE_MARKS = [(3.0, "??"), (1.5, "?"), (0.8, "?!")]  # blunder, mistake, inaccuracy
