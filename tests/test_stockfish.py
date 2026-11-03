@@ -79,6 +79,16 @@ class StockfishTest(unittest.TestCase):
         self.assertEqual(stockfish.scoreInPawns(('mate', -1)), -(chessAi.CHECKMATE - 1))
         self.assertGreater(stockfish.scoreInPawns(('mate', 30)), chessAi.MATE_THRESHOLD, "a mate counts as one")
 
+    def test_hint_avoids_immediate_third_repetition(self):
+        gs = GameState()
+        valid = gs.getValidMoves()
+        move = valid[0]
+        gs.makeMove(move)
+        repeated = gs.getPositionKey()
+        gs.undoMove()
+        candidates = stockfish.hintMoves(gs, valid, [repeated, repeated])
+        self.assertNotIn(move, candidates)
+
     def test_moves_hints_and_levels(self):
         async def run():
             gs = GameState()
@@ -113,6 +123,13 @@ class StockfishTest(unittest.TestCase):
                 await task
             return await stockfish.engine.go(['e2e4'], 0.05)
         self.assertEqual(asyncio.run(run()), ('e7e5', 0.42), "not the stopped search's a2a3")
+
+    def test_search_moves_restriction(self):
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            return await stockfish.engine.go([], 0.05, search_moves=['e2e4'])
+        self.assertEqual(asyncio.run(run()), ('e2e4', 0.42))
+        self.assertIn('go searchmoves e2e4 movetime 50', self.commands())
 
     def test_without_an_engine_the_games_own_ai_plays(self):
         stockfish.engine = stockfish.Engine([sys.executable, '-c', 'pass'])  # exits at once

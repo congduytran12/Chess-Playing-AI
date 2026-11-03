@@ -149,7 +149,7 @@ class Engine:
             await asyncio.sleep(POLL_SECONDS)
         return self.state == 'ready'
 
-    async def go(self, moves, seconds, elo=None):
+    async def go(self, moves, seconds, elo=None, search_moves=None):
         """Searches the position after moves (Move.getCode codes from the start position) for seconds, at most
         elo strong (None: full strength). Returns (best move code or None, score in pawns for the side to move,
         or None), or None when the engine isn't ready or fails."""
@@ -159,7 +159,7 @@ class Engine:
             self._lock = asyncio.Lock()
         async with self._lock:
             try:
-                return await self._search(moves, seconds, elo)
+                return await self._search(moves, seconds, elo, search_moves)
             except asyncio.CancelledError:
                 if self._searching:
                     self._send('stop')  # the next search first reads this one's bestmove (see _search)
@@ -170,7 +170,7 @@ class Engine:
                 self.close()
                 return None
 
-    async def _search(self, moves, seconds, elo):
+    async def _search(self, moves, seconds, elo, search_moves=None):
         # a search cancelled earlier may still be answering: its bestmove comes first (an engine answers isready
         # even while it searches, so readyok alone doesn't mean it is done)
         if self._searching:
@@ -187,7 +187,11 @@ class Engine:
                 self._send('setoption name UCI_Elo value %d' % elo)
             self._elo = elo
         self._send('position startpos' + (' moves ' + ' '.join(moves) if moves else ''))
-        self._send('go movetime %d' % max(1, round(seconds * 1000)))
+        go = 'go'
+        if search_moves:
+            go += ' searchmoves ' + ' '.join(search_moves)
+        go += ' movetime %d' % max(1, round(seconds * 1000))
+        self._send(go)
         self._searching = True
         score = None
         deadline = time.time() + seconds + ANSWER_GRACE
@@ -315,6 +319,20 @@ def moveCodes(gs):
     return [move.getCode() for move in gs.moveLog]
 
 
+def hintMoves(gs, validMoves, history):
+    """Moves that do not immediately claim a third occurrence, unless every move does."""
+    if not history:
+        return validMoves
+    candidates = []
+    for move in validMoves:
+        gs.makeMove(move)
+        repeated = history.count(gs.getPositionKey()) >= 2
+        gs.undoMove()
+        if not repeated:
+            candidates.append(move)
+    return candidates or validMoves
+
+
 async def findBestMove(gs, validMoves, level=None, history=()):
     """The computer's move at the difficulty chessAi.LEVELS[level] (chessAi.LEVEL when None): Stockfish held to
     that level's strength (LEVEL_ELO) for the level's time, or chessAi's own search without it."""
@@ -345,7 +363,9 @@ async def searchPosition(gs, validMoves, seconds, history=()):
 async def searchHintPosition(gs, validMoves, seconds, history=()):
     """Searches a hint with the full browser build, without changing the gameplay engine."""
     if validMoves and await hintEngine.ready(READY_WAIT):
-        found = await hintEngine.go(moveCodes(gs), seconds)
+        candidates = hintMoves(gs, validMoves, history)
+        found = await hintEngine.go(moveCodes(gs), seconds,
+                                    search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move is not None and found[1] is not None:
             return found[1], move, 0
