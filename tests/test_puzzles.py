@@ -109,7 +109,11 @@ class PuzzlesTest(unittest.TestCase):
 
     def test_the_themes_read_well(self):
         puzzle = puzzles.Puzzle('x', START, ['e2e4'], 1000, ['mateIn2', 'backRankMate'])
-        self.assertEqual(puzzle.themeText, "MateIn2 · BackRankMate")
+        self.assertEqual(puzzle.themeText, "Mate in 2 · Back rank mate")
+        self.assertEqual(puzzle.themeLabels, ["Mate in 2", "Back rank mate"])
+        for theme, label in (('discoveredAttack', "Discovered attack"), ('fork', "Fork"), ('xRayAttack', "X ray attack"),
+                             ('attackingF2F7', "Attacking f2f7"), ('queenRookEndgame', "Queen rook endgame")):
+            self.assertEqual(puzzles.themeLabel(theme), label)
 
 
 if __name__ == '__main__':

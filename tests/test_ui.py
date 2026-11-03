@@ -3388,15 +3388,16 @@ class GameLoopTest(unittest.TestCase):
             with self.subTest(color=color):
                 chosen, other, restore = self.puzzleKit(color)
                 seen = {}
+                main.GAME_VIEW = view = {}
 
                 async def script():
                     await asyncio.sleep(1.0)
                     await self.openPuzzles()
-                    seen['start'] = [t for t in shown['status'] if t.startswith("Find")]
+                    seen['start'] = (view['puzzle'], list(shown['status']))
                     seen['panel'] = sorted(main.panelLayout(main.PUZZLE_MODE, False))
                     for code in (chosen.moves[1], chosen.moves[3]):  # the player's moves; the opponent answers
                         await self.move(self.puzzleCell(code[:2], color), self.puzzleCell(code[2:4], color), 1.8)
-                    seen['solved'] = [t for t in shown['status'] if t.startswith("Solved")]
+                    seen['solved'] = view['puzzle']
                     seen['progress'] = dict(puzzles.current())
                     p.event.post(p.event.Event(p.QUIT))
                     await asyncio.sleep(0.5)
@@ -3405,14 +3406,20 @@ class GameLoopTest(unittest.TestCase):
                 try:
                     self.runGame(script)
                 finally:
+                    main.GAME_VIEW = None
                     restoreShown()
                     progress = dict(puzzles.current())
                     restore()
                 word = "White" if color == 'w' else "Black"
-                self.assertEqual(seen['start'][:1], ["Find the best move for " + word])
+                self.assertEqual(seen['start'][0][0], "Find the best move for " + word)
+                self.assertEqual([t for t in seen['start'][1] if t.startswith("Find")], [],
+                                 "the panel says it: no message that says it again")
                 self.assertNotIn('resign', seen['panel'], "no resigning in puzzles")
                 self.assertTrue({'puzzleInfo', 'hint', 'skip', 'restart'} <= set(seen['panel']))
-                self.assertTrue(seen['solved'] and seen['solved'][0].startswith("Solved! Rating +"), seen['solved'])
+                self.assertTrue(seen['solved'][0].startswith("Solved! Rating +"), seen['solved'])
+                self.assertEqual([t for t in shown['status'] if t.startswith("Solved")], [],
+                                 "the panel says it: no message that says it again")
+                self.assertEqual(seen['solved'][1][-1], "Streak 1")
                 self.assertEqual((progress['streak'], progress['attempts'], progress['solved']), (1, 1, [chosen.id]))
                 self.assertGreater(progress['rating'], puzzles.START_RATING)
 
@@ -3423,6 +3430,8 @@ class GameLoopTest(unittest.TestCase):
         right = chosen.moves[1]
         wrong = next(m.getCode() for m in gs.getValidMoves() if m.getCode()[:4] != right[:4] and not m.isPawnPromotion)
         seen = {}
+        main = self.main
+        main.GAME_VIEW = view = {}
 
         async def script():
             await asyncio.sleep(1.0)
@@ -3433,7 +3442,7 @@ class GameLoopTest(unittest.TestCase):
             await asyncio.sleep(1.2)  # the wrong move is taken back
             for code in (right, chosen.moves[3]):
                 await self.move(self.puzzleCell(code[:2]), self.puzzleCell(code[2:4]), 1.8)
-            seen['solved'] = [t for t in shown['status'] if t.startswith("Solved")]
+            seen['solved'] = view['puzzle']
             p.event.post(p.event.Event(p.QUIT))
             await asyncio.sleep(0.5)
 
@@ -3441,12 +3450,13 @@ class GameLoopTest(unittest.TestCase):
         try:
             self.runGame(script)
         finally:
+            main.GAME_VIEW = None
             restoreShown()
             progress = dict(puzzles.current())
             restore()
         self.assertTrue(seen['wrong'] and "Rating -" in seen['wrong'][0], seen['wrong'])
         self.assertLess(seen['rating'], puzzles.START_RATING)
-        self.assertEqual(seen['solved'][:1], ["Solved, after a mistake: your rating stays"])
+        self.assertEqual(seen['solved'][0], "Solved after a mistake", "and the rating stays")
         self.assertEqual((progress['rating'], progress['streak'], progress['solved']), (seen['rating'], 0, []),
                          "one mistake counted once, and the puzzle is not marked solved")
 
@@ -3455,6 +3465,7 @@ class GameLoopTest(unittest.TestCase):
         import puzzles
         chosen, other, restore = self.puzzleKit('w')
         seen = {}
+        main.GAME_VIEW = view = {}
 
         async def script():
             await asyncio.sleep(1.0)
@@ -3462,9 +3473,12 @@ class GameLoopTest(unittest.TestCase):
             layout = main.panelLayout(main.PUZZLE_MODE, False)
             await self.click(layout['hint'].center, 0.5)
             seen['hint'] = [t for t in shown['status'] if t.startswith("Hint")]
-            await self.click(layout['skip'].center, 1.0)  # a miss, and the next puzzle
-            seen['after skip'] = (puzzles.current()['rating'], puzzles.current()['streak'], puzzles.current()['attempts'])
-            seen['starts'] = [t for t in shown['status'] if t.startswith("Find")]
+            await self.click(layout['skip'].center, 0.3)  # a miss: the solution is played out
+            seen['early'] = (len(view['moves']), view['puzzle'][0])
+            await asyncio.sleep(0.8 * (len(chosen.moves) - 1) + 1.5)
+            seen['shown'] = (list(view['moves']), view['puzzle'], dict(puzzles.current()))
+            await self.click(layout['skip'].center, 1.0)  # Next puzzle
+            seen['next'] = (len(view['moves']), view['puzzle'][0], puzzles.current()['attempts'])
             p.event.post(p.event.Event(p.QUIT))
             await asyncio.sleep(0.5)
 
@@ -3472,28 +3486,40 @@ class GameLoopTest(unittest.TestCase):
         try:
             self.runGame(script)
         finally:
+            main.GAME_VIEW = None
             restoreShown()
             restore()
         self.assertTrue(seen['hint'] and "doesn't change your rating" in seen['hint'][0])
-        rating, streak, attempts = seen['after skip']
-        self.assertEqual((streak, attempts), (0, 1))
-        self.assertLess(rating, puzzles.START_RATING, "skipping counts as a miss")
-        self.assertGreaterEqual(len(seen['starts']), 1)
+        self.assertTrue(seen['early'][1].startswith("The solution"), "at once")
+        moves, info, progress = seen['shown']
+        self.assertEqual(moves, chosen.moves, "every move of the puzzle was played out, the opponent's too")
+        self.assertTrue(info[0].startswith("The solution. Rating -"), info)
+        self.assertEqual((progress['streak'], progress['attempts'], progress['solved']), (0, 1, []))
+        self.assertLess(progress['rating'], puzzles.START_RATING, "skipping counts as a miss")
+        self.assertEqual(seen['next'][0], 1, "the next puzzle, with the opponent's first move")
+        self.assertTrue(seen['next'][1].startswith("Find the best move"), seen['next'])
+        self.assertEqual(seen['next'][2], 1, "and Next puzzle is free")
 
     def test_the_puzzle_panel_texts(self):
         main = self.main
         import puzzles
         data = puzzles.Puzzle('x', "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", ['h7h6', 'a1a8'], 800, ['mate', 'backRankMate'])
         progress = {'rating': 1010, 'streak': 2}
-        state = {'data': data, 'failed': False, 'hinted': False, 'done': False}
+        state = {'data': data, 'failed': False, 'hinted': False, 'done': False, 'revealed': False, 'change': 0}
         self.assertEqual(main.puzzleInfoLines(state, progress),
-                         ("Find the best move for White", "Puzzle 800  ·  You 1010"))
+                         ("Find the best move for White", ["Puzzle 800  ·  You 1010"]))
         state['done'] = True
-        self.assertEqual(main.puzzleInfoLines(state, progress), ("Solved!", "Mate · BackRankMate  ·  Streak 2"))
+        self.assertEqual(main.puzzleInfoLines(state, progress), ("Solved!", ["Mate", "Back rank mate", "Streak 2"]))
+        state['change'] = 12
+        self.assertEqual(main.puzzleInfoLines(state, progress)[0], "Solved! Rating +12")
         state['hinted'] = True
         self.assertEqual(main.puzzleInfoLines(state, progress)[0], "Solved with a hint")
         state['failed'] = True
         self.assertEqual(main.puzzleInfoLines(state, progress)[0], "Solved after a mistake")
+        state.update(revealed=True, change=-9)
+        self.assertEqual(main.puzzleInfoLines(state, progress), ("The solution. Rating -9", ["Mate", "Back rank mate"]))
+        state['change'] = 0
+        self.assertEqual(main.puzzleInfoLines(state, progress)[0], "The solution", "no change after a failed one")
         self.assertEqual(main.MODE_OPTIONS[main.PUZZLE_MODE], "Puzzles")
         self.assertEqual([row for row in main.panelRows(main.PUZZLE_MODE, False)][:3],
                          [['mode'], ['puzzleInfo'], ['hint', 'skip']])

@@ -8,6 +8,7 @@
 # streak are kept on this device (browser localStorage, or a file in the home folder on desktop).
 
 import os
+import re
 import sys
 import json
 import random
@@ -56,8 +57,19 @@ class Puzzle:
         return gs, move
 
     @property
+    def themeLabels(self):
+        return [themeLabel(theme) for theme in self.themes]
+
+    @property
     def themeText(self):
-        return " · ".join(theme[:1].upper() + theme[1:] for theme in self.themes)
+        return " · ".join(self.themeLabels)
+
+
+def themeLabel(theme):
+    """A theme as the database writes it, as a label: discoveredAttack -> Discovered attack, mateIn2 -> Mate in 2."""
+    words = re.sub(r'([a-z])([A-Z])', r'\1 \2', theme)
+    words = re.sub(r'([a-z])(\d)', r'\1 \2', words).lower()
+    return words[:1].upper() + words[1:]
 
 
 def load():

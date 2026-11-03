@@ -255,6 +255,7 @@ MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer", "Puzzles"
 PUZZLE_MODE = 3  # the index of Puzzles in MODE_OPTIONS
 PUZZLE_REPLY_MS = 500  # the opponent's answer in a puzzle comes this long after the player's move
 PUZZLE_UNDO_MS = 900  # a wrong move stays on the board this long, and is taken back
+PUZZLE_SHOW_MS = 800  # the solution of a puzzle given up on is played out, a move this often
 LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
 SIDE_OPTIONS = ["White", "Black", "Random"]
 # (label, (starting seconds, increment seconds per move)), None for no clock
@@ -313,14 +314,27 @@ def get_text_surface(text, size, color, bold=True, sans=False):
 class LocalFont:
     """A font that shows (and measures) its text in the game's language: every text goes through i18n.tr."""
 
-    def __init__(self, font):
+    # fallback: makes a font for the letters this one can't draw (pygame's own font has no Vietnamese, so a button
+    # that names a language in its own letters needs one in every language), or None
+    def __init__(self, font, fallback=None):
         self._font = font
+        self._fallback = fallback
+        self._spare = None
+
+    def _fontFor(self, text):
+        if self._fallback is not None and any(ord(ch) > 255 for ch in text):
+            if self._spare is None:
+                self._spare = self._fallback()
+            return self._spare
+        return self._font
 
     def render(self, text, *args, **kwargs):
-        return self._font.render(i18n.tr(text), *args, **kwargs)
+        text = i18n.tr(text)
+        return self._fontFor(text).render(text, *args, **kwargs)
 
     def size(self, text):
-        return self._font.size(i18n.tr(text))
+        text = i18n.tr(text)
+        return self._fontFor(text).size(text)
 
     def __getattr__(self, name):
         return getattr(self._font, name)
@@ -333,8 +347,13 @@ class LocalFont:
 def get_font(size, bold=True, sans=False):
     key = (size, bold and not sans, sans)
     if key not in FONT_CACHE:
-        FONT_CACHE[key] = LocalFont(sansFont(size) if sans else p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size))
+        FONT_CACHE[key] = LocalFont(sansFont(size) if sans else p.font.Font(FONT_BOLD if bold else FONT_REGULAR, size),
+                                    (lambda: liberationSans(size)) if sans and i18n.language() == 'en' else None)
     return FONT_CACHE[key]
+
+
+def liberationSans(size):
+    return p.font.Font(FONT_SANS, max(8, round(size * SANS_SCALE)))
 
 
 # pygame's own font (the button labels' and the tooltips') can't draw Vietnamese, so another language has Liberation
@@ -1246,10 +1265,10 @@ async def main():
         clocks = {'w': 0, 'b': 0}
         clockHistory = [dict(clocks)]
         playerWhiteHuman, playerBlackHuman = data.color == 'w', data.color == 'b'
-        puzzle = {'data': data, 'seen': 1, 'wait': None, 'failed': False, 'hinted': False, 'done': False}
+        puzzle = {'data': data, 'seen': 1, 'wait': None, 'failed': False, 'hinted': False, 'done': False,
+                  'revealed': False, 'change': 0}
         moveMade = animate = True  # the opponent's move slides into place
         playSound(moveSoundName(first))
-        showStatus("Find the best move for " + ("White" if data.color == 'w' else "Black"))
 
     # the next puzzle is the same one when the player starts it over
     def restartPuzzle():
@@ -1264,11 +1283,8 @@ async def main():
         data = puzzle['data']
         if count >= len(data.moves) or gs.checkmate:
             puzzle['done'] = True
-            if puzzle['failed']:
-                showStatus("Solved, after a mistake: your rating stays", 4000)
-            else:
-                change = puzzles.finish(data, True, hinted=puzzle['hinted'])
-                showStatus("Solved!" + (" Rating %+d" % change if change else ""), 4000)
+            if not puzzle['failed']:
+                puzzle['change'] = puzzles.finish(data, True, hinted=puzzle['hinted'])  # the panel says how it went
             playSound('game-end')
         else:
             puzzle['wait'] = (p.time.get_ticks() + PUZZLE_REPLY_MS, 'reply')
@@ -1280,7 +1296,7 @@ async def main():
             showStatus("Not that one. Try again", 2500)
         else:
             puzzle['failed'] = True
-            change = puzzles.finish(puzzle['data'], False)
+            change = puzzle['change'] = puzzles.finish(puzzle['data'], False)
             showStatus("Not that one. Rating %+d. Try again" % change, 3000)
 
     # the puzzle's moves are judged and answered once the move is on the board
@@ -1299,13 +1315,15 @@ async def main():
         elif puzzle['wait'] is not None and now >= puzzle['wait'][0]:
             kind = puzzle['wait'][1]
             puzzle['wait'] = None
-            if kind == 'reply':
+            if kind in ('reply', 'show') and len(gs.moveLog) < len(data.moves):
                 reply = gs.findMoveByCode(data.moves[len(gs.moveLog)], validMoves)
                 if reply is not None:
                     playMove(reply)
                     puzzle['seen'] = len(gs.moveLog)
                     moveMade = animate = True
-            else:
+                    if kind == 'show' and len(gs.moveLog) < len(data.moves):
+                        puzzle['wait'] = (now + PUZZLE_SHOW_MS, 'show')
+            elif kind == 'undo':
                 takeBack(1)
                 puzzle['seen'] = len(gs.moveLog)
 
@@ -1318,11 +1336,21 @@ async def main():
             puzzle['hinted'] = True
             showStatus("Hint: move the piece shown. Solving it with a hint doesn't change your rating", 4000)
 
-    # Skip counts as a miss unless the puzzle was solved or already failed; Next puzzle (after it) is free
+    # Skip gives the puzzle up: it counts as a miss unless it was failed already, and its solution is played out on the
+    # board; the button then says Next puzzle, which is free
     def skipPuzzle():
-        if puzzle is not None and not puzzle['done'] and not puzzle['failed']:
-            puzzles.finish(puzzle['data'], False)
-        resetGame(startSound=False)
+        if puzzle is None:
+            return
+        if puzzle['done']:
+            resetGame(startSound=False)
+            return
+        if puzzle['wait'] is not None and puzzle['wait'][1] == 'undo':
+            takeBack(1)  # a wrong move waiting to come back goes now
+            puzzle['seen'] = len(gs.moveLog)
+        if not puzzle['failed']:
+            puzzle['change'] = puzzles.finish(puzzle['data'], False)
+        puzzle['done'] = puzzle['revealed'] = True
+        puzzle['wait'] = (p.time.get_ticks() + PUZZLE_SHOW_MS, 'show')
 
     # startSound: the player started this game (New game, Switch sides, Restart, a mode change, a room...), so it
     # plays 'game-start'; not online without a room, where there is no game
@@ -3134,7 +3162,8 @@ async def main():
                                  multiplayerMode and networkConnected), room=roomCode, game=onlineGame,
                              version=onlineVersion, color=ourColor() if multiplayerMode and networkConnected else None,
                              prompt=pendingPrompt['kind'] if pendingPrompt else None,
-                             status=statusText if p.time.get_ticks() < statusUntil else "", frames=p.time.get_ticks())
+                             status=statusText if p.time.get_ticks() < statusUntil else "", frames=p.time.get_ticks(),
+                             puzzle=puzzleInfoLines(puzzle, puzzles.current()) if puzzle is not None else None)
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
             pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
         if gameOver or not settings.get('premoves'):
@@ -4175,8 +4204,8 @@ HELP_PAGES = [
          "each right move the opponent answers. A wrong move comes back, and the first one of a puzzle lowers "
          "your puzzle rating."),
         (None, "Hint and Skip",
-         "Hint shows the next move: a puzzle solved with a hint leaves your rating alone. Skip goes on to "
-         "another puzzle and counts as a miss. Restart tries the same puzzle again."),
+         "Hint shows the next move: a puzzle solved with a hint leaves your rating alone. Skip counts as a miss "
+         "and shows the solution; then Next puzzle goes on. Restart tries the same puzzle again."),
         (None, "Your rating",
          "Puzzles get harder as your puzzle rating rises. The rating and your streak are kept on this device, "
          "and the puzzle's themes show once it is solved."),
@@ -4718,22 +4747,30 @@ def scrollForListDrag(startScroll, dy):
 
 # what the move list says before the first move, as (heading, text): how to move, and what to do online
 # touch: a phone or tablet (tap, and no keyboard for the How to play key)
-# the two lines of the puzzle's panel row: what to do (or how it went), and the ratings (or what the puzzle was about)
+# the two lines of the puzzle's panel row: what to do (or how it went, with the rating's change), and the ratings (or
+# what the puzzle was about, and the streak: parts, each translated by itself)
 def puzzleInfoLines(state, progress):
     data = state['data']
+    change = state.get('change')
+    if state.get('revealed'):
+        return ("The solution. Rating %+d" % change if change else "The solution"), data.themeLabels
     if state['done']:
-        first = ("Solved after a mistake" if state['failed'] else "Solved with a hint" if state['hinted']
-                 else "Solved!")
-        second = (data.themeText + "  ·  " if data.themes else "") + "Streak %d" % progress['streak']
-        return first, second
+        if state['failed']:
+            first = "Solved after a mistake"
+        elif state['hinted']:
+            first = "Solved with a hint"
+        else:
+            first = "Solved! Rating %+d" % change if change else "Solved!"
+        return first, data.themeLabels + ["Streak %d" % progress['streak']]
     return ("Find the best move for " + ("White" if data.color == 'w' else "Black"),
-            "Puzzle %d  ·  You %d" % (data.rating, progress['rating']))
+            ["Puzzle %d  ·  You %d" % (data.rating, progress['rating'])])
 
 
 def drawPuzzleInfo(screen, rect, lines):
     first = get_fitting_text(lines[0], rect.width, scaled(20), UI['text'], True)
     screen.blit(first, (rect.centerx - first.get_width() / 2, rect.y))
-    second = get_fitting_text(lines[1], rect.width, scaled(16), UI['textDim'], False)
+    second = get_fitting_text(" · ".join(i18n.tr(part) for part in lines[1]), rect.width, scaled(16),
+                              UI['textDim'], False)
     screen.blit(second, (rect.centerx - second.get_width() / 2, rect.y + scaled(24)))
 
 
@@ -5278,7 +5315,7 @@ TOOLTIPS = {
     'side': "Your color against the computer",
     'clock': "Time for each player: minutes + seconds per move",
     'hint': "Show a good move on the board",
-    'skip': "Skip this puzzle (it counts as a miss), or go on to the next",
+    'skip': "Show the solution (it counts as a miss), then go on to the next puzzle",
     'room': "Type or paste the room code your friend sent",
     'host': "Create a room and play White",
     'join': "Join this room and play Black",

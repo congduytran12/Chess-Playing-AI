@@ -13,7 +13,7 @@ Switch modes with the **Mode** dropdown:
 - **Local vs AI:** play the computer at five levels (Easy, Normal, Hard, Very Hard, Impossible). You can play as White, Black, or a random color. When you play Black, the board flips and the AI moves first.
 - **Local 2-Player:** two players take turns on the same screen.
 - **Online Multiplayer:** host a game to get a room code, and your opponent joins with it. The host plays White and sets the time control. When a game is over, **Rematch** starts the next one with the colors swapped; **New game** keeps them.
-- **Puzzles:** find the best moves of a position, one after the other; the opponent answers each right move. A wrong move comes back (the first one of a puzzle lowers your puzzle rating), **Hint** shows the next move (solving with it leaves the rating alone) and **Skip** goes on to the next puzzle (it counts as a miss). Puzzles get harder as your puzzle rating rises, and your rating and streak are kept on your device. There are 600 puzzles from 500 to 2400 rating.
+- **Puzzles:** find the best moves of a position, one after the other; the opponent answers each right move. A wrong move comes back (the first one of a puzzle lowers your puzzle rating), **Hint** shows the next move (solving with it leaves the rating alone) and **Skip** counts as a miss and plays the solution out on the board, and **Next puzzle** goes on. The puzzle's themes (Fork, Pin, Mate in 2...) show once it's over. Puzzles get harder as your puzzle rating rises, and your rating and streak are kept on your device. There are 600 puzzles from 500 to 2400 rating.
 
 ### The AI
 

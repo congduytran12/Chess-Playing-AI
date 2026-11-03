@@ -112,6 +112,23 @@ class LanguageTest(unittest.TestCase):
                     self.assertLessEqual(placed['textX'] + font.size(line)[0], right, item[1])
                 self.assertLessEqual(placed['textX'] + main.get_font(19, True).size(item[1])[0], right, item[1])
 
+    def test_the_languages_names_draw_in_every_language(self):
+        # a button names a language in its own letters, in whichever language the game is showing
+        for language in ('en', 'vi'):
+            main.applyLanguage(language)
+            for _, name in i18n.LANGUAGES:
+                for font in (main.get_font(24, True, True), main.get_font(24, True)):
+                    blank = [ch for ch in name if not ch.isspace()
+                             and font.render(ch, True, (255, 255, 255)).get_bounding_rect().width == 0]
+                    self.assertEqual(blank, [], "%s in %s" % (name, language))
+
+    def test_every_puzzle_theme_is_translated(self):
+        import puzzles
+        themes = {label for puzzle in puzzles.load() for label in puzzle.themeLabels}
+        missing = sorted(label for label in themes if i18n.tr(label) == label and label != "Zugzwang")  # the same word
+        self.assertEqual(missing, [], "puzzle themes with no Vietnamese")
+        self.assertEqual(i18n.tr("Mate in 3"), "Chiếu hết sau 3 nước")
+
     def test_the_names_of_the_languages_are_not_translated(self):
         for _, name in i18n.LANGUAGES:
             self.assertEqual(i18n.tr(name), name)
