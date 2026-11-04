@@ -37,7 +37,6 @@ READY_WAIT = 10  # a search waits this long for an engine that is still starting
 ANSWER_GRACE = 5  # seconds past the search time before a silent engine counts as broken
 POLL_SECONDS = 0.02
 HASH_MB = 16
-HINT_HASH_MB = 64  # the hint engine searches at full strength and gets a bigger table; gameplay stays at HASH_MB
 
 JS_HELPERS = '''
     window.chessSf = window.chessSf || {};
@@ -117,11 +116,10 @@ def scoreInPawns(score):
 
 
 class Engine:
-    def __init__(self, command=None, worker_url=WORKER_URL, channel='main', hashMb=HASH_MB):
+    def __init__(self, command=None, worker_url=WORKER_URL, channel='main'):
         self.command = command  # desktop: the command to run (a list); None: findExecutable()
         self.worker_url = worker_url
         self.channel = channel
-        self.hashMb = hashMb
         self.state = 'off'  # 'off' -> 'starting' -> 'ready', or 'failed'
         self.name = None  # the engine's own name, from 'id name'
         self._proc = None
@@ -217,7 +215,7 @@ class Engine:
             for line in await self._waitFor('uciok', START_SECONDS):
                 if line.startswith('id name '):
                     self.name = line[len('id name '):]
-            self._send('setoption name Hash value %d' % self.hashMb)
+            self._send('setoption name Hash value %d' % HASH_MB)
             if not WASM:
                 self._send('setoption name Threads value %d' % max(1, min(4, (os.cpu_count() or 2) // 2)))
             self._send('isready')
@@ -312,7 +310,7 @@ class Engine:
 
 
 engine = Engine()
-hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint', hashMb=HINT_HASH_MB)
+hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint')
 atexit.register(lambda: engine.close())  # desktop: the engine quits with the game
 atexit.register(lambda: hintEngine.close())
 
