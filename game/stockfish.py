@@ -29,10 +29,14 @@ if WASM:
 # the tests turn Stockfish off (CHESS_NO_STOCKFISH=1), so the computer plays the same moves on every machine
 ENABLED = os.environ.get('CHESS_NO_STOCKFISH') != '1'
 WORKER_URL = "stockfish/stockfish-19-lite-single.js"  # the browser build; its .wasm sits next to it
-HINT_WORKER_URL = "stockfish/stockfish-19-single.js"  # loaded only when the user asks for a hint
+# the full browser build (Stockfish dev-20261028, NNUE SFNNv19; built from source, see tools/stockfish-wasm), loaded
+# only for a hint or an analysis; its 137 MB .wasm comes in HINT_WORKER_PARTS parts, -part-0.wasm and on
+HINT_WORKER_URL = "stockfish/stockfish-dev-20261028-single.js"
+HINT_WORKER_PARTS = 6
 ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines')  # desktop
 LEVEL_ELO = [1320, 1600, 1900, 2300, None]  # the strength of each of chessAi.LEVELS; None: full strength
 START_SECONDS = 30  # the engine has this long to answer 'uci' (the browser downloads 7 MB first)
+HINT_START_SECONDS = 180  # the same for the hint engine, which downloads 137 MB first
 READY_WAIT = 10  # a search waits this long for an engine that is still starting, then uses chessAi
 ANSWER_GRACE = 5  # seconds past the search time before a silent engine counts as broken
 POLL_SECONDS = 0.02
@@ -116,10 +120,11 @@ def scoreInPawns(score):
 
 
 class Engine:
-    def __init__(self, command=None, worker_url=WORKER_URL, channel='main'):
+    def __init__(self, command=None, worker_url=WORKER_URL, channel='main', start_seconds=START_SECONDS):
         self.command = command  # desktop: the command to run (a list); None: findExecutable()
         self.worker_url = worker_url
         self.channel = channel
+        self.start_seconds = start_seconds
         self.state = 'off'  # 'off' -> 'starting' -> 'ready', or 'failed'
         self.name = None  # the engine's own name, from 'id name'
         self._proc = None
@@ -187,10 +192,9 @@ class Engine:
                 self._send('setoption name UCI_Elo value %d' % elo)
             self._elo = elo
         self._send('position startpos' + (' moves ' + ' '.join(moves) if moves else ''))
-        go = 'go'
-        if search_moves:
+        go = 'go movetime %d' % max(1, round(seconds * 1000))
+        if search_moves:  # last: Stockfish reads every word after searchmoves as a move, movetime too
             go += ' searchmoves ' + ' '.join(search_moves)
-        go += ' movetime %d' % max(1, round(seconds * 1000))
         self._send(go)
         self._searching = True
         score = None
@@ -212,14 +216,14 @@ class Engine:
         try:
             self._open()
             self._send('uci')
-            for line in await self._waitFor('uciok', START_SECONDS):
+            for line in await self._waitFor('uciok', self.start_seconds):
                 if line.startswith('id name '):
                     self.name = line[len('id name '):]
             self._send('setoption name Hash value %d' % HASH_MB)
             if not WASM:
                 self._send('setoption name Threads value %d' % max(1, min(4, (os.cpu_count() or 2) // 2)))
             self._send('isready')
-            await self._waitFor('readyok', START_SECONDS)
+            await self._waitFor('readyok', self.start_seconds)
             self.state = 'ready'
             print("Stockfish: ready -", self.name)
         except Exception as e:
@@ -310,7 +314,7 @@ class Engine:
 
 
 engine = Engine()
-hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint')
+hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint', start_seconds=HINT_START_SECONDS)
 atexit.register(lambda: engine.close())  # desktop: the engine quits with the game
 atexit.register(lambda: hintEngine.close())
 
@@ -372,6 +376,17 @@ async def searchHintPosition(gs, validMoves, seconds, history=()):
         candidates = nonRepetitionMoves(gs, validMoves, history)
         found = await hintEngine.go(moveCodes(gs), seconds,
                                     search_moves=[move.getCode() for move in candidates])
+        move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
+        if move is not None and found[1] is not None:
+            return found[1], move, 0
+    return await searchPosition(gs, validMoves, seconds, history=history)
+
+
+async def analyzePosition(gs, validMoves, seconds, history=()):
+    """Like searchPosition, for the analysis after the game: searched by the hint engine (the full build), which it
+    waits for while it loads, so one game's scores all come from the same engine."""
+    if validMoves and not gs.playerWantsToPlayAsBlack and await hintEngine.ready(HINT_START_SECONDS):
+        found = await hintEngine.go(moveCodes(gs), seconds)
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move is not None and found[1] is not None:
             return found[1], move, 0

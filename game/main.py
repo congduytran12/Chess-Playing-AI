@@ -1238,7 +1238,7 @@ async def main():
             history = [board.getPositionKey()]
             for i in range(len(log) + 1):
                 if moves:
-                    score, best, _ = await stockfish.searchPosition(board, moves, ANALYSIS_SECONDS, history=history)
+                    score, best, _ = await stockfish.analyzePosition(board, moves, ANALYSIS_SECONDS, history=history)
                     result['best'].append(best.getCode())
                     result['bestSan'].append(board.getSan(best, moves))
                 else:

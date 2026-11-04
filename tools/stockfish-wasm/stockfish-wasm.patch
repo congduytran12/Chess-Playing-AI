@@ -1,0 +1,2158 @@
+diff -ruN sf_dev/src/emscripten/credits-lite.js sf_wasm/src/emscripten/credits-lite.js
+--- sf_dev/src/emscripten/credits-lite.js	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/credits-lite.js	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,11 @@
++/*!
++ * Stockfish.js __VERSION__ (c) __YEAR__, Chess.com, LLC
++ * https://github.com/nmrugg/stockfish.js
++ * License: GPLv3
++ *
++ * Based on Stockfish (c) T. Romstad, M. Costalba, J. Kiiski, G. Linscott and other contributors.
++ * https://github.com/official-stockfish/Stockfish
++ *
++ * Nets by Chris Bao (sscg13)
++ * https://tests.stockfishchess.org/nns?network_name=nn-61e7af4bb97d
++ */
+diff -ruN sf_dev/src/emscripten/credits.js sf_wasm/src/emscripten/credits.js
+--- sf_dev/src/emscripten/credits.js	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/credits.js	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,8 @@
++/*!
++ * Stockfish.js __VERSION__ (c) __YEAR__, Chess.com, LLC
++ * https://github.com/nmrugg/stockfish.js
++ * License: GPLv3
++ *
++ * Based on Stockfish (c) T. Romstad, M. Costalba, J. Kiiski, G. Linscott and other contributors.
++ * https://github.com/official-stockfish/Stockfish
++ */
+diff -ruN sf_dev/src/emscripten/extern-post.js sf_wasm/src/emscripten/extern-post.js
+--- sf_dev/src/emscripten/extern-post.js	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/extern-post.js	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,607 @@
++return Stockfish;
++}
++
++///NOTE: Since emscripten 3.1.58, pthread workers no longer use a separate
++///worker.js file. They load this very script, and are detected by the
++///"em-pthread" worker name (web) or workerData (Node.js). Emscripten's
++///built-in runtime bootstraps them: it receives the shared wasm module and
++///memory via postMessage and runs the thread entry point itself.
++///
++///That bootstrap lives at the top level of the generated module
++///(`isPthread && Stockfish()`), which we wrap inside INIT_ENGINE(). In a
++///pthread worker nothing else calls INIT_ENGINE(), so we must call it here;
++///doing so runs the module and registers the worker's onmessage handler,
++///after which it idles until the main thread posts the load/run commands.
++var isPthreadWorker = (typeof globalThis !== "undefined" && typeof globalThis.name === "string" && globalThis.name.indexOf("em-pthread") === 0) ||
++    (typeof global !== "undefined" && Object.prototype.toString.call(global.process) === "[object process]" && require("node:worker_threads").workerData === "em-pthread");
++
++if (isPthreadWorker) {
++    /// Pthread worker: create the module to run the built-in bootstrap.
++    INIT_ENGINE();
++/// Is it a web worker?
++} else if (typeof onmessage !== "undefined" && (typeof window === "undefined" || typeof window.document === "undefined") || typeof global !== "undefined" && Object.prototype.toString.call(global.process) === "[object process]") {
++    (function ()
++    {
++        var isNode = typeof global !== "undefined" && Object.prototype.toString.call(global.process) === "[object process]";
++        var engine = {};
++        var startUpQueue = [];
++        var queue = [];
++        var wasmPath;
++        var queueTimer;
++        
++        function completer(line)
++        {
++            var completions = [
++                "compiler",
++                "d",
++                "eval",
++                "flip",
++                "go ",
++                "isready",
++                "ponderhit",
++                "position fen ",
++                "position startpos",
++                "position startpos moves ",
++                "quit",
++                "setoption name Clear Hash value true",
++                "setoption name Hash value ",
++                "setoption name Minimum Thinking Time value ",
++                "setoption name Move Overhead value ",
++                "setoption name MultiPV value ",
++                "setoption name Ponder value ",
++                "setoption name Skill Level value ",
++                "setoption name Slow Mover value ",
++                "setoption name Threads value ",
++                "setoption name UCI_Chess960 value false",
++                "setoption name UCI_Chess960 value true",
++                "setoption name UCI_LimitStrength value true",
++                "setoption name UCI_LimitStrength value false",
++                "setoption name UCI_Elo value ",
++                "setoption name UCI_ShowWDL value true",
++                "setoption name UCI_ShowWDL value false",
++                "setoption name nodestime value ",
++                "stop",
++                "uci",
++                "ucinewgame"
++            ];
++            var completionsMid = [
++                "binc ",
++                "btime ",
++                "confidence ",
++                "depth ",
++                "infinite ",
++                "mate ",
++                "maxdepth ",
++                "maxtime ",
++                "mindepth ",
++                "mintime ",
++                "moves ", /// for position fen ... moves
++                "movestogo ",
++                "movetime ",
++                "ponder ",
++                "searchmoves ",
++                "shallow ",
++                "winc ",
++                "wtime "
++            ];
++            
++            function filter(c)
++            {
++                return c.toLowerCase().indexOf(line.toLowerCase()) === 0;
++            }
++            
++            /// This looks for completions starting at the very beginning of the line.
++            /// If the user has typed nothing, it will match everything.
++            var hits = completions.filter(filter);
++            
++            if (!hits.length) {
++                /// Just get the last word.
++                line = line.replace(/^.*\s/, "");
++                if (line) {
++                    /// Find completion mid line too.
++                    hits = completionsMid.filter(filter);
++                } else {
++                    /// If no word has been typed, show all options.
++                    hits = completionsMid;
++                }
++            }
++            
++            return [hits, line];
++        }
++        
++        function sendCommand(cmd)
++        {
++            ///NOTE: The single-threaded engine (IS_ASYNCIFY truthy) uses the
++            ///on-demand command() ccall; ASYNCIFY suspends/resumes around any
++            ///blocking work, and main() has already returned. The multithreaded
++            ///engine pushes commands onto the glue queue (uci() in glue.cpp),
++            ///which uciP->loop() on the (proxy) main thread consumes.
++            var fn = IS_ASYNCIFY ? "command" : "uci";
++            engine.ccall(fn, null, ["string"], [cmd], {async: IS_ASYNCIFY && /^go\b/.test(cmd)});
++            ///NOTE: The engine must be fully initialized before we can close the Pthreads. so we have to check this here, not in onmessage.sendCommand
++            if (cmd === "quit") {
++                /// Close the Pthreads.
++                try {
++                    engine.terminate();
++                } catch (e) {}
++                try {
++                    self.close();
++                } catch (e) {}
++                try {
++                    process.exit();
++                } catch (e) {}
++            }
++            return true;
++        }
++        
++        function processQueue()
++        {
++            while (queue.length && (!engine._isSearching || !engine._isSearching())) {
++                sendCommand(queue.shift());
++            }
++        }
++        
++        function processCommand(cmd)
++        {
++            cmd = cmd.trim();
++            /// Certain commands need to be blocked.
++            if (cmd.substring(0, 2) === "go" || cmd.substring(0, 9) === "setoption") {
++                queue.push(cmd);
++            } else {
++                sendCommand(cmd);
++            }
++            processQueue();
++        }
++        
++        function processStartUpQueue()
++        {
++            var i = 0;
++            (function loop()
++            {
++                var cmd;
++                while (i < startUpQueue.length) {
++                    cmd = startUpQueue[i++];
++                    if (cmd.startsWith("sleep ")) {
++                        return setTimeout(loop, cmd.slice(6));
++                    } else {
++                        processCommand(cmd);
++                    }
++                }
++            }());
++        }
++        
++        function checkIfReady()
++        {
++            if (engine._isReady && !engine._isReady()) {
++                return setTimeout(checkIfReady, 10);
++            }
++            
++            if (!IS_ASYNCIFY) {
++                engine.onDoneSearching = processQueue;
++            } else {
++                engine.onDoneSearching = function ()
++                {
++                    /// The delay is only necessary for the single-threaded engine.
++                    setTimeout(processQueue, 1);
++                };
++            }
++            engine.processCommand = processCommand;
++            if (startUpQueue.length) {
++                processStartUpQueue();
++            }
++        }
++        
++        if (isNode) {
++            /// Was it called directly?
++            ///NOTE: Node.js v14-19 needs --experimental-wasm-threads --experimental-wasm-simd
++            
++            (function ()
++            {
++                var p = require("path");
++                
++                wasmPath = p.join(__dirname, p.basename(__filename, p.extname(__filename)) + ".wasm");
++                engine = {
++                    locateFile: function (path)
++                    {
++                        if (path.indexOf(".wasm") > -1) {
++                            if (path.indexOf(".wasm.map") > -1) {
++                                /// Set the path to the wasm map.
++                                return wasmPath + ".map"
++                            }
++                            /// Set the path to the wasm binary.
++                            return wasmPath;
++                        }
++                        /// Set path to worker
++                        
++                        return __filename;
++                    },
++                    listener: function onMessage(line)
++                    {
++                        process.stdout.write(line + "\n");
++                    },
++                };
++                
++                if (enginePartsCount > 0) {
++                    /// Prepare the wasm data because it is in parts.
++                    engine.wasmBinary = (function assembleWASM()
++                    {
++                        var fs = require("fs");
++                        var ext = p.extname(wasmPath);
++                        var basename = wasmPath.slice(0, -ext.length);
++                        var i;
++                        var buffers = [];
++                        
++                        for (i = 0; i < enginePartsCount; ++i) {
++                            buffers.push(fs.readFileSync(basename + "-part-" + i + ".wasm"));
++                        }
++                        
++                        return Buffer.concat(buffers);
++                    }());
++                }
++            }());
++            
++            startUpQueue = process.argv.slice(2);
++            
++            /// Was this executed directly?
++            if (require.main === module) {
++                INIT_ENGINE()(engine).then(checkIfReady);
++                
++                require("readline").createInterface({
++                    input: process.stdin,
++                    output: process.stdout,
++                    completer: completer,
++                    historySize: 100,
++                }).on("line", function online(cmd)
++                {
++                    if (cmd) {
++                        if (engine.processCommand) {
++                            engine.processCommand(cmd);
++                        } else {
++                            startUpQueue.push(cmd);
++                        }
++                        if (cmd === "quit") {
++                            process.exit();
++                        }
++                    }
++                }).on("close", function onend()
++                {
++                    process.exit();
++                }).setPrompt("");
++            } else {
++                module.exports = function initSF()
++                {
++                    INIT_ENGINE()(engine).then(checkIfReady);
++                    engine.processCommand = function (cmd)
++                    {
++                        startUpQueue.push(cmd);
++                    };
++                    return engine;
++                };
++            }
++        } else {
++            (function ()
++            {
++                var progressPort;
++                
++                function formatSpeed(bytesPerSec)
++                {
++                    if (bytesPerSec < 1024) {
++                        return Math.round(bytesPerSec) + " B/s";
++                    }
++                    if (bytesPerSec < 1048576) {
++                        return (bytesPerSec / 1024).toFixed(1) + " KB/s";
++                    }
++                    return (bytesPerSec / 1048576).toFixed(1) + " MB/s";
++                }
++                
++                function formatEta(s)
++                {
++                    if (!s || s < 0) {
++                        return "";
++                    }
++                    if (s < 60) {
++                        return Math.ceil(s) + " sec";
++                    }
++                    return Math.round(s / 60) + " min";
++                }
++                
++                function calcProgressData(loaded, total, startTime)
++                {
++                    /// To avoid dividing by zero, we round up to 1 ms.
++                    var elapsed = (Date.now() - startTime) || 1;
++                    var speedBytesPerSec = loaded / (elapsed / 1000);
++                    var eta = 0;
++                    
++                    if (speedBytesPerSec > 0 && loaded < total) {
++                        eta = (total - loaded) / speedBytesPerSec;
++                    }
++                    
++                    return {
++                        percent: loaded / total,
++                        loaded: loaded,
++                        total: total,
++                        speedBytesPerSec: speedBytesPerSec,
++                        speedText: formatSpeed(speedBytesPerSec),
++                        eta: eta,
++                        etaText: formatEta(eta),
++                    };
++                }
++                
++                function loadSplitEngine(onLoaded)
++                {
++                    function fetchBinary(path, cb, onProg)
++                    {
++                        var req = new XMLHttpRequest();
++                        
++                        req.open("GET", path);
++                        req.setRequestHeader("Content-Type", "application/octet-stream");
++                        req.responseType = "blob";
++                        
++                        req.send();
++                        
++                        req.onload = function ()
++                        {
++                            if (req.status >= 400) {
++                                throw new Error("ERROR " + req.status + ": Unable to download " + path);
++                            } else {
++                                cb(req.response);
++                            }
++                        };
++                        req.onerror = function (err)
++                        {
++                            throw err;
++                        };
++                        
++                        req.onprogress = onProg;
++                    }
++                    
++                    function loadParts(totalParts)
++                    {
++                        var doneCount = 0;
++                        var i;
++                        var parts = [];
++                        var ext = wasmPath.slice((wasmPath.lastIndexOf(".") - 1 >>> 0) + 1);
++                        var basename = wasmPath.slice(0, -ext.length);
++                        var progress = [];
++                        var startTime = Date.now();
++                        
++                        function createOnDownload(num)
++                        {
++                            return function onDownload(data)
++                            {
++                                var wasmBlob;
++                                ++doneCount;
++                                parts[num] = data;
++                                if (doneCount === totalParts) {
++                                    wasmBlob = URL.createObjectURL(new Blob(parts, {type: "application/wasm"}));
++                                    onLoaded(wasmBlob);
++                                }
++                            };
++                        }
++                        
++                        function updateProgress()
++                        {
++                            var loaded = 0;
++                            progress.forEach(function (el)
++                            {
++                                loaded += el.loaded;
++                            });
++                            var data = calcProgressData(loaded, engineTotalBytes, startTime);
++                            progressPort.postMessage(data);
++                            if (data.percent === 1) {
++                                progressPort.close();
++                                progressPort = null;
++                            }
++                        }
++                        
++                        function createOnProgress(num)
++                        {
++                            progress[num] = {
++                                total: 0,
++                                loaded: 0,
++                            };
++                            return function onProg(e)
++                            {
++                                progress[num].total = e.total;
++                                progress[num].loaded = e.loaded;
++                                if (progressPort) {
++                                    updateProgress();
++                                }
++                            }
++                        }
++                        for (i = 0; i < totalParts; ++i) {
++                            fetchBinary(basename + "-part-" + i + ext, createOnDownload(i), createOnProgress(i));
++                        }
++                    }
++                    loadParts(enginePartsCount);
++                }
++                
++                var args = self.location.hash.substr(1).split(",");
++                wasmPath = decodeURIComponent(args[0] || location.origin + location.pathname.replace(/\.js$/i, ".wasm"));
++                
++                if (enginePartsCount > 0) {
++                    loadSplitEngine(beginEngineInitialization);
++                } else {
++                    beginEngineInitialization();
++                }
++                
++                function beginEngineInitialization(wasmBlob)
++                {
++                    engine = {
++                        locateFile: function (path)
++                        {
++                            if (path.indexOf(".wasm") > -1) {
++                                if (path.indexOf(".wasm.map") > -1) {
++                                    /// Set the path to the wasm map.
++                                    return wasmPath + ".map"
++                                }
++                                /// Set the path to the wasm binary.
++                                return wasmBlob || wasmPath;
++                            }
++                            /// Pthread workers load this very script.
++                            return self.location.href;
++                        },
++                        listener: function onMessage(line)
++                        {
++                            postMessage(line);
++                        },
++                    };
++                    
++                    /// If the WASM file is not split, we can process the bytecode while streaming it with WebAssembly.instantiateStreaming().
++                    if (!enginePartsCount) {
++                        var updateTimer;
++                        var updateData;
++                        
++                        function updateDelayed(data)
++                        {
++                            updateData = data;
++                            if (!updateTimer) {
++                                updateTimer = setTimeout(function ()
++                                {
++                                    updateTimer = null;
++                                    progressPort.postMessage(updateData);
++                                    
++                                    if (updateData.percent >= 1) {
++                                        progressPort.close();
++                                        progressPort = null;
++                                    }
++                                }, 4);
++                            }
++                        }
++                        
++                        function fetchWasmWithProgress(url, onProgress, onError)
++                        {
++                            return fetch(url).then(function onFetch(response)
++                            {
++                                var startTime = Date.now();
++                                
++                                if (!response.ok) {
++                                    throw new Error("HTTP " + response.status + ": " + response.statusText);
++                                }
++                                
++                                var totalBytes = engineTotalBytes;
++                                
++                                var loadedBytes = 0;
++                                var reader = response.body.getReader();
++                                
++                                var progressStream = new ReadableStream({
++                                    start: function (controller)
++                                    {
++                                        function push()
++                                        {
++                                            reader.read().then(function onRead(result)
++                                            {
++                                                var done = result.done;
++                                                var value = result.value;
++                                                
++                                                if (done) {
++                                                    onProgress(startTime, totalBytes, totalBytes);
++                                                    controller.close();
++                                                    return;
++                                                }
++                                                loadedBytes += value.byteLength;
++                                                onProgress(startTime, loadedBytes, totalBytes);
++                                                controller.enqueue(value);
++                                                push();
++                                            }).catch(function onError(err)
++                                            {
++                                                controller.error(err);
++                                                if (typeof onError === "function") {
++                                                    onError(err);
++                                                }
++                                            });
++                                        }
++                                        push();
++                                    }
++                                });
++                                
++                                /// Preserve original headers (Wasm compilation is strict about content-type)
++                                var headers = new Headers(response.headers);
++                                
++                                return new Response(progressStream, {
++                                    status: response.status,
++                                    statusText: response.statusText,
++                                    headers: headers
++                                });
++                            });
++                        }
++                        
++                        function createProgressHandler()
++                        {
++                            return function onProgress(startTime, loaded, total)
++                            {
++                                if (progressPort) {
++                                    updateDelayed(calcProgressData(loaded, total, startTime));
++                                }
++                            };
++                        }
++                        
++                        if (!isASMEngine) {
++                            engine.instantiateWasm = function (info, receiveInstance)
++                            {
++                                var onProgress = createProgressHandler();
++                                
++                                return fetchWasmWithProgress(wasmPath, onProgress).then(function onFetch(response)
++                                {
++                                    /// Stream directly to WebAssembly
++                                    return WebAssembly.instantiateStreaming(response, info);
++                                }).then(function onInstantiate(result)
++                                {
++                                    /// Hand off to Emscripten
++                                    receiveInstance(result.instance, result.module);
++                                    return result.instance.exports;
++                                }).catch(function onError(e)
++                                {
++                                    console.error("WASM streaming failed:", e);
++                                    throw e;
++                                });
++                            };
++                        }
++                    }
++                    
++                    INIT_ENGINE()(engine).then(checkIfReady).catch(function (e)
++                    {
++                        /// Web Workers will not trigger the error event when errors occur in promises, so we need to create a new context and throw an error there.
++                        setTimeout(function throwError()
++                        {
++                            throw e;
++                        }, 1);
++                    });
++                }
++                
++                /// Make sure that this is only added once.
++                if (!onmessage) {
++                    onmessage = function (event)
++                    {
++                        /// For backwards compatibility, the engine can inform the frontend of the ability to output download progress.
++                        if (event.data === "setoption name CanOutputEngineDownloadProgress") {
++                            postMessage("info WillOutputEngineDownloadProgress");
++                        } else if (event.data.progressPort) {
++                            progressPort = event.data.progressPort;
++                        } else {
++                            if (engine.processCommand) {
++                                engine.processCommand(event.data);
++                            } else {
++                                startUpQueue.push(event.data);
++                            }
++                            ///NOTE: We check this here, not just in engine.processCommand, because the engine might never finish loading.
++                            if (event.data === "quit") {
++                                try {
++                                    self.close();
++                                } catch (e) {}
++                            }
++                        }
++                    };
++                }
++            }());
++        }
++    }());
++} else {
++    ///NOTE: If it's a normal browser, the client can use the engine without polluting the global scope.
++    if (typeof document === "object" && document.currentScript) {
++        document.currentScript._exports = INIT_ENGINE();
++    } else {
++        Stockfish = INIT_ENGINE();
++    }
++}
++}());
+diff -ruN sf_dev/src/emscripten/extern-pre.js sf_wasm/src/emscripten/extern-pre.js
+--- sf_dev/src/emscripten/extern-pre.js	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/extern-pre.js	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1 @@
++(function () {
+diff -ruN sf_dev/src/emscripten/extern-pre2.js sf_wasm/src/emscripten/extern-pre2.js
+--- sf_dev/src/emscripten/extern-pre2.js	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/extern-pre2.js	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,2 @@
++var Stockfish;
++function INIT_ENGINE() {
+diff -ruN sf_dev/src/emscripten/pre.js sf_wasm/src/emscripten/pre.js
+--- sf_dev/src/emscripten/pre.js	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/pre.js	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,71 @@
++
++/// Fix fetch in Node.js
++if (typeof global !== "undefined" && Object.prototype.toString.call(global.process) === "[object process]" && typeof fetch !== "undefined") {
++    /// XMLHttpRequest polyfill for Node.js.
++    if (typeof XMLHttpRequest === "undefined") {
++        global["XMLHttpRequest"] = function (a)
++        {
++            var url
++            ///NOTE: The handler properties (onerror/onreadystatechange/onload)
++            ///are declared up front (as null) so the Closure compiler does not
++            ///warn about "inexistent property" when they are invoked below.
++            var xhr = {
++                readyState: 0,
++                status: 0,
++                onerror: null,
++                onreadystatechange: null,
++                onload: null,
++                open: function (method, _url)
++                {
++                    url = _url;
++                },
++                send: function ()
++                {
++                    require("fs").readFile(url, function (err, data)
++                    {
++                        xhr.readyState = 4; /// DONE
++                        if (err) {
++                            console.error(err);
++                            xhr.status = 404;
++                            xhr.onerror(err);
++                        } else {
++                            xhr.status = 200;
++                            xhr.response = data;
++                            xhr.onreadystatechange();
++                            xhr.onload();
++                        }
++                    });
++                }
++            };
++            return xhr;
++        }
++    }
++    ///NOTE: Null out fetch so Emscripten uses the XHR polyfill above in
++    ///Node.js. Suppressed because the global fetch is typed as a function.
++    /** @suppress {typeMismatch} */
++    fetch = null;
++}
++
++Module["print"] = function (data)
++{
++    if (Module["listener"]) {
++        Module["listener"](data);
++    } else {
++        console.log(data);
++    }
++}
++Module["printErr"] = function (data)
++{
++    if (Module["listener"]) {
++        Module["listener"](data);
++    } else {
++        console.error(data);
++    }
++}
++
++Module["terminate"] = function ()
++{
++    if (typeof PThread !== "undefined") {
++        PThread.terminateAllThreads();
++    }
++};
+diff -ruN sf_dev/src/emscripten/wasm-makefile.mk sf_wasm/src/emscripten/wasm-makefile.mk
+--- sf_dev/src/emscripten/wasm-makefile.mk	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/emscripten/wasm-makefile.mk	2026-11-04 10:00:35.530651600 +0000
+@@ -0,0 +1,176 @@
++# Override base settings
++EXE = stockfish.js
++COMP = em++
++CXX = em++
++comp = clang
++arch = wasm
++bits = 64
++SUPPORTED_ARCH=true
++
++ifeq ($(ASMJS),yes)
++	EM_LDFLAGS  += -s WASM=0
++	popcnt = no
++	sse = no
++	sse2 = no
++	ssse3 = no
++	sse41 = no
++else
++	EM_CXXFLAGS += -msimd128
++	# CPU settings
++	popcnt = yes
++	sse = yes
++	sse2 = yes
++	ssse3 = yes
++	sse41 = yes
++endif
++
++
++# Compiler flags
++#EM_CXXFLAGS += -DUSE_POPCNT
++EM_CXXFLAGS += -DPOSIXALIGNEDALLOC
++
++ifeq ($(WASM_DEBUG),yes)
++	#EM_CXXFLAGS += -g3 -gsource-map --source-map-base=src/ -s SAFE_HEAP=1 -s ASSERTIONS=1
++	#EM_LDFLAGS  += -g3 -gsource-map --source-map-base=src/ -s SAFE_HEAP=1 -s ASSERTIONS=1
++	EM_CXXFLAGS += -g3 -s ASSERTIONS=1
++	EM_LDFLAGS  += -g3 -s ASSERTIONS=1
++	ifneq ($(ASMJS),yes)
++		EM_CXXFLAGS += -gsource-map --source-map-base=/src/ 
++		EM_LDFLAGS  += -gsource-map --source-map-base=/src/ 
++	endif
++	optimize = no
++	# -fsanitize=undefined is currently breaking the large build
++	#EM_CXXFLAGS  += -fsanitize=undefined
++	#EM_LDFLAGS  += -fsanitize=undefined
++	ifneq ($(WASM_SINGLE_THREADED),yes)
++		EM_CXXFLAGS += -pthread
++		EM_LDFLAGS  += -pthread
++	endif
++	EM_LDFLAGS += --minify=0
++else
++	ifneq ($(NOJSMINIFY),yes)
++		EM_LDFLAGS  += --closure 1
++	else
++		EM_LDFLAGS += --minify=0
++	endif
++endif
++
++
++# Enable sanatizers https://emscripten.org/docs/debugging/Sanitizers.html
++#EM_CXXFLAGS  += -fsanitize=undefined
++#EM_LDFLAGS  += -fsanitize=undefined
++#EM_CXXFLAGS  += -fsanitize=address
++#EM_LDFLAGS  += -fsanitize=address
++
++
++# Linker flags
++EM_LDFLAGS  += --pre-js emscripten/pre.js
++
++ifeq ($(LITE_NET),yes)
++	EM_LDFLAGS  += --extern-pre-js emscripten/credits-lite.js
++else
++	EM_LDFLAGS  += --extern-pre-js emscripten/credits.js
++endif
++
++#EM_LDFLAGS  += -s INITIAL_MEMORY=536870912
++EM_LDFLAGS  += -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=201326592 -s MAXIMUM_MEMORY=2147483648 -Wno-pthreads-mem-growth
++# Ignore irrelevant warning
++EM_CXXFLAGS += -Wno-pthreads-mem-growth
++EM_LDFLAGS  += -s ENVIRONMENT=web,worker,node
++EM_LDFLAGS  += -s EXIT_RUNTIME=0
++EM_LDFLAGS  += -s MODULARIZE=1
++EM_LDFLAGS  += -s EXPORT_NAME="Stockfish"
++#EM_LDFLAGS  += -s NO_FILESYSTEM=1
++#EM_LDFLAGS  += -s EXPORTED_FUNCTIONS="['_main','_command']"
++
++EM_LDFLAGS  += -s EXPORTED_RUNTIME_METHODS=ccall
++#NOTE: Setting INCOMING_MODULE_JS_API *replaces* the default list (it does not
++#extend it). `wasmBinary` was removed from the defaults in emscripten 6.0.2 and
++#the Node.js loader supplies it for split builds, so we must re-list the other
++#incoming APIs the JS glue relies on (locateFile, print/printErr,
++#instantiateWasm) alongside it. Omitting any of them is a hard error in
++#ASSERTIONS builds and silently breaks the module (e.g. pthread workers) in
++#release builds.
++#
++#NOTE: We also list the incoming APIs that the build relies on:
++#  - wasmMemory : the pthread workers share the main thread's
++#    WebAssembly.Memory; keeping this in the incoming API lets the runtime
++#    recognize a (re)grown / transferred memory buffer across the thread
++#    boundary instead of treating it as opaque.
++#  - mainScriptUrlOrBlob : pthread workers re-load the main script; exposing
++#    this hook keeps worker-script resolution robust.
++#  - onExit : lets the host react to a proxied-main-thread exit.
++#NOTE: `buffer` was listed here too, but Emscripten 6.x no longer accepts it
++#(it warns "invalid entry in INCOMING_MODULE_JS_API: buffer"), so it was removed.
++EM_LDFLAGS  += -s INCOMING_MODULE_JS_API=wasmBinary,locateFile,print,printErr,instantiateWasm,wasmMemory,mainScriptUrlOrBlob,onExit
++
++ifeq ($(WASM_SINGLE_THREADED),yes)
++	EM_CXXFLAGS += -D__EMSCRIPTEN_SINGLE_THREADED__
++	#EM_LDFLAGS  += --extern-post-js emscripten/extern-post-single.js
++	#EM_LDFLAGS += -s EXPORTED_FUNCTIONS="['_stop', '_ponderhit', '_main']"
++	# Add a second pre-js file.
++	#EM_LDFLAGS  += --pre-js emscripten/pre-single-threaded.js
++	EM_LDFLAGS  += -s ASYNCIFY=1
++	EM_LDFLAGS  += -s ASYNCIFY_STACK_SIZE=10485760
++	#NOTE: Single-threaded uses the on-demand command() ccall (process_command),
++	#NOT the glue queue / loop() design (there is no (proxy) main thread). So
++	#glue.cpp is not needed and _command (not _uci) is exported.
++	EM_LDFLAGS  += -s EXPORTED_FUNCTIONS="['_main','_command','_isSearching']"
++	#NOTE: Single-threaded runs the whole search on the main thread (inside the
++	#command() ccall), so the main stack IS the search stack. The default 64 KB
++	#is far too small for deep searches (the pthread builds give search threads
++	#2 MB in NDEBUG / 8 MB in debug), and it is what triggered the
++	#"Stack overflow detected" linker warning under --debug-wasm (debug frames
++	#are deeper; release -O3 frames simply did not trip the heuristic). 4 MB
++	#matches the native per-thread stacks. The multithreaded proxy-main only
++	#runs the shallow UCI loop, so it keeps the default stack size.
++	EM_LDFLAGS  += -sSTACK_SIZE=4194304
++else
++	#NOTE: The UCI loop runs on the (proxy) main thread and pulls commands from
++	#the glue queue (glue.cpp). _uci pushes a command onto that queue.
++	SRCS += glue.cpp
++	EM_LDFLAGS  += -s EXPORTED_FUNCTIONS="['_main','_uci','_isReady','_isSearching']"
++	#EM_LDFLAGS  += --extern-post-js emscripten/extern-post.js
++	EM_LDFLAGS  += -s PROXY_TO_PTHREAD
++	#NOTE: -sSTRICT enables the strict runtime path, and
++	#-sALLOW_BLOCKING_ON_MAIN_THREAD=0 keeps the host main thread from
++	#ever doing a synchronous (event-loop-stalling) block while it shuttles
++	#proxied work (thread spawns, futex/mailbox traffic) for the search threads.
++	EM_LDFLAGS  += -s STRICT
++	EM_LDFLAGS  += -s ALLOW_BLOCKING_ON_MAIN_THREAD=0
++	EM_CXXFLAGS += -pthread
++	EM_LDFLAGS  += -pthread
++endif
++
++# The build vars (IS_ASYNCIFY / enginePartsCount / isASMEngine / engineTotalBytes)
++# are written to emscripten/build-flags.js by build.js (before make runs) and
++# spliced into the IIFE scope between extern-pre.js (opens the IIFE) and
++# extern-pre2.js (declares Stockfish + opens INIT_ENGINE). They are assigned real
++# 0/1/N values so the link-time Closure compiler folds the branch checks in
++# extern-post.js correctly. engineTotalBytes is left bare; build.js fills it in
++# post-link (the wasm size is unknown until after linking).
++BUILD_FLAGS_JS = emscripten/build-flags.js
++
++EM_LDFLAGS  += --extern-pre-js emscripten/extern-pre.js
++EM_LDFLAGS  += --extern-pre-js $(BUILD_FLAGS_JS)
++EM_LDFLAGS  += --extern-pre-js emscripten/extern-pre2.js
++EM_LDFLAGS  += --extern-post-js emscripten/extern-post.js
++
++#NOTE: The "Stack overflow detected (currently set to 65536)" linker warning
++#from --debug-wasm single-threaded builds is handled in the
++#WASM_SINGLE_THREADED branch above (-sSTACK_SIZE=4194304). Do NOT set a small
++#global STACK_SIZE here: in single-threaded builds the main stack is the
++#search stack, and in multithreaded builds the proxy-main only needs the
++#default size.
++
++#EM_CXXFLAGS  += -s PTHREAD_POOL_SIZE=5
++#EM_LDFLAGS  += -s PTHREAD_POOL_SIZE=5
++#EM_CXXFLAGS  += -s PTHREAD_POOL_SIZE_STRICT=2
++#EM_LDFLAGS  += -s PTHREAD_POOL_SIZE_STRICT=2
++
++#EM_LDFLAGS  += -s ASYNCIFY=1
++#EM_LDFLAGS  += -s 'ASYNCIFY_IMPORTS=["emscripten_utils_getline_impl"]'
++
++
++EXTRACXXFLAGS += $(EM_CXXFLAGS)
++EXTRALDFLAGS += $(EM_LDFLAGS)
+diff -ruN sf_dev/src/engine.cpp sf_wasm/src/engine.cpp
+--- sf_dev/src/engine.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/engine.cpp	2026-11-04 09:56:16.116269235 +0000
+@@ -66,6 +66,7 @@
+ 
+     pos.set(StartFEN, false, &states->back());
+ 
++#ifndef __EMSCRIPTEN__
+     options.add(  //
+       "Debug Log File", Option("", [](const Option& o) {
+           start_logger(path_from_utf8(std::string(o)));
+@@ -79,11 +80,21 @@
+           return numa_config_information_as_string() + "\n"
+                + thread_allocation_information_as_string();
+       }));
++#endif
+ 
+     options.add(  //
++#ifdef __EMSCRIPTEN_SINGLE_THREADED__
++      "Threads", Option(1, 1, 1, [](const Option&) {
++          return std::nullopt;
++#elif defined(__EMSCRIPTEN__)
++      "Threads", Option(1, 1, 32, [this](const Option&) {
++          resize_threads();
++          return std::nullopt;
++#else
+       "Threads", Option(1, 1, MaxThreads, [this](const Option&) {
+           resize_threads();
+           return thread_allocation_information_as_string();
++#endif
+       }));
+ 
+     options.add(  //
+@@ -120,6 +131,7 @@
+ 
+     options.add("UCI_ShowWDL", Option(false));
+ 
++#ifndef __NO_SYZYGY__
+     options.add(  //
+       "SyzygyPath", Option("", [](const Option& o) {
+           Tablebases::init(o);
+@@ -131,6 +143,7 @@
+     options.add("Syzygy50MoveRule", Option(true));
+ 
+     options.add("SyzygyProbeLimit", Option(7, 0, 7));
++#endif
+ 
+     options.add(  //
+       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
+@@ -164,8 +177,10 @@
+     tt.clear(threads);
+     threads.clear();
+ 
++#ifndef __NO_SYZYGY__
+     // TODO: does not work with multiple instances
+     Tablebases::init(options["SyzygyPath"]);  // Free mapped files
++#endif
+ }
+ 
+ void Engine::set_on_update_no_moves(std::function<void(const Engine::InfoShort&)>&& f) {
+@@ -214,6 +229,12 @@
+     return std::nullopt;
+ }
+ 
++#ifdef __EMSCRIPTEN__
++bool Engine::validate_position() const {
++    return pos.pos_is_ok();
++}
++#endif
++
+ // modifiers
+ 
+ bool Engine::set_numa_config_from_option(const std::string& o) {
+diff -ruN sf_dev/src/engine.h sf_wasm/src/engine.h
+--- sf_dev/src/engine.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/engine.h	2026-11-04 09:56:16.116269235 +0000
+@@ -76,6 +76,9 @@
+     // set a new position, moves are in UCI format
+     std::optional<PositionSetError> set_position(const std::string&              fen,
+                                                  const std::vector<std::string>& moves);
++#ifdef __EMSCRIPTEN__
++    bool validate_position() const;
++#endif
+ 
+     // modifiers
+ 
+diff -ruN sf_dev/src/evaluate.h sf_wasm/src/evaluate.h
+--- sf_dev/src/evaluate.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/evaluate.h	2026-11-04 09:56:16.120234838 +0000
+@@ -35,6 +35,11 @@
+ // in the Makefile/Fishtest.
+ #define EvalFileDefaultName "nn-d1ee674a62ca.nnue"
+ 
++// Smaller network for Lite mode (mirrored piece-square features only).
++#define EvalFileLiteName "nn-61e7af4bb97d.nnue"
++
++// In Lite builds the default name aliases the lite network.
++
+ namespace NNUE {
+ class Network;
+ struct AccumulatorCaches;
+diff -ruN sf_dev/src/glue.cpp sf_wasm/src/glue.cpp
+--- sf_dev/src/glue.cpp	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/glue.cpp	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,47 @@
++/*
++  Stockfish, a UCI chess playing engine derived from Glaurung 2.1
++  Copyright (C) 2004-2026 The Stockfish developers (see AUTHORS file)
++
++  Stockfish is free software: you can redistribute it and/or modify
++  it under the terms of the GNU General Public License as published by
++  the Free Software Foundation, either version 3.0 (the "License");
++  you may not use this file except in compliance with the License.
++  You may obtain a copy of the License at
++
++      http://www.gnu.org/licenses/
++
++  Stockfish is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++  GNU General Public License for more details.
++
++  You should have received a copy of the GNU General Public License
++  along with Stockfish.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++#include "glue.hpp"
++
++#include <emscripten.h>
++
++#include <cstddef>
++#include <utility>
++
++CommandQueue inQ;
++
++extern "C" {
++
++// Called from the JS host with a NUL-terminated UTF-8 command. The pointer is
++// owned by the caller (Emscripten's ccall "string" binding places it on the
++// stack), so we only copy it into the queue.
++EMSCRIPTEN_KEEPALIVE void uci(const char* utf8) {
++    inQ.push(Command{std::string(utf8)});
++}
++
++}  // extern "C"
++
++// Called by UCIEngine::loop() on the main (proxy) thread. Blocks until a
++// command is available, then returns it.
++std::string js_getline() {
++    Command cmd = inQ.pop();
++    return std::move(cmd.uci);
++}
+diff -ruN sf_dev/src/glue.hpp sf_wasm/src/glue.hpp
+--- sf_dev/src/glue.hpp	1970-01-01 00:00:00.000000000 +0000
++++ sf_wasm/src/glue.hpp	2026-11-04 09:56:16.108338028 +0000
+@@ -0,0 +1,62 @@
++/*
++  Stockfish, a UCI chess playing engine derived from Glaurung 2.1
++  Copyright (C) 2004-2026 The Stockfish developers (see AUTHORS file)
++
++  Stockfish is free software: you can redistribute it and/or modify
++  it under the terms of the GNU General Public License as published by
++  the Free Software Foundation, either version 3.0 (the "License");
++  you may not use this file except in compliance with the License.
++  You may obtain a copy of the License at
++
++      http://www.gnu.org/licenses/
++
++  Stockfish is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++  GNU General Public License for more details.
++
++  You should have received a copy of the GNU General Public License
++  along with Stockfish.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++// Emscripten glue: a thread-safe command queue that bridges the JS host and
++// the UCI loop running on the (proxy) main pthread. The host pushes commands
++// via uci(); the loop() on the main thread pulls them via js_getline().
++
++#ifndef GLUE_HPP_INCLUDED
++#define GLUE_HPP_INCLUDED
++
++#include <condition_variable>
++#include <mutex>
++#include <queue>
++#include <string>
++#include <utility>
++
++struct Command {
++    std::string uci;
++};
++
++struct CommandQueue {
++    std::mutex              m;
++    std::queue<Command>     q;
++    std::condition_variable cv;
++
++    void push(Command el) {
++        {
++            std::unique_lock<std::mutex> lock(m);
++            q.push(std::move(el));
++        }
++        cv.notify_one();
++    }
++
++    Command pop() {
++        std::unique_lock<std::mutex> lock(m);
++        while (q.empty())
++            cv.wait(lock);
++        Command el = std::move(q.front());
++        q.pop();
++        return el;
++    }
++};
++
++#endif  // GLUE_HPP_INCLUDED
+diff -ruN sf_dev/src/main.cpp sf_wasm/src/main.cpp
+--- sf_dev/src/main.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/main.cpp	2026-11-04 09:56:16.120234838 +0000
+@@ -28,6 +28,13 @@
+ 
+ using namespace Stockfish;
+ 
++#ifdef __EMSCRIPTEN__
++UCIEngine* uciP; // Create a global pointer to the UCI object
++    #ifndef __EMSCRIPTEN_SINGLE_THREADED__
++        bool ready = false;
++    #endif
++#endif
++
+ #ifdef UNIVERSAL_BINARY
+ namespace Stockfish {
+ 
+@@ -42,12 +49,28 @@
+     Attacks::init();
+     Position::init();
+ 
++#ifdef __EMSCRIPTEN__
++    uciP = new UCIEngine(argc, argv); // initialize the UCI object
++    Tune::init(uciP->engine_options());
++#ifndef __EMSCRIPTEN_SINGLE_THREADED__
++    ready = true;
++    // Multithreaded: the UCI loop runs on the (proxy) main thread and pulls
++    // commands from a thread-safe queue that the JS host pushes onto (see glue.cpp).
++    // main() blocks here, but that is fine because it runs on W1, a separate pthread.
++    uciP->loop();
++#endif
++    // Single-threaded: return from main(). There is no separate (proxy) main
++    // thread, so blocking in loop() would stall the only thread (and the JS
++    // event loop / readline). Commands are processed on demand via the
++    // command() ccall (process_command), which ASYNCIFY can suspend/resume.
++#else
+     auto cli = CommandLine(argc, argv);
+     auto uci = std::make_unique<UCIEngine>(std::move(cli));
+ 
+     Tune::init(uci->engine_options());
+ 
+-    uci->loop();
++    uci.loop();
++#endif
+ 
+     return 0;
+ }
+@@ -59,3 +82,20 @@
+ int main(int argc, char* argv[]) { return Stockfish::main(argc, argv); }
+     #endif
+ #endif
++
++#ifdef __EMSCRIPTEN__
++    #ifdef __EMSCRIPTEN_SINGLE_THREADED__
++    // Single-threaded: the JS host processes commands on demand via this ccall
++    // (ASYNCIFY suspends/resumes around any blocking work). The multithreaded
++    // build does not use this; it pushes commands onto the glue queue (uci())
++    // which uciP->loop() on the (proxy) main thread consumes.
++    extern "C" void command(const char* cmd) {
++        uciP->process_command(cmd);
++    }
++    #endif
++    #ifndef __EMSCRIPTEN_SINGLE_THREADED__
++    extern "C" bool isReady() {
++        return ready;
++    }
++    #endif
++#endif
+diff -ruN sf_dev/src/misc.cpp sf_wasm/src/misc.cpp
+--- sf_dev/src/misc.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/misc.cpp	2026-11-04 09:56:46.055356600 +0000
+@@ -54,7 +54,11 @@
+ namespace {
+ 
+ // Version number or dev.
++#ifndef __ENGINE_VERSION__
+ constexpr std::string_view version = "dev";
++#else
++constexpr std::string_view version = __ENGINE_VERSION__;
++#endif
+ 
+ // Our fancy logging facility. The trick here is to replace cin.rdbuf() and
+ // cout.rdbuf() with two Tie objects that tie cin and cout to a file stream. We
+@@ -142,6 +146,8 @@
+     std::stringstream ss;
+     ss << "Stockfish " << version << std::setfill('0');
+ 
++#ifndef __ENGINE_VERSION__
++
+     if constexpr (version == "dev")
+     {
+         ss << "-";
+@@ -170,6 +176,7 @@
+         ss << "nogit";
+ #endif
+     }
++#endif // __ENGINE_VERSION__
+ 
+     return ss.str();
+ }
+@@ -606,6 +613,9 @@
+ // because when the NNUE network is not embedded in the binary, this directory
+ // is one of the locations where we look for the NNUE file.
+ fs::path CommandLine::get_binary_directory(fs::path argv0) {
++#ifdef __EMSCRIPTEN__
++    return {};  // No meaningful binary directory in the Wasm build.
++#endif
+ 
+ #ifdef _WIN32
+     // Prefer the executable path reported by Windows. Unlike _get_wpgmptr,
+diff -ruN sf_dev/src/nnue/network.cpp sf_wasm/src/nnue/network.cpp
+--- sf_dev/src/nnue/network.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/nnue/network.cpp	2026-11-04 09:57:29.376478100 +0000
+@@ -46,6 +46,9 @@
+ //     const unsigned char *const gEmbeddedNNUEEnd;     // a marker to the end
+ //     const unsigned int         gEmbeddedNNUESize;    // the size of the embedded file
+ // Note that this does not work in Microsoft Visual Studio.
++#ifdef __EMSCRIPTEN__
++    #include "../emscripten/wasm_embedded_networks.h"
++#else
+ #if !defined(UNIVERSAL_BINARY) && !defined(_MSC_VER) && !defined(NNUE_EMBEDDING_OFF)
+ INCBIN(EmbeddedNNUE, EvalFileDefaultName);
+ #elif defined(UNIVERSAL_BINARY_MACOS_X86_SLICE)
+@@ -59,6 +62,7 @@
+ const unsigned char gEmbeddedNNUEData[1] = {0x0};
+ const unsigned int  gEmbeddedNNUESize    = 1;
+ #endif
++#endif // __EMSCRIPTEN__
+ 
+ 
+ namespace Stockfish::Eval::NNUE {
+@@ -164,6 +168,9 @@
+ void Network::verify(const std::function<void(std::string_view)>& f,
+                      const EvalFile&                              evalFile,
+                      fs::path                                     evalfilePath) const {
++#ifdef __EMSCRIPTEN__
++    return;  // Skip the (expensive and unnecessary) NNUE self-test in the Wasm build
++#endif
+     if (evalfilePath.empty())
+         evalfilePath = evalFile.defaultName;
+ 
+@@ -257,11 +264,6 @@
+         }
+     };
+ 
+-#ifdef UNIVERSAL_BINARY_MACOS_X86_SLICE
+-    if (gEmbeddedNNUEData == nullptr)  // failed embedded load
+-        return;
+-#endif
+-
+     MemoryBuffer buffer(const_cast<char*>(reinterpret_cast<const char*>(gEmbeddedNNUEData)),
+                         usize(gEmbeddedNNUESize));
+ 
+diff -ruN sf_dev/src/numa.h sf_wasm/src/numa.h
+--- sf_dev/src/numa.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/numa.h	2026-11-04 09:56:16.128166045 +0000
+@@ -44,7 +44,7 @@
+ 
+ // We support linux very well, but we explicitly do NOT support Android,
+ // because there is no affected systems, not worth maintaining.
+-#if defined(__linux__) && !defined(__ANDROID__)
++#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+     #if !defined(_GNU_SOURCE)
+         #define _GNU_SOURCE
+     #endif
+@@ -408,7 +408,7 @@
+ 
+ #endif
+ 
+-#if defined(__linux__) && !defined(__ANDROID__)
++#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+ 
+ inline std::set<CpuIndex> get_process_affinity() {
+ 
+@@ -535,7 +535,8 @@
+                                   bool respectProcessAffinity = true) {
+         NumaConfig cfg = empty();
+ 
+-#if !((defined(__linux__) && !defined(__ANDROID__)) || defined(_WIN64))
++
++#if !((defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)) || defined(_WIN64))
+         // Fallback for unsupported systems.
+         for (CpuIndex c = 0; c < SYSTEM_THREADS_NB; ++c)
+             cfg.add_cpu_to_node(NumaIndex{0}, c);
+@@ -824,7 +825,7 @@
+         if (n >= nodes.size() || nodes[n].empty())
+             std::exit(EXIT_FAILURE);
+ 
+-#if defined(__linux__) && !defined(__ANDROID__)
++#if defined(__linux__) && !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+ 
+         cpu_set_t* mask = CPU_ALLOC(highestCpuIndex + 1);
+         if (mask == nullptr)
+diff -ruN sf_dev/src/position.cpp sf_wasm/src/position.cpp
+--- sf_dev/src/position.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/position.cpp	2026-11-04 09:56:48.007118900 +0000
+@@ -85,6 +85,7 @@
+     for (Bitboard b = pos.checkers(); b;)
+         os << UCIEngine::square(pop_lsb(b)) << " ";
+ 
++#ifndef __NO_SYZYGY__
+     if (Tablebases::MaxCardinality >= popcount(pos.pieces()) && !pos.can_castle(ANY_CASTLING))
+     {
+         StateInfo st;
+@@ -97,6 +98,7 @@
+         os << "\nTablebases WDL: " << std::setw(4) << wdl << " (" << s1 << ")"
+            << "\nTablebases DTZ: " << std::setw(4) << dtz << " (" << s2 << ")";
+     }
++#endif
+ 
+     return os;
+ }
+@@ -1578,14 +1580,25 @@
+     if ((sideToMove != WHITE && sideToMove != BLACK) || piece_on(square<KING>(WHITE)) != W_KING
+         || piece_on(square<KING>(BLACK)) != B_KING
+         || (ep_square() != SQ_NONE && relative_rank(sideToMove, ep_square()) != RANK_6))
++#ifdef __EMSCRIPTEN__
++        return false;
++#else
+         assert(0 && "pos_is_ok: Default");
+-
++#endif
+     if (count<KING>(WHITE) != 1 || count<KING>(BLACK) != 1
+         || attackers_to(square<KING>(~sideToMove)) & pieces(sideToMove))
++#ifdef __EMSCRIPTEN__
++        return false;
++#else
+         assert(0 && "pos_is_ok: Kings");
++#endif
+ 
+     if ((pieces(PAWN) & (Rank1BB | Rank8BB)) || count<PAWN>(WHITE) > 8 || count<PAWN>(BLACK) > 8)
++#ifdef __EMSCRIPTEN__
++        return false;
++#else
+         assert(0 && "pos_is_ok: Pawns");
++#endif
+ 
+ 
+     if (ep_square() != SQ_NONE)
+@@ -1606,17 +1619,29 @@
+ 
+     if ((pieces(WHITE) & pieces(BLACK)) || (pieces(WHITE) | pieces(BLACK)) != pieces()
+         || popcount(pieces(WHITE)) > 16 || popcount(pieces(BLACK)) > 16)
++#ifdef __EMSCRIPTEN__
++        return false;
++#else
+         assert(0 && "pos_is_ok: Bitboards");
++#endif
+ 
+     for (PieceType p1 = PAWN; p1 <= KING; ++p1)
+         for (PieceType p2 = PAWN; p2 <= KING; ++p2)
+             if (p1 != p2 && (pieces(p1) & pieces(p2)))
++#ifdef __EMSCRIPTEN__
++                return false;
++#else
+                 assert(0 && "pos_is_ok: Bitboards");
++#endif
+ 
+     for (Piece pc : Pieces)
+         if (pieceCount[pc] != popcount(pieces(color_of(pc), type_of(pc)))
+             || pieceCount[pc] != std::count(board.begin(), board.end(), pc))
++#ifdef __EMSCRIPTEN__
++            return false;
++#else
+             assert(0 && "pos_is_ok: Pieces");
++#endif
+ 
+     for (Color c : {WHITE, BLACK})
+         for (CastlingRights cr : {c & KING_SIDE, c & QUEEN_SIDE})
+@@ -1627,7 +1652,11 @@
+             if (piece_on(castling_rook_square(cr)) != make_piece(c, ROOK)
+                 || castlingRightsMask[castlingRookSquare[cr]] != cr
+                 || (castlingRightsMask[square<KING>(c)] & cr) != cr)
++#ifdef __EMSCRIPTEN__
++                return false;
++#else
+                 assert(0 && "pos_is_ok: Castling");
++#endif
+         }
+ 
+     assert(material_key_is_ok() && "pos_is_ok: materialKey");
+diff -ruN sf_dev/src/position.h sf_wasm/src/position.h
+--- sf_dev/src/position.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/position.h	2026-11-04 09:56:16.132131649 +0000
+@@ -382,7 +382,7 @@
+ 
+ inline Piece Position::captured_piece() const { return st->capturedPiece; }
+ 
+-inline void Position::put_piece(Piece pc, Square s, DirtyThreats* const dts) {
++inline void Position::put_piece(Piece pc, Square s, [[maybe_unused]] DirtyThreats* const dts) {
+     board[s] = pc;
+     byTypeBB[ALL_PIECES] |= byTypeBB[type_of(pc)] |= s;
+     byColorBB[color_of(pc)] |= s;
+@@ -393,7 +393,7 @@
+         update_piece_threats(pc, true, s, dts);
+ }
+ 
+-inline void Position::remove_piece(Square s, DirtyThreats* const dts) {
++inline void Position::remove_piece(Square s, [[maybe_unused]] DirtyThreats* const dts) {
+     Piece pc = board[s];
+ 
+     if (dts)
+@@ -407,7 +407,7 @@
+     pieceCount[make_piece(color_of(pc), ALL_PIECES)]--;
+ }
+ 
+-inline void Position::move_piece(Square from, Square to, DirtyThreats* const dts) {
++inline void Position::move_piece(Square from, Square to, [[maybe_unused]] DirtyThreats* const dts) {
+     Piece    pc     = board[from];
+     Bitboard fromTo = from | to;
+ 
+@@ -424,8 +424,8 @@
+         update_piece_threats(pc, true, to, dts, fromTo);
+ }
+ 
+-inline void Position::swap_piece(Square s, Piece pc, DirtyThreats* const dts) {
+-    Piece old = board[s];
++inline void Position::swap_piece(Square s, Piece pc, [[maybe_unused]] DirtyThreats* const dts) {
++    [[maybe_unused]] Piece old = board[s];
+ 
+     remove_piece(s);
+ 
+diff -ruN sf_dev/src/search.cpp sf_wasm/src/search.cpp
+--- sf_dev/src/search.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/search.cpp	2026-11-04 09:56:16.132131649 +0000
+@@ -50,6 +50,10 @@
+ #include "uci.h"
+ #include "ucioption.h"
+ 
++#ifdef __EMSCRIPTEN_SINGLE_THREADED__
++    #include <emscripten.h>
++#endif
++
+ namespace Stockfish {
+ 
+ inline int lmr_divisor(int depth) {
+@@ -70,6 +74,10 @@
+ 
+ namespace {
+ 
++#ifdef __EMSCRIPTEN_SINGLE_THREADED__
++TimePoint lastElapsed;
++#endif
++
+ constexpr u64 NODES_LIMIT_OUTPUT = 10'000'000;
+ 
+ constexpr int SEARCHEDLIST_CAPACITY = 32;
+@@ -202,6 +210,10 @@
+ 
+ void Search::Worker::start_searching() {
+ 
++#ifdef __EMSCRIPTEN_SINGLE_THREADED__
++    lastElapsed = 0;
++#endif
++
+     accumulatorStack.reset();
+ 
+     // Non-main threads go directly to iterative_deepening()
+@@ -228,6 +240,7 @@
+     threads.start_searching();
+     bool uciPvSent = iterative_deepening();
+ 
++#ifndef __EMSCRIPTEN__
+     // When we reach the maximum depth, we can arrive here without a raise of
+     // threads.stop. However, if we are pondering or in an infinite search,
+     // the UCI protocol states that we shouldn't print the best move before the
+@@ -235,6 +248,7 @@
+     // until the GUI sends one of those commands.
+     while (!threads.stop && (main_manager()->ponder || limits.infinite))
+     {}
++#endif
+ 
+     // Stop the threads if not already stopped (also raise the stop if "ponderhit"
+     // just reset threads.ponder).
+@@ -946,6 +960,7 @@
+         }
+     }
+ 
++#ifndef __NO_SYZYGY__
+     // Step 7. Tablebases probe
+     if (!rootNode && !excludedMove && tbConfig.cardinality)
+     {
+@@ -998,6 +1013,7 @@
+             }
+         }
+     }
++#endif
+ 
+     if (ss->inCheck)
+         goto moves_loop;
+@@ -2147,6 +2163,13 @@
+     TimePoint elapsed = tm.elapsed([&worker]() { return worker.threads.nodes_searched(); });
+     TimePoint tick    = worker.limits.startTime + elapsed;
+ 
++#ifdef __EMSCRIPTEN_SINGLE_THREADED__
++    if (elapsed - lastElapsed >= 45) {
++        lastElapsed = elapsed;
++        emscripten_sleep(0);
++    }
++#endif
++
+     if (tick - lastInfoTime >= 1000)
+     {
+         lastInfoTime = tick;
+@@ -2313,7 +2336,9 @@
+     auto&      rootMoves = worker.rootMoves;
+     auto&      pos       = worker.rootPos;
+     usize      multiPV   = std::min(usize(worker.options["MultiPV"]), rootMoves.size());
++#ifndef __NO_SYZYGY__
+     u64        tbHits    = threads.tb_hits() + (worker.tbConfig.rootInTB ? rootMoves.size() : 0);
++#endif
+ 
+     for (usize i = 0; i < multiPV; ++i)
+     {
+@@ -2328,6 +2353,9 @@
+         if (v == -VALUE_INFINITE)
+             v = VALUE_ZERO;
+ 
++#ifdef __NO_SYZYGY__
++        bool isTBScore = false;
++#else
+         bool isTBScore = worker.tbConfig.rootInTB && !is_mate_or_mated(v);
+         v              = isTBScore ? rootMoves[i].tbScore : v;
+ 
+@@ -2336,6 +2364,7 @@
+         if (is_decisive(v) && !is_mate_or_mated(v) && !usePreviousScore
+             && (!rootMoves[i].is_inexact() || isTBScore))
+             syzygy_extend_pv(worker.options, worker.limits, pos, rootMoves[i], v, multiPV);
++#endif
+ 
+         std::string pv;
+         for (Move m : usePreviousScore ? rootMoves[i].previousPV : rootMoves[i].pv)
+@@ -2369,7 +2398,9 @@
+         info.timeMs    = time;
+         info.nodes     = nodes;
+         info.nps       = nodes * 1000 / time;
++#ifndef __NO_SYZYGY__
+         info.tbHits    = tbHits;
++#endif
+         info.pv        = pv;
+         info.hashfull  = tt.hashfull();
+ 
+diff -ruN sf_dev/src/search.h sf_wasm/src/search.h
+--- sf_dev/src/search.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/search.h	2026-11-04 09:56:16.136097252 +0000
+@@ -396,7 +396,9 @@
+     // The main thread has a SearchManager, the others have a nullptr
+     std::unique_ptr<SearchManager> manager;
+ 
++#ifndef __NO_SYZYGY__
+     Tablebases::Config tbConfig;
++#endif
+ 
+     const OptionsMap&                                        options;
+     ThreadPool&                                              threads;
+diff -ruN sf_dev/src/thread.cpp sf_wasm/src/thread.cpp
+--- sf_dev/src/thread.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/thread.cpp	2026-11-04 09:56:16.136097252 +0000
+@@ -58,6 +58,7 @@
+     stdThread(
+       create_native_thread(NativeThreadOptions{}.setLargeStack(true), &Thread::idle_loop, this)) {
+ 
++#ifndef __EMSCRIPTEN__ ///NOTE: This is to fix changing Threads count via the "setoption" UCI command.
+     if (!stdThread.joinable())
+     {
+         std::cerr << "Failed to create search thread\n";
+@@ -66,16 +67,21 @@
+ 
+     wait_for_search_finished();
+ 
++
+     run_custom_job([this, &binder, &sharedState, &sm, n]() {
++#endif
+         // Use the binder to [maybe] bind the threads to a NUMA node before doing
+         // the Worker allocation. Ideally we would also allocate the SearchManager
+         // here, but that's minor.
+         this->numaAccessToken = binder();
+         this->worker          = make_unique_large_page<Search::Worker>(
+           sharedState, std::move(sm), n, idxInNuma, totalNuma, this->numaAccessToken);
++          
++#ifndef __EMSCRIPTEN__
+     });
+ 
+     wait_for_search_finished();
++#endif
+ }
+ 
+ 
+@@ -87,7 +93,9 @@
+ 
+     exit = true;
+     start_searching();
++#ifndef __EMSCRIPTEN_SINGLE_THREADED__
+     stdThread.join();
++#endif
+ }
+ 
+ // Wakes up the thread that will start the search
+@@ -99,18 +107,24 @@
+ // Clears the histories for the thread worker (usually before a new game)
+ void Thread::clear_worker() {
+     assert(worker != nullptr);
++#ifndef __EMSCRIPTEN__
+     run_custom_job([this]() { worker->clear(); });
++#else
++    worker->clear();
++#endif
+ }
+ 
+ // Blocks on the condition variable until the thread has finished searching
+ void Thread::wait_for_search_finished() {
+-
++#ifndef __EMSCRIPTEN_SINGLE_THREADED__
+     std::unique_lock<std::mutex> lk(mutex);
+     cv.wait(lk, [&] { return !searching; });
++#endif
+ }
+ 
+ // Launching a function in the thread
+ void Thread::run_custom_job(std::function<void()> f) {
++#ifndef __EMSCRIPTEN_SINGLE_THREADED__
+     {
+         std::unique_lock<std::mutex> lk(mutex);
+         cv.wait(lk, [&] { return !searching; });
+@@ -118,6 +132,9 @@
+         searching = true;
+     }
+     cv.notify_one();
++#else
++    f();
++#endif
+ }
+ 
+ void Thread::ensure_network_replicated() { worker->ensure_network_replicated(); }
+@@ -173,6 +190,7 @@
+ 
+     if (requested > 0)  // create new thread(s)
+     {
++#ifndef __EMSCRIPTEN__
+         // Binding threads may be problematic when there's multiple NUMA nodes and
+         // multiple Stockfish instances running. In particular, if each instance
+         // runs a single thread then they would all be mapped to the first NUMA node.
+@@ -190,6 +208,9 @@
+             // numaPolicy == "system", or explicitly set by the user
+             return true;
+         }();
++#else
++        const bool doBindThreads = false;
++#endif
+ 
+         std::map<NumaIndex, usize> counts;
+         boundThreadToNumaNode = doBindThreads
+@@ -260,11 +281,14 @@
+     if (threads.empty())
+         return;
+ 
++
+     for (auto&& th : threads)
+         th->clear_worker();
+ 
++#ifndef __EMSCRIPTEN__
+     for (auto&& th : threads)
+         th->wait_for_search_finished();
++#endif
+ 
+     // These two affect the time taken on the first move of a game:
+     main_manager()->bestPreviousAverageScore = VALUE_INFINITE;
+@@ -317,7 +341,9 @@
+         for (const auto& m : MoveList<ALL>(pos))
+             rootMoves.emplace_back(m);
+ 
++#ifndef __NO_SYZYGY__
+     Tablebases::Config tbConfig = Tablebases::rank_root_moves(options, pos, rootMoves);
++#endif
+ 
+     // After ownership transfer 'states' becomes empty, so if we stop the search
+     // and call 'go' again without setting a new position states.get() == nullptr.
+@@ -333,7 +359,9 @@
+     // shared since they are read-only.
+     for (auto&& th : threads)
+     {
++#ifndef __EMSCRIPTEN__
+         th->run_custom_job([&]() {
++#endif
+             th->worker->limits = limits;
+             th->worker->nodes = th->worker->tbHits = th->worker->bestMoveChanges = 0;
+             th->worker->nmpMinPly                                                = 0;
+@@ -341,12 +369,18 @@
+             th->worker->rootMoves                                                = rootMoves;
+             th->worker->rootPos.set(pos.fen(), pos.is_chess960(), &th->worker->rootState);
+             th->worker->rootState = setupStates->back();
++#ifndef __NO_SYZYGY__
+             th->worker->tbConfig  = tbConfig;
++#endif
++#ifndef __EMSCRIPTEN__
+         });
++#endif
+     }
+ 
++#ifndef __EMSCRIPTEN__
+     for (auto&& th : threads)
+         th->wait_for_search_finished();
++#endif
+ 
+     main_thread()->start_searching();
+ }
+diff -ruN sf_dev/src/thread_native.h sf_wasm/src/thread_native.h
+--- sf_dev/src/thread_native.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/thread_native.h	2026-11-04 09:56:16.136097252 +0000
+@@ -85,7 +85,17 @@
+     pthread_t thread;
+     bool      running_ = false;
+ 
++#ifdef NDEBUG
++    // WebAssembly has no virtual memory: pthread_create() carves the whole
++    // stack out of the linear memory eagerly, and linear memory is never
++    // handed back, so an 8MB stack costs 8MB of resident memory per search
++    // thread. Search recursion is bounded by MAX_PLY and an optimized build
++    // emits a small frame for it, keeping the worst case well below 1MB.
++    // A debug build emits larger frames, so it keeps the bigger stack.
++    static constexpr usize TH_STACK_SIZE = 2 * 1024 * 1024;
++#else
+     static constexpr usize TH_STACK_SIZE = 8 * 1024 * 1024;
++#endif
+ 
+     void start(NativeThreadOptions options, ThreadCallableBase* func) {
+         pthread_attr_t attr_storage, *attr = &attr_storage;
+diff -ruN sf_dev/src/timeman.h sf_wasm/src/timeman.h
+--- sf_dev/src/timeman.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/timeman.h	2026-11-04 09:56:47.063107200 +0000
+@@ -49,7 +49,12 @@
+     TimePoint elapsed(FUNC nodes) const {
+         return useNodesTime ? TimePoint(nodes()) : elapsed_time();
+     }
++#ifndef __EMSCRIPTEN__
+     TimePoint elapsed_time() const { return now() - startTime; }
++#else
++    //NOTE: WASM has issues with time. See https://github.com/lichess-org/lila-stockfish-web/pull/3#discussion_r1748873352 for a discussion.
++    TimePoint elapsed_time() const { return std::max(now() - startTime, TimePoint(1)); }
++#endif
+ 
+     void clear();
+     void advance_nodes_time(i64 nodes);
+diff -ruN sf_dev/src/tt.cpp sf_wasm/src/tt.cpp
+--- sf_dev/src/tt.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/tt.cpp	2026-11-04 09:56:16.140062856 +0000
+@@ -203,7 +203,14 @@
+ 
+ // Initializes the entire transposition table to zero, in a multi-threaded way
+ void TranspositionTable::clear(ThreadPool& threads) {
+-    generation8             = 0;
++    generation8              = 0;
++#ifdef __EMSCRIPTEN__
++    // NOTE: Sometimes threaded TT initialization seems to fail (engine crash on startup), so here we simply initialize on main thread.
++    //NOTE: Cluster is non-trivially copyable (RelaxedAtomic members), so cast
++    //to void* to silence -Wnontrivial-memcall. The buffer was just allocated,
++    //so zeroing the storage is safe.
++    std::memset(static_cast<void*>(table), 0, clusterCount * sizeof(Cluster));
++#else
+     const usize threadCount = threads.num_threads();
+ 
+     std::vector<usize> threadToNuma = threads.get_bound_thread_to_numa_node();
+@@ -234,6 +241,7 @@
+ 
+     for (usize i = 0; i < threadCount; ++i)
+         threads.wait_on_thread(i);
++#endif
+ }
+ 
+ 
+diff -ruN sf_dev/src/uci.cpp sf_wasm/src/uci.cpp
+--- sf_dev/src/uci.cpp	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/uci.cpp	2026-11-04 09:56:16.144028459 +0000
+@@ -28,7 +28,9 @@
+ #include <optional>
+ #include <sstream>
+ #include <string_view>
+-#include <filesystem>
++#ifndef __EMSCRIPTEN__
++    #include <filesystem>
++#endif
+ #include <utility>
+ #include <variant>
+ #include <vector>
+@@ -43,6 +45,13 @@
+ #include "types.h"
+ #include "ucioption.h"
+ 
++#ifdef __EMSCRIPTEN__
++    #include <emscripten.h>
++
++    // Declared in the global namespace (defined in src/glue.cpp).
++    std::string js_getline();
++#endif
++
+ namespace Stockfish {
+ 
+ using Time = std::chrono::steady_clock;
+@@ -70,9 +79,15 @@
+     sync_cout_end();
+ }
+ 
++#ifdef __EMSCRIPTEN__
++UCIEngine::UCIEngine(int argc, char** argv) :
++    engine(argv[0]),
++    cli(argc, argv) {
++#else
+ UCIEngine::UCIEngine(CommandLine cli_) :
+     engine(cli_.argc > 0 ? std::optional{path_from_utf8(cli_.argv[0])} : std::nullopt),
+     cli(std::move(cli_)) {
++#endif
+ 
+     engine.get_options().add_info_listener([](const std::optional<std::string>& str) {
+         if (str.has_value())
+@@ -92,102 +107,154 @@
+     engine.set_on_verify_network([](const auto& s) { print_info_string(s); });
+ }
+ 
+-void UCIEngine::loop() {
+-    set_console_utf8();
+-    std::string token, cmd;
+-
+-    for (int i = 1; i < cli.argc; ++i)
+-        cmd += std::string(cli.argv[i]) + " ";
+-
+-    do
+-    {
+-        if (cli.argc == 1
+-            && !getline(std::cin, cmd))  // Wait for an input or an end-of-file (EOF) indication
+-            cmd = "quit";
+-
+-        currentCmd = cmd;
+-        std::istringstream is(cmd);
++#ifdef __EMSCRIPTEN__
++bool searching;
++#endif
++
++// Processes a single UCI command string and returns its first token (so the
++// caller can detect "quit"). Shared by loop() (multithreaded/native) and
++// process_command() (single-threaded).
++std::string UCIEngine::process_cmd(const std::string& cmd) {
++    currentCmd = cmd;
++    std::istringstream is(cmd);
++    std::string token;
++    is >> token;
+ 
+-        token.clear();  // Avoid a stale if getline() returns nothing or a blank line
+-        is >> token;
++    if (token == "quit" || token == "stop")
++        engine.stop();
+ 
+-        if (token == "quit" || token == "stop")
+-            engine.stop();
++    // The GUI sends 'ponderhit' to tell that the user has played the expected move.
++    // So, 'ponderhit' is sent if pondering was done on the same move that the user
++    // has played. The search should continue, but should also switch from pondering
++    // to the normal search.
++    else if (token == "ponderhit")
++        engine.set_ponderhit(false);
+ 
+-        // The GUI sends 'ponderhit' to tell that the user has played the expected move.
+-        // So, 'ponderhit' is sent if pondering was done on the same move that the user
+-        // has played. The search should continue, but should also switch from pondering
+-        // to the normal search.
+-        else if (token == "ponderhit")
+-            engine.set_ponderhit(false);
++    else if (token == "uci")
++    {
++        sync_cout << "id name " << engine_info(true) << "\n"
++                  << engine.get_options() << sync_endl;
+ 
+-        else if (token == "uci")
+-        {
+-            sync_cout << "id name " << engine_info(true) << "\n"
+-                      << engine.get_options() << sync_endl;
++        sync_cout << "uciok" << sync_endl;
++    }
+ 
+-            sync_cout << "uciok" << sync_endl;
++    else if (token == "setoption")
++        setoption(is);
++    else if (token == "go")
++    {
++#ifndef __EMSCRIPTEN__
++        // send info strings after the go command is sent for old GUIs and python-chess
++        print_info_string(engine.numa_config_information_as_string());
++        print_info_string(engine.thread_allocation_information_as_string());
++#else
++        if (!engine.validate_position()) {
++            sync_cout << "info depth 0 score cp 0" << sync_endl;
++            sync_cout << "bestmove (none)" << sync_endl;
++            return token;
+         }
++#endif
++        go(is);
++    }
++    else if (token == "position")
++        position(is);
++    else if (token == "ucinewgame")
++        engine.search_clear();
++    else if (token == "isready")
++        sync_cout << "readyok" << sync_endl;
+ 
+-        else if (token == "setoption")
+-            setoption(is);
+-        else if (token == "go")
++    // Add custom non-UCI commands, mainly for debugging purposes.
++    else if (token == "flip")
++    {
++        if (auto err = engine.flip())
+         {
+-            // send info strings after the go command is sent for old GUIs and python-chess
+-            print_info_string(engine.numa_config_information_as_string());
+-            print_info_string(engine.thread_allocation_information_as_string());
+-            go(is);
++            terminate_on_critical_error(err->what());
+         }
+-        else if (token == "position")
+-            position(is);
+-        else if (token == "ucinewgame")
+-            engine.search_clear();
+-        else if (token == "isready")
+-            sync_cout << "readyok" << sync_endl;
+-
+-        // Add custom non-UCI commands, mainly for debugging purposes.
+-        else if (token == "flip")
+-        {
+-            if (auto err = engine.flip())
+-            {
+-                terminate_on_critical_error(err->what());
+-            }
++    }
++#ifndef __EMSCRIPTEN__
++    else if (token == "bench")
++        bench(is);
++    else if (token == BenchmarkCommand)
++        benchmark(is);
++#endif
++    else if (token == "d")
++        sync_cout << engine.visualize() << sync_endl;
++    else if (token == "eval")
++    {
++#ifdef __EMSCRIPTEN__
++        if (!engine.validate_position()) {
++            sync_cout << "Final evaluation       +0.00 (white side) [invalid position]" << sync_endl;
++            return token;
+         }
+-        else if (token == "bench")
+-            bench(is);
+-        else if (token == BenchmarkCommand)
+-            benchmark(is);
+-        else if (token == "d")
+-            sync_cout << engine.visualize() << sync_endl;
+-        else if (token == "eval")
+-            engine.trace_eval();
+-        else if (token == "compiler")
+-            sync_cout << compiler_info() << sync_endl;
+-        else if (token == "export_net")
+-        {
+-            std::optional<std::filesystem::path> file;
+-            std::string                          filename;
++#endif
++        engine.trace_eval();
++    }
++    else if (token == "compiler")
++        sync_cout << compiler_info() << sync_endl;
++#ifndef __EMSCRIPTEN__
++    else if (token == "export_net")
++    {
++        std::optional<std::filesystem::path> file;
++        std::string                          filename;
+ 
+-            if (is >> filename)
+-                file = path_from_utf8(filename);
++        if (is >> filename)
++            file = path_from_utf8(filename);
+ 
+-            engine.save_network(file);
+-        }
+-        else if (token == "--help" || token == "help" || token == "--license" || token == "license")
+-            sync_cout
+-              << "\nStockfish is a powerful chess engine for playing and analyzing."
+-                 "\nIt is released as free software licensed under the GNU GPLv3 License."
+-                 "\nStockfish is normally used with a graphical user interface (GUI) and implements"
+-                 "\nthe Universal Chess Interface (UCI) protocol to communicate with a GUI, an API, etc."
+-                 "\nFor any further information, visit https://github.com/official-stockfish/Stockfish#readme"
+-                 "\nor read the corresponding README.md and Copying.txt files distributed along with this program.\n"
+-              << sync_endl;
+-        else if (!token.empty() && token[0] != '#')
+-            sync_cout << "Unknown command: '" << cmd << "'. Type help for more information."
+-                      << sync_endl;
++        engine.save_network(file);
++    }
++    else if (token == "--help" || token == "help" || token == "--license" || token == "license")
++        sync_cout
++          << "\nStockfish is a powerful chess engine for playing and analyzing."
++             "\nIt is released as free software licensed under the GNU GPLv3 License."
++             "\nStockfish is normally used with a graphical user interface (GUI) and implements"
++             "\nthe Universal Chess Interface (UCI) protocol to communicate with a GUI, an API, etc."
++             "\nFor any further information, visit https://github.com/official-stockfish/Stockfish#readme"
++             "\nor read the corresponding README.md and Copying.txt files distributed along with this program.\n"
++          << sync_endl;
++    else if (!token.empty() && token[0] != '#')
++        sync_cout << "Unknown command: '" << cmd << "'. Type help for more information."
++                  << sync_endl;
++#endif  // __EMSCRIPTEN__
++
++    return token;
++}
++
++// The UCI command loop. Under __EMSCRIPTEN__ (multithreaded) it runs on the
++// (proxy) main thread and pulls commands from the glue queue (js_getline());
++// on native builds it reads from std::cin. Not used in the single-threaded
++// build (there is no (proxy) main thread to run it on).
++#ifndef __EMSCRIPTEN_SINGLE_THREADED__
++void UCIEngine::loop() {
++    set_console_utf8();
++    std::string cmd;
+ 
++    for (int i = 1; i < cli.argc; ++i)
++        cmd += std::string(cli.argv[i]) + " ";
++
++    std::string token;
++    do
++    {
++#ifdef __EMSCRIPTEN__
++        // Commands are pushed from the JS host onto a thread-safe queue; the
++        // loop runs on the (proxy) main thread and pulls them here.
++        cmd = js_getline();
++#else
++        if (cli.argc == 1
++            && !getline(std::cin, cmd))  // Wait for an input or an end-of-file (EOF) indication
++            cmd = "quit";
++#endif
++        token = process_cmd(cmd);
+     } while (token != "quit" && cli.argc <= 1);  // The command-line arguments are one-shot
+ }
++#endif  // !__EMSCRIPTEN_SINGLE_THREADED__
++
++#ifdef __EMSCRIPTEN_SINGLE_THREADED__
++// Single-threaded: process one command on demand (from the JS ccall). main()
++// returns after setup, so we must NOT block in a loop here (there is no
++// separate (proxy) main thread to run it on).
++void UCIEngine::process_command(std::string cmd) {
++    (void)process_cmd(cmd);
++}
++#endif
+ 
+ Search::LimitsType UCIEngine::parse_limits(std::istream& is) {
+     Search::LimitsType limits;
+@@ -247,8 +314,12 @@
+ 
+     if (limits.perft)
+         perft(limits);
+-    else
++    else {
++#ifdef __EMSCRIPTEN__
++        searching = true;
++#endif
+         engine.go(limits);
++    }
+ }
+ 
+ void UCIEngine::bench(std::istream& args) {
+@@ -673,7 +744,9 @@
+     ss << " nodes " << info.nodes        //
+        << " nps " << info.nps            //
+        << " hashfull " << info.hashfull  //
++#ifndef __NO_SYZYGY__
+        << " tbhits " << info.tbHits      //
++#endif
+        << " time " << info.timeMs        //
+        << " pv " << info.pv;             //
+ 
+@@ -696,7 +769,21 @@
+     if (!ponder.empty())
+         std::cout << " ponder " << ponder;
+     std::cout << sync_endl;
++#ifdef __EMSCRIPTEN__
++    searching = false;
++    MAIN_THREAD_ASYNC_EM_ASM({
++        try {
++            Module["onDoneSearching"]();
++        } catch (e) {};
++    });
++#endif
++}
++
++#ifdef __EMSCRIPTEN__
++extern "C" bool isSearching() {
++    return searching;
+ }
++#endif
+ 
+ void UCIEngine::terminate_on_critical_error(const std::string& message) {
+     sync_cout << "info string CRITICAL ERROR: Command `" << currentCmd
+diff -ruN sf_dev/src/uci.h sf_wasm/src/uci.h
+--- sf_dev/src/uci.h	2026-11-04 09:54:14.808564289 +0000
++++ sf_wasm/src/uci.h	2026-11-04 09:56:16.144028459 +0000
+@@ -39,9 +39,24 @@
+ 
+ class UCIEngine {
+    public:
++   
++#ifdef __EMSCRIPTEN__
++    UCIEngine(int argc, char** argv);
++    #ifdef __EMSCRIPTEN_SINGLE_THREADED__
++    // Single-threaded: a command is processed on demand (from the JS ccall).
++    // main() returns after setup; the loop() design is not used because there
++    // is no separate (proxy) main thread to block on.
++    void process_command(std::string cmd);
++    #else
++    // Multithreaded: the UCI loop runs on the (proxy) main thread and pulls
++    // commands from the glue queue (js_getline()).
++    void loop();
++    #endif
++#else
+     UCIEngine(CommandLine cli);
+-
++    // Native: the UCI loop reads commands from std::cin.
+     void loop();
++#endif
+ 
+     static int         to_cp(Value v, const Position& pos);
+     static std::string format_score(const Score& s);
+@@ -60,6 +75,10 @@
+     CommandLine cli;
+     std::string currentCmd;
+ 
++    // Processes a single UCI command string. Returns the first token (so the
++    // caller can detect "quit"). Shared by loop() and process_command().
++    std::string process_cmd(const std::string& cmd);
++
+     static void print_info_string(std::string_view str);
+ 
+     void go(std::istringstream& is);

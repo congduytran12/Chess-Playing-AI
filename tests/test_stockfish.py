@@ -112,8 +112,25 @@ class StockfishTest(unittest.TestCase):
         self.assertIn('position startpos moves f2f3 e7e5 g2g4', sent)
         self.assertIn('setoption name UCI_Elo value %d' % stockfish.LEVEL_ELO[0], sent, "Easy plays weaker")
         self.assertIn('setoption name UCI_LimitStrength value false', sent, "hints and Impossible at full strength")
-        self.assertTrue(any(command.endswith('movetime %d' % round(chessAi.LEVELS[0][1] * 1000))
+        self.assertTrue(any(command.startswith('go movetime %d ' % round(chessAi.LEVELS[0][1] * 1000))
                             for command in sent), "the level's time")
+
+    def test_the_analysis_uses_the_hint_engine(self):
+        script = os.path.join(self.folder.name, 'fakefish.py')
+        hintLog = os.path.join(self.folder.name, 'hint-commands.txt')
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.Engine([sys.executable, script, hintLog], channel='hint')
+        try:
+            gs = GameState()
+            gs.makeMove(gs.findMoveByCode('e2e4', gs.getValidMoves()))
+            score, best, _ = asyncio.run(stockfish.analyzePosition(gs, gs.getValidMoves(), 0.05))
+        finally:
+            stockfish.hintEngine.close()
+            stockfish.hintEngine = saved
+        self.assertEqual((best.getCode(), score), ('e7e5', 0.42))
+        with open(hintLog) as f:
+            self.assertIn('position startpos moves e2e4', f.read().split('\n'))
+        self.assertFalse(os.path.exists(self.log), "the gameplay engine wasn't asked")
 
     def test_a_cancelled_search_doesnt_answer_the_next(self):
         async def run():
@@ -131,7 +148,7 @@ class StockfishTest(unittest.TestCase):
             self.assertTrue(await stockfish.engine.ready(10))
             return await stockfish.engine.go([], 0.05, search_moves=['e2e4'])
         self.assertEqual(asyncio.run(run()), ('e2e4', 0.42))
-        self.assertIn('go searchmoves e2e4 movetime 50', self.commands())
+        self.assertIn('go movetime 50 searchmoves e2e4', self.commands(), "searchmoves last: it takes every word after it")
 
     def test_without_an_engine_the_games_own_ai_plays(self):
         stockfish.engine = stockfish.Engine([sys.executable, '-c', 'pass'])  # exits at once
@@ -164,11 +181,13 @@ class StockfishTest(unittest.TestCase):
         for file in (name, wasm):
             self.assertIn('game/build/web/stockfish/%s https://unpkg.com/stockfish@' % file, build)
             self.assertIn('/bin/%s' % file, build)
-        hint_name = os.path.basename(stockfish.HINT_WORKER_URL)
-        self.assertEqual(hint_name, 'stockfish-19-single.js')
-        for file in (hint_name, hint_name[:-len('.js')] + '.wasm'):
-            self.assertIn('game/build/web/stockfish/%s https://unpkg.com/stockfish@' % file, build)
-            self.assertIn('/bin/%s' % file, build)
+        hint_name = os.path.basename(stockfish.HINT_WORKER_URL)  # stockfish-dev-20261028-single.js
+        self.assertTrue(hint_name.endswith('-single.js'))
+        release = 'https://github.com/congduytran12/Chess-Playing-AI/releases/download/stockfish-dev-20261028-wasm/'
+        self.assertIn('game/build/web/stockfish/%s %s%s' % (hint_name, release, hint_name), build)
+        parts = hint_name[:-len('.js')] + '-part-$i.wasm'  # the loader fetches <name>-part-0.wasm and on
+        self.assertIn('for i in %s; do' % ' '.join(str(i) for i in range(stockfish.HINT_WORKER_PARTS)), build)
+        self.assertIn('game/build/web/stockfish/%s %s%s' % (parts, release, parts), build)
         self.assertIn('game/build/web/stockfish/Copying.txt', build, "the GPL license goes with the engine")
         self.assertEqual(re.search(r'stockfish@(\d+)\.', build).group(1), re.search(r'stockfish-(\d+)-', name).group(1),
                          "the version in the file name is the package's")

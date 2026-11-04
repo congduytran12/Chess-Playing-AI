@@ -1,0 +1,2 @@
+tools/stockfish-wasm/build.sh text eol=lf
+tools/stockfish-wasm/stockfish-wasm.patch text eol=lf
