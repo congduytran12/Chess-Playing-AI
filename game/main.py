@@ -1131,6 +1131,7 @@ async def main():
     gameLoaded = False  # loaded from a file or the account, so not saved again
     ratingReported = False
     asyncio.ensure_future(account.restore())  # stays signed in from last time
+    hintEnginePrepared = False  # stockfish.prepareHintEngine() was called for the signed-in player
 
     moveUndone = False
     positionHistory = [gs.getPositionKey()]  # one position key per ply, for threefold repetition
@@ -3149,6 +3150,12 @@ async def main():
                     await tryMove(chosen[0], chosen[1], promotion='Q')
                 else:
                     showStatus(PREMOVE_DROPPED)
+
+        # once a player is signed in (a form, or the session from last time), the hint engine is saved on the device
+        # the first time and loaded, so their hints don't wait for its download
+        if account.signedIn and not hintEnginePrepared:
+            hintEnginePrepared = True
+            stockfish.prepareHintEngine()
 
         # hint: wait one frame so the "Looking..." message is on screen during the search
         if hintState == 'requested':

@@ -37,7 +37,7 @@ ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 LEVEL_ELO = [1320, 1600, 1900, 2300, None]  # the strength of each of chessAi.LEVELS; None: full strength
 START_SECONDS = 30  # the engine has this long to answer 'uci' (the browser downloads 7 MB first)
 HINT_START_SECONDS = 180  # the same for the hint engine, which downloads 137 MB first
-READY_WAIT = 10  # a search waits this long for an engine that is still starting, then uses chessAi
+READY_WAIT = 10  # a search waits this long for an engine that is still starting, then uses chessAi (hints don't wait)
 ANSWER_GRACE = 5  # seconds past the search time before a silent engine counts as broken
 POLL_SECONDS = 0.02
 HASH_MB = 16
@@ -71,6 +71,57 @@ JS_HELPERS = '''
     window.chessSfFailed = function(key) {
         const sf = window.chessSf[key];
         return sf ? sf.failed : '';
+    };
+    // the hint engine's .wasm parts, saved in Cache Storage for a signed-in player (prepareHintEngine): '' until asked,
+    // then 'saving', 'saved', 'unsupported' or 'failed: ...'
+    window.chessSfCacheName = 'chess-hint-engine-v1';
+    window.chessSfSaveState = window.chessSfSaveState || '';
+    window.chessSfSave = function(urls) {
+        if (window.chessSfSaveState === 'saving' || window.chessSfSaveState === 'saved') return;
+        if (!window.caches) { window.chessSfSaveState = 'unsupported'; return; }
+        window.chessSfSaveState = 'saving';
+        caches.open(window.chessSfCacheName).then(async function(cache) {
+            for (const url of urls) {
+                const key = new URL(url, location.href).href;
+                if (await cache.match(key)) continue;
+                const response = await fetch(key);
+                if (!response.ok) throw new Error('HTTP ' + response.status + ' for ' + key);
+                await cache.put(key, response);
+            }
+            window.chessSfSaveState = 'saved';
+        }).catch(function(e) { window.chessSfSaveState = 'failed: ' + e; });
+    };
+    // a worker running the engine at url whose .wasm parts come from Cache Storage when they are saved there: it
+    // stands in for the XMLHttpRequest the loader fetches them with, then loads the engine; the hash tells the
+    // loader where its .wasm is, as the worker's own address is a blob
+    window.chessSfCachedWorker = function(url) {
+        const engine = new URL(url, location.href).href;
+        const source = [
+            'const CACHE = ' + JSON.stringify(window.chessSfCacheName) + ';',
+            'const ENGINE = ' + JSON.stringify(engine) + ';',
+            'function fromCache(url) {',
+            '    if (!self.caches) return Promise.resolve(null);',
+            '    return caches.open(CACHE).then(function(c) { return c.match(url); }).catch(function() { return null; });',
+            '}',
+            'function CachedRequest() { this.status = 0; this.response = null; }',
+            'CachedRequest.prototype.open = function(method, url) { this.url = new URL(url, ENGINE).href; };',
+            'CachedRequest.prototype.setRequestHeader = function() {};',
+            'CachedRequest.prototype.send = function() {',
+            '    const request = this;',
+            '    fromCache(request.url).then(function(r) { return r || fetch(request.url); }).then(function(r) {',
+            '        request.status = r.status;',
+            '        return r.blob();',
+            '    }).then(function(blob) {',
+            '        request.response = blob;',
+            '        if (request.onprogress) request.onprogress({loaded: blob.size, total: blob.size, lengthComputable: true});',
+            '        if (request.onload) request.onload();',
+            '    }, function(e) { if (request.onerror) request.onerror(e); });',
+            '};',
+            'self.XMLHttpRequest = CachedRequest;',
+            'importScripts(ENGINE);',
+        ].join('\\n');
+        const worker = URL.createObjectURL(new Blob([source], {type: 'text/javascript'}));
+        return worker + '#' + encodeURIComponent(engine.replace(/\\.js$/, '.wasm'));
     };
 '''
 
@@ -120,11 +171,12 @@ def scoreInPawns(score):
 
 
 class Engine:
-    def __init__(self, command=None, worker_url=WORKER_URL, channel='main', start_seconds=START_SECONDS):
+    def __init__(self, command=None, worker_url=WORKER_URL, channel='main', start_seconds=START_SECONDS, saved=False):
         self.command = command  # desktop: the command to run (a list); None: findExecutable()
         self.worker_url = worker_url
         self.channel = channel
         self.start_seconds = start_seconds
+        self.saved = saved  # browser: its .wasm parts may be saved on the device (the hint engine, prepareHintEngine)
         self.state = 'off'  # 'off' -> 'starting' -> 'ready', or 'failed'
         self.name = None  # the engine's own name, from 'id name'
         self._proc = None
@@ -214,6 +266,8 @@ class Engine:
 
     async def _handshake(self):
         try:
+            while self.saved and saveState() == 'saving':  # its files are on their way into the cache: load them from there
+                await asyncio.sleep(0.1)
             self._open()
             self._send('uci')
             for line in await self._waitFor('uciok', self.start_seconds):
@@ -251,7 +305,10 @@ class Engine:
             if js is None:
                 raise EngineError("no JavaScript bridge")
             js.eval(JS_HELPERS)
-            js.eval("window.chessSfStart(%s, %s)" % (json.dumps(self.channel), json.dumps(self.worker_url)))
+            url = self.worker_url
+            if self.saved:
+                url = str(js.eval("window.chessSfCachedWorker(%s)" % json.dumps(url)))
+            js.eval("window.chessSfStart(%s, %s)" % (json.dumps(self.channel), json.dumps(url)))
             return
         command = self.command
         if command is None:
@@ -314,7 +371,7 @@ class Engine:
 
 
 engine = Engine()
-hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint', start_seconds=HINT_START_SECONDS)
+hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint', start_seconds=HINT_START_SECONDS, saved=True)
 atexit.register(lambda: engine.close())  # desktop: the engine quits with the game
 atexit.register(lambda: hintEngine.close())
 
@@ -339,6 +396,19 @@ def nonRepetitionMoves(gs, validMoves, history):
 
 hintMoves = nonRepetitionMoves
 
+# a move that repeats the position a third time ends the game in a draw; the computer and the hints play on instead,
+# unless every other move scores worse than this (pawns, for the side to move): then the draw is the better result
+REPETITION_MARGIN = 0.5
+
+
+def takesTheDraw(score):
+    """Whether claiming a repetition beats playing on, when the best move that doesn't repeat scores score."""
+    return score is not None and score < -REPETITION_MARGIN
+
+
+def repeatingMoves(validMoves, candidates):
+    return [move for move in validMoves if move not in candidates]
+
 
 async def findBestMove(gs, validMoves, level=None, history=()):
     """The computer's move at the difficulty chessAi.LEVELS[level] (chessAi.LEVEL when None): Stockfish held to
@@ -347,16 +417,24 @@ async def findBestMove(gs, validMoves, level=None, history=()):
         return None
     level = chessAi.LEVEL if level is None else level
     candidates = nonRepetitionMoves(gs, validMoves, history)
+    repeating = repeatingMoves(validMoves, candidates)
+    name, seconds = chessAi.LEVELS[level][:2]
     if len(validMoves) > 1 and not gs.playerWantsToPlayAsBlack and await engine.ready(READY_WAIT):
-        name, seconds = chessAi.LEVELS[level][:2]
         found = await engine.go(moveCodes(gs), seconds, LEVEL_ELO[level],
                                 search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move in candidates:
+            if repeating and takesTheDraw(found[1]):
+                print("AI (%s, Stockfish): %s repeats, as playing on scores %s" % (name, repeating[0], found[1]))
+                return repeating[0]
             print("AI (%s, Stockfish): %s score %s" % (name, move, found[1]))
             return move
     move = await chessAi.findBestMove(gs, validMoves, level, history)
-    return move if move in candidates else candidates[0]
+    if move in candidates or not repeating:
+        return move
+    # chessAi chose to repeat: it plays on if a move that doesn't repeat is about as good
+    score, other, _ = await chessAi.searchPosition(gs, candidates, seconds, history=history)
+    return move if takesTheDraw(score) or other is None else other
 
 
 async def searchPosition(gs, validMoves, seconds, history=()):
@@ -371,13 +449,18 @@ async def searchPosition(gs, validMoves, seconds, history=()):
 
 
 async def searchHintPosition(gs, validMoves, seconds, history=()):
-    """Searches a hint with the full browser build, without changing the gameplay engine."""
-    if validMoves and await hintEngine.ready(READY_WAIT):
+    """Searches a hint with the full browser build, without changing the gameplay engine. A hint doesn't wait for
+    that engine while it loads (it starts on the first hint, or at sign-in: prepareHintEngine): searchPosition
+    answers meanwhile."""
+    if validMoves and await hintEngine.ready(0):
         candidates = nonRepetitionMoves(gs, validMoves, history)
         found = await hintEngine.go(moveCodes(gs), seconds,
                                     search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move is not None and found[1] is not None:
+            repeating = repeatingMoves(validMoves, candidates)
+            if repeating and takesTheDraw(found[1]):
+                return 0.0, repeating[0], 0  # the draw is better than any move that plays on
             return found[1], move, 0
     return await searchPosition(gs, validMoves, seconds, history=history)
 
@@ -400,3 +483,33 @@ async def evaluate(gs, seconds):
         return None
     found = await engine.go(moveCodes(gs), seconds)
     return found[1] if found else None
+
+
+def hintEngineParts():
+    base = HINT_WORKER_URL[:-len('.js')]
+    return ['%s-part-%d.wasm' % (base, i) for i in range(HINT_WORKER_PARTS)]
+
+
+def saveState():
+    """Browser: how saving the hint engine on the device goes (window.chessSfSaveState); '' elsewhere."""
+    if not WASM or js is None:
+        return ''
+    try:
+        return str(js.eval("window.chessSfSaveState || ''") or '')
+    except Exception:
+        return ''
+
+
+def prepareHintEngine():
+    """Called once a player is signed in. In the browser the hint engine's 137 MB is saved on the device the first
+    time (Cache Storage; found there on later visits), and the engine starts from it, so hints and the analysis
+    don't wait for the download; on desktop the engine just starts."""
+    if not ENABLED:
+        return
+    if WASM and js is not None:
+        try:
+            js.eval(JS_HELPERS)
+            js.eval("window.chessSfSave(%s)" % json.dumps(hintEngineParts()))
+        except Exception as e:
+            print("Stockfish: could not save the hint engine -", e)
+    hintEngine.start()

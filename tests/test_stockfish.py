@@ -1,6 +1,7 @@
 # game/stockfish.py against a stand-in UCI engine (a small Python script), so no real Stockfish is needed
 import os
 import sys
+import time
 import asyncio
 import tempfile
 import textwrap
@@ -11,10 +12,18 @@ import chessAi
 import stockfish
 from engine import GameState
 
-# answers like Stockfish: e2e4 from the start, e7e5 after it, a mate score after 1. f3 e5 2. g4, and a long
-# search until 'stop' for 'go movetime 9999'; every command it gets goes to the log file
+# Black to move after these, and f6g8 / c6b8 would be the start position's third time: playing on instead scores
+# -9 pawns after the first, -0.1 after the second
+LOSING_ON = ['g1f3', 'g8f6', 'f3g1', 'f6g8', 'g1f3', 'g8f6', 'f3g1']
+HOLDING_ON = ['b1c3', 'b8c6', 'c3b1', 'c6b8', 'b1c3', 'b8c6', 'c3b1']
+
+# answers like Stockfish: e2e4 from the start, e7e5 after it, a mate score after 1. f3 e5 2. g4, the scores above
+# after LOSING_ON and HOLDING_ON, and a long search until 'stop' for 'go movetime 9999'; every command it gets goes
+# to the log file
 FAKE_ENGINE = textwrap.dedent('''
     import sys
+    LOSING_ON = LOSING_ON_MOVES
+    HOLDING_ON = HOLDING_ON_MOVES
     log = open(sys.argv[1], 'a')
     moves = []
     def say(line):
@@ -36,7 +45,10 @@ FAKE_ENGINE = textwrap.dedent('''
         elif line == 'stop':
             say('bestmove a2a3')
         elif line.startswith('go'):
-            if moves == ['f2f3', 'e7e5', 'g2g4']:
+            if moves == LOSING_ON or moves == HOLDING_ON:  # Black can repeat; the best other move scores:
+                say('info depth 6 score cp %d pv h7h6' % (-900 if moves == LOSING_ON else -10))
+                say('bestmove h7h6')
+            elif moves == ['f2f3', 'e7e5', 'g2g4']:
                 say('info depth 3 score mate 1 pv d8h4')
                 say('bestmove d8h4')
             else:
@@ -45,7 +57,17 @@ FAKE_ENGINE = textwrap.dedent('''
                 say('bestmove ' + ('e2e4' if not moves else 'e7e5'))
         elif line == 'quit':
             break
-''')
+''').replace('LOSING_ON_MOVES', repr(LOSING_ON)).replace('HOLDING_ON_MOVES', repr(HOLDING_ON))
+
+
+# the game after moves, and the position history (one key per ply) the game keeps
+def playedOut(moves):
+    gs = GameState()
+    history = [gs.getPositionKey()]
+    for code in moves:
+        gs.makeMove(gs.findMoveByCode(code, gs.getValidMoves()))
+        history.append(gs.getPositionKey())
+    return gs, history
 
 
 class StockfishTest(unittest.TestCase):
@@ -114,6 +136,68 @@ class StockfishTest(unittest.TestCase):
         self.assertIn('setoption name UCI_LimitStrength value false', sent, "hints and Impossible at full strength")
         self.assertTrue(any(command.startswith('go movetime %d ' % round(chessAi.LEVELS[0][1] * 1000))
                             for command in sent), "the level's time")
+
+    def test_a_repetition_draw_only_when_playing_on_loses(self):
+        self.assertTrue(stockfish.takesTheDraw(-0.6))
+        self.assertFalse(stockfish.takesTheDraw(-0.4))
+        self.assertFalse(stockfish.takesTheDraw(None))
+        script = os.path.join(self.folder.name, 'fakefish.py')
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.Engine([sys.executable, script, self.log + '.hint'], channel='hint')
+
+        async def run(moves):
+            gs, history = playedOut(moves)
+            valid = gs.getValidMoves()
+            self.assertTrue(await stockfish.hintEngine.ready(10))
+            ai = await stockfish.findBestMove(gs, valid, level=4, history=history)
+            hint = await stockfish.searchHintPosition(gs, valid, 0.05, history=history)
+            return ai.getCode(), (hint[1].getCode(), hint[0])
+        try:
+            losing = asyncio.run(run(LOSING_ON))
+            holding = asyncio.run(run(HOLDING_ON))
+        finally:
+            stockfish.hintEngine.close()
+            stockfish.hintEngine = saved
+        self.assertEqual(losing, ('f6g8', ('f6g8', 0.0)), "every other move loses: the draw")
+        self.assertEqual(holding, ('h7h6', ('h7h6', -0.1)), "a move about as good as the draw: play on")
+
+    def test_a_hint_doesnt_wait_for_the_hint_engine_to_load(self):
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.Engine([sys.executable, '-c', 'import time; time.sleep(30)'], channel='hint')
+
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            gs = GameState()
+            gs.makeMove(gs.findMoveByCode('e2e4', gs.getValidMoves()))
+            start = time.time()
+            found = await stockfish.searchHintPosition(gs, gs.getValidMoves(), 0.05)
+            return found, time.time() - start, stockfish.hintEngine.state
+        try:
+            (score, move, _), seconds, state = asyncio.run(run())
+        finally:
+            stockfish.hintEngine.close()
+            stockfish.hintEngine = saved
+        self.assertEqual(state, 'starting', "still loading")
+        self.assertEqual((move.getCode(), score), ('e7e5', 0.42), "the gameplay engine answered")
+        self.assertLess(seconds, 2, "without waiting READY_WAIT")
+
+    def test_signing_in_starts_the_hint_engine(self):
+        script = os.path.join(self.folder.name, 'fakefish.py')
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.Engine([sys.executable, script, self.log + '.hint'], channel='hint')
+
+        async def run():
+            stockfish.prepareHintEngine()
+            self.assertEqual(stockfish.hintEngine.state, 'starting')
+            return await stockfish.hintEngine.ready(10)
+        try:
+            self.assertTrue(asyncio.run(run()))
+        finally:
+            stockfish.hintEngine.close()
+            stockfish.hintEngine = saved
+        self.assertEqual(stockfish.saveState(), '', "nothing to save on desktop")
+        self.assertEqual(stockfish.hintEngineParts()[0], 'stockfish/stockfish-dev-20261028-single-part-0.wasm')
+        self.assertEqual(len(stockfish.hintEngineParts()), stockfish.HINT_WORKER_PARTS)
 
     def test_the_analysis_uses_the_hint_engine(self):
         script = os.path.join(self.folder.name, 'fakefish.py')
