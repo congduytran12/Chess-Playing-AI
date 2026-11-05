@@ -5,6 +5,10 @@ analysis after a game use a newer Stockfish that no package ships: **Stockfish d
 NNUE architecture **SFNNv19** (net `nn-d1ee674a62ca.nnue`). There is no lite net for SFNNv19, so this is the full
 engine: one 137 MB `.wasm`, split into six parts that the loader fetches and joins.
 
+It is the hint engine where the page can't run threads (Safari). Where it can (the site is cross-origin isolated), hints
+use stockfish.js 19.0.1's own multi-threaded full build instead (`HINT_THREADED_URL` in `game/stockfish.py`):
+threads gain far more than the newer net, and building this one multi-threaded is left for later.
+
 Vercel can't compile it, so it is built here once and published as the GitHub release
 [`stockfish-dev-20261028-wasm`](https://github.com/congduytran12/Chess-Playing-AI/releases/tag/stockfish-dev-20261028-wasm),
 and `npm run build` downloads it into `game/build/web/stockfish/` (`HINT_WORKER_URL` in `game/stockfish.py`).

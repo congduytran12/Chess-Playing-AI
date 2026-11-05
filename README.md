@@ -17,7 +17,7 @@ Switch modes with the **Mode** dropdown:
 
 ### The AI
 
-- **Stockfish:** the computer's moves, the hints and the game analysis come from [Stockfish](https://stockfishchess.org/). In the browser, computer play and analysis use [stockfish.js](https://github.com/nmrugg/stockfish.js) 19's lite single-threaded build (about 1.8 MB), which runs in the background while you play. The full single-threaded build is loaded only when **Hint** is first pressed, so normal gameplay stays lightweight. On the desktop the game uses a Stockfish program on your computer (see [Installation](#installation--how-to-play)).
+- **Stockfish:** the computer's moves, the hints and the game analysis come from [Stockfish](https://stockfishchess.org/). In the browser, the computer plays with [stockfish.js](https://github.com/nmrugg/stockfish.js) 19's lite single-threaded build (about 1.8 MB), which runs in the background while you play. Hints and the analysis use a full engine, loaded when you sign in or first press **Hint**: in Chrome, Edge and Firefox (the site is cross-origin isolated, so it can run threads) stockfish.js 19's multi-threaded build, searching on several of your cores at once (up to 8; 4 on a phone), several times as much as the computer on Impossible in the same 5 seconds; in Safari, a newer single-threaded Stockfish. On the desktop the game uses a Stockfish program on your computer (see [Installation](#installation--how-to-play)).
 - **Levels:** each level holds Stockfish to a playing strength: about 1320 Elo on Easy, 1600 on Normal, 1900 on Hard and 2300 on Very Hard. Impossible is full strength. Each level also has a time budget, from 0.3 s on Easy to 5 s on Impossible. Hints and the analysis always use full strength.
 - **The built-in AI:** when there is no Stockfish (a desktop without it, or a browser that can't load it), the game's own AI plays instead. It thinks for the same time budgets, searching one move deeper at a time, so it never freezes the game. Easy and Normal also add some randomness, so they stay beatable.
 - **The built-in AI's search:** NegaMax with alpha-beta pruning. It also:
@@ -133,7 +133,7 @@ The browser version is built with [pygbag](https://github.com/pygame-web/pygbag)
 npm run build
 ```
 
-The output goes to `game/build/web`. The build also downloads stockfish.js and its `.wasm` file into `game/build/web/stockfish/`.
+The output goes to `game/build/web`. The build also downloads the Stockfish engines (stockfish.js and the hint engines) into `game/build/web/stockfish/`. Hints only run threads where the page is cross-origin isolated: a host other than Vercel needs the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless` headers from `vercel.json`.
 
 Stockfish and stockfish.js are licensed under the GNU GPL v3; the build copies the license next to them (`stockfish/Copying.txt`).
 

@@ -14,6 +14,8 @@ try:
 except ImportError:
     p = None
 
+TEST_HINT_SECONDS = 0.5  # how long a hint searches in these tests (runGame), well inside the scripts' waits
+
 
 @unittest.skipIf(p is None, "needs pygame")
 class GameLoopTest(unittest.TestCase):
@@ -1168,18 +1170,20 @@ class GameLoopTest(unittest.TestCase):
         return frames, restore
 
     def runGame(self, script, thinkMs=None):
-        """Runs the game loop with script; thinkMs makes the computer take at least that long per move."""
+        """Runs the game loop with script; thinkMs makes the computer take at least that long per move. Hints search
+        for TEST_HINT_SECONDS, so a script's waits don't depend on HINT_SECONDS."""
         main = self.main
-        savedThink = main.AI_MIN_THINK_MS
+        savedThink, savedHint = main.AI_MIN_THINK_MS, main.HINT_SECONDS
 
         async def run():
             await asyncio.gather(main.main(), script())
         if thinkMs is not None:
             main.AI_MIN_THINK_MS = thinkMs
+        main.HINT_SECONDS = TEST_HINT_SECONDS
         try:
             asyncio.run(run())
         finally:
-            main.AI_MIN_THINK_MS = savedThink
+            main.AI_MIN_THINK_MS, main.HINT_SECONDS = savedThink, savedHint
 
     def premoveTinted(self, row, col):
         """The square's corner shows the premove's purple (more blue than green), not a board color."""

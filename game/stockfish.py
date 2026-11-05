@@ -33,10 +33,23 @@ WORKER_URL = "stockfish/stockfish-19-lite-single.js"  # the browser build; its .
 # only for a hint or an analysis; its 137 MB .wasm comes in HINT_WORKER_PARTS parts, -part-0.wasm and on
 HINT_WORKER_URL = "stockfish/stockfish-dev-20261028-single.js"
 HINT_WORKER_PARTS = 6
+# where the page can run threads (cross-origin isolated by vercel.json's COOP/COEP headers; not Safari, which doesn't
+# know COEP credentialless), hints and the analysis use stockfish.js 19.0.1's multi-threaded full build instead, on
+# hintThreads() threads: several times the computer's search (one thread of the lite build) in the same time. Its
+# 99 MB .wasm is split by `npm run build` into HINT_THREADED_PARTS files of 25 MB, -part-0.wasm and on, which the
+# worker joins (chessSfCachedWorker); its own loader asks for the whole .wasm
+HINT_THREADED_URL = "stockfish/stockfish-19.js"
+HINT_THREADED_PARTS = 4
+HINT_MAX_THREADS = 8  # the hint engine's threads, in the browser and on desktop: the cores less SPARE_CORES, up to this
+SPARE_CORES = 2  # left to the game and the computer's engine
+HINT_HASH_MB = 128  # the hint engine's hash when it runs threads (the single-threaded build keeps HASH_MB)
+# a phone or a device with little memory (chessSfSmallDevice) runs the threaded build smaller
+SMALL_DEVICE_THREADS = 4
+SMALL_DEVICE_HASH_MB = 32
 ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines')  # desktop
 LEVEL_ELO = [1320, 1600, 1900, 2300, None]  # the strength of each of chessAi.LEVELS; None: full strength
 START_SECONDS = 30  # the engine has this long to answer 'uci' (the browser downloads 7 MB first)
-HINT_START_SECONDS = 180  # the same for the hint engine, which downloads 137 MB first
+HINT_START_SECONDS = 180  # the same for the hint engine, which downloads 137 MB first (99 MB threaded)
 READY_WAIT = 10  # a search waits this long for an engine that is still starting, then uses chessAi (hints don't wait)
 ANSWER_GRACE = 5  # seconds past the search time before a silent engine counts as broken
 POLL_SECONDS = 0.02
@@ -52,10 +65,36 @@ JS_HELPERS = '''
             sf.worker.onmessage = function(e) {
                 if (typeof e.data === 'string') sf.lines.push(...e.data.split('\\n').filter(Boolean));
             };
-            sf.worker.onerror = function(e) { sf.failed = String((e && e.message) || 'the engine did not load'); };
+            sf.worker.onerror = function(e) {
+                const message = String((e && e.message) || 'the engine did not load');
+                // stockfish.js's threaded build reads one message without data as it starts (e.data.progressPort):
+                // harmless, the engine answers as usual
+                if (message.indexOf('progressPort') >= 0) {
+                    if (e.preventDefault) e.preventDefault();
+                    return;
+                }
+                sf.failed = message;
+            };
         } catch (e) {
             sf.failed = String(e);
         }
+    };
+    window.chessSfStop = function(key) {
+        const sf = window.chessSf[key];
+        if (sf && sf.worker) {
+            try { sf.worker.terminate(); } catch (e) {}
+        }
+        delete window.chessSf[key];
+    };
+    // the cores the page can run engine threads on: 0 unless it is cross-origin isolated (SharedArrayBuffer)
+    window.chessSfThreadCores = function() {
+        if (self.crossOriginIsolated !== true || typeof SharedArrayBuffer === 'undefined') return 0;
+        return navigator.hardwareConcurrency || 0;
+    };
+    // a phone or tablet (a coarse pointer), or a device with 4 GB of memory or less (navigator.deviceMemory, Chrome)
+    window.chessSfSmallDevice = function() {
+        const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+        return coarse || (typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 4);
     };
     window.chessSfSend = function(key, line) {
         const sf = window.chessSf[key];
@@ -91,24 +130,49 @@ JS_HELPERS = '''
             window.chessSfSaveState = 'saved';
         }).catch(function(e) { window.chessSfSaveState = 'failed: ' + e; });
     };
-    // a worker running the engine at url whose .wasm parts come from Cache Storage when they are saved there: it
-    // stands in for the XMLHttpRequest the loader fetches them with, then loads the engine; the hash tells the
-    // loader where its .wasm is, as the worker's own address is a blob
-    window.chessSfCachedWorker = function(url) {
+    // a worker running the engine at url whose .wasm files come from Cache Storage when they are saved there: it
+    // stands in for the XMLHttpRequest (the dev build's loader) and the fetch (stockfish.js 19's threaded loader) the
+    // loader asks for them with, then loads the engine; the hash tells the loader where its .wasm is, as the worker's
+    // own address is a blob. parts: the files the build split the .wasm into (its loader asks for the whole .wasm),
+    // joined here, or none. The engine's threads start from this same blob and get the compiled engine from it.
+    window.chessSfCachedWorker = function(url, parts) {
         const engine = new URL(url, location.href).href;
+        const wasm = engine.replace(/\\.js$/, '.wasm');
         const source = [
             'const CACHE = ' + JSON.stringify(window.chessSfCacheName) + ';',
             'const ENGINE = ' + JSON.stringify(engine) + ';',
+            'const WASM = ' + JSON.stringify(wasm) + ';',
+            'const PARTS = ' + JSON.stringify((parts || []).map(function(p) { return new URL(p, location.href).href; })) + ';',
+            'const networkFetch = self.fetch.bind(self);',
             'function fromCache(url) {',
             '    if (!self.caches) return Promise.resolve(null);',
             '    return caches.open(CACHE).then(function(c) { return c.match(url); }).catch(function() { return null; });',
             '}',
+            'function load(url) {',
+            '    return fromCache(url).then(function(r) { return r || networkFetch(url); });',
+            '}',
+            'function loadFile(url) {',
+            '    if (url !== WASM || !PARTS.length) return load(url);',
+            '    return Promise.all(PARTS.map(function(part) {',
+            '        return load(part).then(function(r) {',
+            '            if (!r.ok) throw new Error("HTTP " + r.status + " for " + part);',
+            '            return r.blob();',
+            '        });',
+            '    })).then(function(blobs) {',
+            '        return new Response(new Blob(blobs, {type: "application/wasm"}),',
+            '                            {status: 200, headers: {"Content-Type": "application/wasm"}});',
+            '    });',
+            '}',
+            'self.fetch = function(input, init) {',
+            '    const url = new URL(typeof input === "string" ? input : input.url, ENGINE).href;',
+            '    return /\\\\.wasm$/.test(url) ? loadFile(url) : networkFetch(input, init);',
+            '};',
             'function CachedRequest() { this.status = 0; this.response = null; }',
             'CachedRequest.prototype.open = function(method, url) { this.url = new URL(url, ENGINE).href; };',
             'CachedRequest.prototype.setRequestHeader = function() {};',
             'CachedRequest.prototype.send = function() {',
             '    const request = this;',
-            '    fromCache(request.url).then(function(r) { return r || fetch(request.url); }).then(function(r) {',
+            '    loadFile(request.url).then(function(r) {',
             '        request.status = r.status;',
             '        return r.blob();',
             '    }).then(function(blob) {',
@@ -118,10 +182,16 @@ JS_HELPERS = '''
             '    }, function(e) { if (request.onerror) request.onerror(e); });',
             '};',
             'self.XMLHttpRequest = CachedRequest;',
+            // a .wasm that doesn't download or compile rejects a promise nothing waits for: thrown again here, it
+            // reaches the page's onerror, so the engine counts as failed at once (the threads report their own)
+            'if (self.name !== "em-pthread") self.addEventListener("unhandledrejection", function(e) {',
+            '    const reason = e.reason;',
+            '    setTimeout(function() { throw reason instanceof Error ? reason : new Error(String(reason || "the engine did not load")); });',
+            '});',
             'importScripts(ENGINE);',
         ].join('\\n');
         const worker = URL.createObjectURL(new Blob([source], {type: 'text/javascript'}));
-        return worker + '#' + encodeURIComponent(engine.replace(/\\.js$/, '.wasm'));
+        return worker + '#' + encodeURIComponent(wasm);
     };
 '''
 
@@ -171,12 +241,18 @@ def scoreInPawns(score):
 
 
 class Engine:
-    def __init__(self, command=None, worker_url=WORKER_URL, channel='main', start_seconds=START_SECONDS, saved=False):
+    def __init__(self, command=None, worker_url=WORKER_URL, channel='main', start_seconds=START_SECONDS, saved=False,
+                 hint=False):
         self.command = command  # desktop: the command to run (a list); None: findExecutable()
         self.worker_url = worker_url
         self.channel = channel
         self.start_seconds = start_seconds
         self.saved = saved  # browser: its .wasm parts may be saved on the device (the hint engine, prepareHintEngine)
+        # the hint engine runs on more threads, with more hash, than the computer's: in the browser the threaded build
+        # (HINT_THREADED_URL) where the page allows it, on desktop the same executable on hintThreads() threads
+        self.hint = hint
+        self.threads = 1  # the threads it runs on (set as it starts)
+        self.threadedFailed = False  # browser: the threaded build didn't start, so the single-threaded one runs
         self.state = 'off'  # 'off' -> 'starting' -> 'ready', or 'failed'
         self.name = None  # the engine's own name, from 'id name'
         self._proc = None
@@ -223,6 +299,10 @@ class Engine:
                 raise
             except Exception as e:
                 print("Stockfish: stopped working -", e)
+                if self._threaded():  # the next hint or analysis starts the single-threaded build
+                    self._useSingleThreaded()
+                    self.state = 'off'
+                    return None
                 self.state = 'failed'
                 self.close()
                 return None
@@ -264,6 +344,23 @@ class Engine:
                 raise EngineError("no answer to 'go'")
             await asyncio.sleep(POLL_SECONDS)
 
+    def _threaded(self):
+        """Browser: whether this engine runs the threaded build (HINT_THREADED_URL)."""
+        return WASM and self.hint and self.threads > 1 and not self.threadedFailed
+
+    def _useSingleThreaded(self):
+        """Browser: the threaded build failed, so from now on this engine runs the single-threaded one. That build is
+        also saved on the device when the threaded one was (prepareHintEngine), so the next visit finds it there."""
+        self.threadedFailed = True
+        self.close()
+        self.threads, self._searching, self._elo = 1, False, 'unset'  # a new worker: nothing from the old one
+        if self.saved and saveState():
+            try:
+                js.eval("window.chessSfSaveState = ''")
+                js.eval("window.chessSfSave(%s)" % json.dumps(singleThreadedParts()))
+            except Exception as e:
+                print("Stockfish: could not save the hint engine -", e)
+
     async def _handshake(self):
         try:
             while self.saved and saveState() == 'saving':  # its files are on their way into the cache: load them from there
@@ -273,14 +370,21 @@ class Engine:
             for line in await self._waitFor('uciok', self.start_seconds):
                 if line.startswith('id name '):
                     self.name = line[len('id name '):]
-            self._send('setoption name Hash value %d' % HASH_MB)
             if not WASM:
-                self._send('setoption name Threads value %d' % max(1, min(4, (os.cpu_count() or 2) // 2)))
+                self.threads = hintThreads(os.cpu_count()) if self.hint else max(1, min(4, (os.cpu_count() or 2) // 2))
+            self._send('setoption name Hash value %d' % (hintHash() if self.hint and self.threads > 1 else HASH_MB))
+            if not WASM or self.threads > 1:
+                self._send('setoption name Threads value %d' % self.threads)
             self._send('isready')
             await self._waitFor('readyok', self.start_seconds)
             self.state = 'ready'
-            print("Stockfish: ready -", self.name)
+            print("Stockfish: ready -", self.name, "(%d thread%s)" % (self.threads, '' if self.threads == 1 else 's'))
         except Exception as e:
+            if self._threaded():  # the threaded build: the single-threaded one
+                print("Stockfish: the threaded hint engine did not start, it runs on one thread -", e)
+                self._useSingleThreaded()
+                await self._handshake()
+                return
             print("Stockfish: not available, the game's own AI plays -", e)
             self.state = 'failed'
             self.close()
@@ -305,9 +409,11 @@ class Engine:
             if js is None:
                 raise EngineError("no JavaScript bridge")
             js.eval(JS_HELPERS)
-            url = self.worker_url
+            url, parts, self.threads = self.worker_url, [], 1
+            if self.hint and not self.threadedFailed and browserThreads() > 1:
+                url, parts, self.threads = HINT_THREADED_URL, threadedParts(), browserThreads()
             if self.saved:
-                url = str(js.eval("window.chessSfCachedWorker(%s)" % json.dumps(url)))
+                url = str(js.eval("window.chessSfCachedWorker(%s, %s)" % (json.dumps(url), json.dumps(parts))))
             js.eval("window.chessSfStart(%s, %s)" % (json.dumps(self.channel), json.dumps(url)))
             return
         command = self.command
@@ -356,6 +462,11 @@ class Engine:
         return lines
 
     def close(self):
+        if WASM and js is not None:  # the worker stops (a later start makes a new one)
+            try:
+                js.eval("window.chessSfStop && window.chessSfStop(%s)" % json.dumps(self.channel))
+            except Exception:
+                pass
         if self._proc is not None:
             try:
                 self._proc.stdin.write('quit\n')
@@ -371,7 +482,8 @@ class Engine:
 
 
 engine = Engine()
-hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint', start_seconds=HINT_START_SECONDS, saved=True)
+hintEngine = Engine(worker_url=HINT_WORKER_URL, channel='hint', start_seconds=HINT_START_SECONDS, saved=True,
+                    hint=True)
 atexit.register(lambda: engine.close())  # desktop: the engine quits with the game
 atexit.register(lambda: hintEngine.close())
 
@@ -485,9 +597,58 @@ async def evaluate(gs, seconds):
     return found[1] if found else None
 
 
-def hintEngineParts():
+def hintThreads(cores):
+    """The hint engine's threads on a device with this many cores (None: unknown): all but SPARE_CORES, up to
+    HINT_MAX_THREADS, at least one."""
+    return max(1, min(HINT_MAX_THREADS, (cores or 1) - SPARE_CORES))
+
+
+def smallDevice():
+    """Browser: a phone or tablet, or a device with 4 GB of memory or less (chessSfSmallDevice); False on desktop."""
+    if not WASM or js is None:
+        return False
+    try:
+        js.eval(JS_HELPERS)
+        return bool(js.eval("window.chessSfSmallDevice()"))
+    except Exception:
+        return False
+
+
+def browserThreads():
+    """Browser: the threads the hint engine runs on, hintThreads() of the cores when the page can run threads
+    (cross-origin isolated), at most SMALL_DEVICE_THREADS on a small device, else 1; 1 on desktop."""
+    if not WASM or js is None:
+        return 1
+    try:
+        js.eval(JS_HELPERS)
+        cores = int(js.eval("window.chessSfThreadCores()") or 0)
+    except Exception:
+        return 1
+    threads = hintThreads(cores) if cores else 1
+    return min(threads, SMALL_DEVICE_THREADS) if threads > 1 and smallDevice() else threads
+
+
+def hintHash():
+    """The hint engine's hash in MB when it runs threads: HINT_HASH_MB, SMALL_DEVICE_HASH_MB on a small device."""
+    return SMALL_DEVICE_HASH_MB if smallDevice() else HINT_HASH_MB
+
+
+def threadedParts():
+    base = HINT_THREADED_URL[:-len('.js')]
+    return ['%s-part-%d.wasm' % (base, i) for i in range(HINT_THREADED_PARTS)]
+
+
+def singleThreadedParts():
     base = HINT_WORKER_URL[:-len('.js')]
     return ['%s-part-%d.wasm' % (base, i) for i in range(HINT_WORKER_PARTS)]
+
+
+def hintEngineParts():
+    """The files of the hint engine this page runs: the threaded build's where it can run threads, else the
+    single-threaded build's."""
+    if browserThreads() > 1 and not hintEngine.threadedFailed:
+        return threadedParts()
+    return singleThreadedParts()
 
 
 def saveState():
@@ -501,9 +662,9 @@ def saveState():
 
 
 def prepareHintEngine():
-    """Called once a player is signed in. In the browser the hint engine's 137 MB is saved on the device the first
-    time (Cache Storage; found there on later visits), and the engine starts from it, so hints and the analysis
-    don't wait for the download; on desktop the engine just starts."""
+    """Called once a player is signed in. In the browser the hint engine (137 MB, 99 MB threaded) is saved on the
+    device the first time (Cache Storage; found there on later visits), and the engine starts from it, so hints and
+    the analysis don't wait for the download; on desktop the engine just starts."""
     if not ENABLED:
         return
     if WASM and js is not None:

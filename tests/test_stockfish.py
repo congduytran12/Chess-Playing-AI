@@ -276,6 +276,73 @@ class StockfishTest(unittest.TestCase):
         self.assertEqual(re.search(r'stockfish@(\d+)\.', build).group(1), re.search(r'stockfish-(\d+)-', name).group(1),
                          "the version in the file name is the package's")
 
+    def test_the_threaded_hint_engine_is_the_one_the_build_downloads(self):
+        import json
+        with open(os.path.join(support.ROOT, 'package.json'), encoding='utf-8') as f:
+            build = json.load(f)['scripts']['build']
+        name = os.path.basename(stockfish.HINT_THREADED_URL)  # stockfish-19.js, the multi-threaded full build
+        self.assertNotIn('single', name)
+        folder = 'game/build/web/stockfish/'
+        for file in (name, name[:-len('.js')] + '.wasm'):
+            self.assertIn('-o %s%s https://unpkg.com/stockfish@19.0.1/bin/%s' % (folder, file, file), build)
+        base = name[:-len('.js')]
+        # split into parts the worker joins, and the build stops if their count isn't HINT_THREADED_PARTS
+        self.assertIn('split -b 25000000 -d -a 1 --additional-suffix=.wasm %s%s.wasm %s%s-part-' % (folder, base, folder, base),
+                      build)
+        self.assertIn('rm %s%s.wasm' % (folder, base), build, "only the parts are served")
+        self.assertIn('ls %s%s-part-*.wasm | wc -l) -eq %d ]' % (folder, base, stockfish.HINT_THREADED_PARTS), build)
+        self.assertEqual(stockfish.threadedParts()[0], 'stockfish/%s-part-0.wasm' % base)
+        self.assertEqual(len(stockfish.threadedParts()), stockfish.HINT_THREADED_PARTS)
+        self.assertLessEqual(stockfish.HINT_THREADED_PARTS, 10, "split -a 1 names ten parts at most")
+
+    def test_the_site_can_run_engine_threads(self):
+        import json
+        with open(os.path.join(support.ROOT, 'vercel.json'), encoding='utf-8') as f:
+            config = json.load(f)
+        headers = {h['key']: h['value'] for rule in config['headers'] if rule['source'] == '/(.*)' for h in rule['headers']}
+        self.assertEqual(headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+        # credentialless, not require-corp: the page still loads pygbag's runtime from its CDN, which sends no CORP
+        self.assertEqual(headers.get('Cross-Origin-Embedder-Policy'), 'credentialless')
+
+    def test_hint_threads(self):
+        self.assertEqual(stockfish.hintThreads(20), stockfish.HINT_MAX_THREADS)
+        self.assertEqual(stockfish.hintThreads(8), 8 - stockfish.SPARE_CORES)
+        self.assertEqual(stockfish.hintThreads(3), 1)
+        self.assertEqual(stockfish.hintThreads(None), 1)
+        self.assertEqual(stockfish.browserThreads(), 1, "desktop: no browser threads")
+
+    def test_the_hint_engine_runs_more_threads_than_the_computers(self):
+        from unittest import mock
+        script = os.path.join(self.folder.name, 'fakefish.py')
+
+        def started(cores):
+            """The (Threads, Hash) each engine is sent on a desktop with that many cores: (computer's, hint's)."""
+            computerLog = os.path.join(self.folder.name, 'computer-%d.txt' % cores)
+            hintLog = os.path.join(self.folder.name, 'hint-%d.txt' % cores)
+            computer = stockfish.Engine([sys.executable, script, computerLog])
+            hint = stockfish.Engine([sys.executable, script, hintLog], channel='hint', hint=True)
+
+            async def run():
+                return await computer.ready(10), await hint.ready(10)
+            try:
+                with mock.patch('os.cpu_count', return_value=cores):
+                    self.assertEqual(asyncio.run(run()), (True, True))
+            finally:
+                computer.close()
+                hint.close()
+
+            def options(log, engine):
+                with open(log) as f:
+                    sent = f.read().split('\n')
+                threads = [int(line.split()[-1]) for line in sent if line.startswith('setoption name Threads value')]
+                hashes = [int(line.split()[-1]) for line in sent if line.startswith('setoption name Hash value')]
+                self.assertEqual(threads, [engine.threads])
+                return threads[0], hashes[0]
+            return options(computerLog, computer), options(hintLog, hint)
+        self.assertEqual(started(16), ((4, stockfish.HASH_MB), (stockfish.HINT_MAX_THREADS, stockfish.HINT_HASH_MB)))
+        self.assertEqual(started(8), ((4, stockfish.HASH_MB), (6, stockfish.HINT_HASH_MB)))
+        self.assertEqual(started(2), ((1, stockfish.HASH_MB), (1, stockfish.HASH_MB)), "one thread: the usual hash")
+
     def test_finding_the_executable(self):
         saved = os.environ.get('STOCKFISH_PATH')
         try:
