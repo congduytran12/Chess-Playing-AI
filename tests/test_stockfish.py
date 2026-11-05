@@ -303,6 +303,9 @@ class StockfishTest(unittest.TestCase):
         self.assertEqual(headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
         # credentialless, not require-corp: the page still loads pygbag's runtime from its CDN, which sends no CORP
         self.assertEqual(headers.get('Cross-Origin-Embedder-Policy'), 'credentialless')
+        # Vercel bundles the project's files into the account function, the built site too: its engines (over 230 MB)
+        # would take the function past Vercel's 225 MB limit
+        self.assertEqual(config['functions']['api/account.py'].get('excludeFiles'), 'game/build/**')
 
     def test_hint_threads(self):
         self.assertEqual(stockfish.hintThreads(20), stockfish.HINT_MAX_THREADS)

@@ -6,7 +6,8 @@
   "functions": {
     "api/account.py": {
       "maxDuration": 15,
-      "includeFiles": "game/engine.py"
+      "includeFiles": "game/engine.py",
+      "excludeFiles": "game/build/**"
     }
   },
   "headers": [
