@@ -1128,6 +1128,7 @@ async def main():
     accountRequests = []  # running requests: (task, onDone, onError, shownInWindow)
     gameSaved = False  # the finished game was sent to the account
     savedGameId = None  # its id there, so finishing again after an undo updates it
+    savingGame = None  # (the GameState, the task) of the last save sent, so a re-save of that game waits for its id
     gameLoaded = False  # loaded from a file or the account, so not saved again
     ratingReported = False
     asyncio.ensure_future(account.restore())  # stays signed in from last time
@@ -2367,7 +2368,7 @@ async def main():
 
     # a finished game goes to the account; an online game's result is also reported for ratings
     def saveFinishedGame():
-        nonlocal ratingReported
+        nonlocal ratingReported, savingGame
         text, result = buildPgnText()
         mode = ['ai', 'local', 'online'][currentModeIndex]
         color = None if mode == 'local' else myColor()
@@ -2376,12 +2377,27 @@ async def main():
                 'opponent': playerName('b' if color == 'w' else 'w', True) if color else ""}
         if savedGameId is not None:
             game['id'] = savedGameId
+        board = gs  # the game being saved: a new one (resetGame) is a new GameState
+        earlier = savingGame[1] if savingGame is not None and savingGame[0] is board else None
+
+        async def save():
+            # finished again (after an undo) while this game's first save was on its way: wait for that one's id,
+            # so this save updates the game instead of adding it twice
+            if earlier is not None and 'id' not in game:
+                try:
+                    game['id'] = await earlier
+                except Exception:  # that save failed: this one adds the game
+                    pass
+            return await account.saveGame(game)
+        task = asyncio.ensure_future(save())
+        savingGame = (board, task)
 
         def saved(gameId):
             nonlocal savedGameId
-            savedGameId = gameId
+            if gs is board:  # not when a new game started meanwhile: its save would update this one
+                savedGameId = gameId
             showStatus("Game saved to your account")
-        startRequest(account.saveGame(game), onDone=saved, inWindow=False,
+        startRequest(task, onDone=saved, inWindow=False,
                      onError=lambda message: showStatus("Couldn't save the game: " + message))
 
         # a game with a hint in it isn't rated (the opponent can't tell that we used one), so it's not reported

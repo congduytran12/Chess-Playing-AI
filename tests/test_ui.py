@@ -162,6 +162,52 @@ class GameLoopTest(unittest.TestCase):
         self.assertLess(max(seen['after resigning']), 100, "the result card should cover the board")
         self.assertEqual(seen['after r'], light)
 
+    def test_each_game_is_saved_once_however_the_saves_answer(self):
+        main = self.main
+        saves = []
+        delays = [1.5, 1.5, 6.0, 0.1, 0.1]  # seconds before each save answers
+        _, yes, _ = main.promptRects()
+
+        async def saveGame(game):  # like the API: an update keeps the game's id, a new game gets the next one
+            saves.append(dict(game))
+            gameId = game.get('id', len(saves))
+            await asyncio.sleep(delays[len(saves) - 1])
+            return gameId
+
+        async def finish():  # 1.e4, the computer's reply, and resigning
+            await self.move((6, 4), (4, 4), 2.5)
+            await self.click(main.panelLayout(0, False)['resign'].center)
+            await self.click(yes.center, 0.5)
+
+        async def undo(wait=0.5):
+            await self.click(main.panelLayout(0, False, reviewing=True)['undo'].center, wait)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            for _ in range(2):  # a new game while the last one's save hasn't answered
+                await finish()
+                card = main.resultCardLayout("Black wins by resignation", ['new', 'switch'])[2]
+                await self.click(card['new'].center, 2.0)
+            await finish()  # saves[2]: answers after 6 s
+            await undo(0.3)
+            await finish()  # saves[3], while saves[2] is still on its way
+            await asyncio.sleep(7.0)
+            await undo()
+            await finish()  # saves[4], after both have answered
+            await asyncio.sleep(0.5)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        account, restore = self.fakeAccount(saveGame=saveGame)
+        account.profile = {'id': 'ME', 'username': 'Me', 'rating': 1200, 'rated_games': 0}
+        try:
+            self.runGame(script)
+        finally:
+            restore()
+        self.assertEqual([save.get('id') for save in saves], [None, None, None, 3, 3],
+                         "a new game is added even when the last save answers late; finishing again updates the "
+                         "game, also while its first save is on its way")
+
     def test_settings_change_the_board_and_are_remembered(self):
         main = self.main
         seen = {}
