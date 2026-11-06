@@ -27,7 +27,8 @@ def coach():
         response = requests.post(url, headers={"Authorization": "Bearer " + key}, json={
             "model": model,
             "temperature": 0.2,
-            "max_tokens": 180,
+            "max_completion_tokens": 180,
+            "reasoning_effort": "low",
             "messages": [
                 {"role": "system", "content": "You explain chess analysis accurately and briefly."},
                 {"role": "user", "content": prompt},
@@ -39,7 +40,13 @@ def coach():
         return jsonify(error="The coaching service returned an error"), 502
     try:
         data = response.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        content = data["choices"][0]["message"].get("content")
+        if isinstance(content, list):
+            text = "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
+        else:
+            text = (content or "").strip()
+        if not text:
+            raise ValueError("empty response")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         return jsonify(error="The coaching service returned an invalid response"), 502
     return jsonify(text=text)

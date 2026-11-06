@@ -79,7 +79,8 @@ def _request_groq(prompt):
     body = json.dumps({
         "model": model,
         "temperature": 0.2,
-        "max_tokens": 180,
+        "max_completion_tokens": 180,
+        "reasoning_effort": "low",
         "messages": [
             {"role": "system", "content": "You explain chess analysis accurately and briefly."},
             {"role": "user", "content": prompt},
