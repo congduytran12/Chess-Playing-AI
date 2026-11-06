@@ -339,6 +339,39 @@ EXACT = {
     "Opens this window. Esc closes it. Rest the pointer on a button to see what it does, or why it's grayed out.":
         "Mở cửa sổ này. Esc để đóng. Đặt con trỏ lên một nút để biết nó làm gì, hoặc vì sao nó bị mờ.",
     "Your move · Chess Playing AI": "Đến lượt bạn · Chess Playing AI",
+    # your mistakes (the player's own mistakes as puzzles) and Premium
+    "Your mistakes": "Nước sai của bạn", "Practice": "Luyện tập",
+    "Turn your mistakes in this game into puzzles": "Biến các nước sai trong ván này thành câu đố",
+    "No mistakes (? or ??) to practise": "Không có nước sai (? hoặc ??) để luyện",
+    "No mistakes to practise": "Không có nước sai nào để luyện",
+    "That's the move you played in the game. Try again": "Đó là nước bạn đã đi trong ván. Thử lại nhé",
+    "Checking your move...": "Đang kiểm tra nước đi của bạn...",
+    "Hint: this piece moves. Hint again shows the move": "Gợi ý: quân này sẽ đi. Nhấn Gợi ý lần nữa để xem nước đi",
+    "Good move!": "Nước đi hay!", "Done for now": "Tạm xong",
+    "The next mistake comes back in a minute.": "Nước sai tiếp theo sẽ quay lại sau một phút.",
+    "The next mistake comes back in an hour.": "Nước sai tiếp theo sẽ quay lại sau một giờ.",
+    "Loading your mistakes...": "Đang tải các nước sai của bạn...",
+    "Couldn't load your mistakes": "Không tải được các nước sai của bạn",
+    "That's all of this game's mistakes": "Đã hết các nước sai của ván này",
+    "Looking for the mistakes to practise...": "Đang tìm các nước sai để luyện...",
+    "After a game press Analyze game, then Practice: your mistakes become puzzles. Sign in to keep them for later.":
+        "Sau một ván, nhấn Phân tích ván rồi Luyện tập: các nước sai của bạn thành câu đố. Đăng nhập để giữ chúng cho "
+        "lần sau.",
+    "Mistakes you missed come back in a few minutes, those you solved in a few days.":
+        "Nước sai bạn chưa giải được sẽ quay lại sau vài phút, nước đã giải được thì sau vài ngày.",
+    "Analyze your games: their mistakes (? and ??) come back here as puzzles until you solve each twice.":
+        "Hãy phân tích các ván của bạn: các nước sai (? và ??) sẽ quay lại đây thành câu đố cho đến khi bạn giải được "
+        "mỗi câu hai lần.",
+    "Restart goes through your last game's mistakes again. Premium brings back those of all your games until you solve each twice.":
+        "Chơi lại để luyện lại các nước sai của ván gần nhất. Premium đưa lại các nước sai của mọi ván cho đến khi bạn "
+        "giải được mỗi câu hai lần.",
+    "Analyze a game: its mistakes (? and ??) come back here as puzzles. Premium brings back those of all your games until you solve each twice.":
+        "Hãy phân tích một ván: các nước sai (? và ??) sẽ quay lại đây thành câu đố. Premium đưa lại các nước sai của "
+        "mọi ván cho đến khi bạn giải được mỗi câu hai lần.",
+    "After Analyze game, Practice turns your mistakes into puzzles: find a better move. Signed in, Your mistakes in the Mode list brings back your last game's, and with Premium every game's.":
+        "Sau Phân tích ván, Luyện tập biến các nước sai của bạn thành câu đố: hãy tìm nước đi tốt hơn. Khi đã đăng "
+        "nhập, Nước sai của bạn trong danh sách Chế độ đưa lại các nước sai của ván gần nhất, và với Premium là của "
+        "mọi ván.",
     # puzzles and the game's own messages
     "Opponent": "Đối thủ",
     "Saving isn't available here": "Không lưu được ở đây", "Save cancelled": "Đã hủy lưu",
@@ -381,4 +414,11 @@ TEMPLATES = {
     "Looking back: %s  -  tap the board to return": "Đang xem lại: {0}  -  chạm vào bàn cờ để quay lại",
     "Looking back: %s  -  click here or press End to return": "Đang xem lại: {0}  -  nhấp vào đây hoặc nhấn End để quay lại",
     "thinking%s": "đang nghĩ{0}", "Computer (%s)": "Máy ({0})", "Eval %s": "Đánh giá {0}", "   Eval %s": "   Đánh giá {0}",
+    # your mistakes and Premium
+    "Practice (%d)": "Luyện tập ({0})", "Find a better move for %s": "Tìm nước đi tốt hơn cho quân {0}",
+    "You played %s": "Bạn đã đi {0}", "Best: %s": "Nước tốt nhất: {0}", "%d more": "còn {0}",
+    "%d more with Premium": "thêm {0} với Premium", "Premium until %s": "Premium đến {0}",
+    "The next mistake comes back in %d minutes.": "Nước sai tiếp theo sẽ quay lại sau {0} phút.",
+    "The next mistake comes back in %d hours.": "Nước sai tiếp theo sẽ quay lại sau {0} giờ.",
+    "The next mistake comes back in %d days.": "Nước sai tiếp theo sẽ quay lại sau {0} ngày.",
 }

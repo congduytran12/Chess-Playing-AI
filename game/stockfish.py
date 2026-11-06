@@ -282,17 +282,17 @@ class Engine:
             await asyncio.sleep(POLL_SECONDS)
         return self.state == 'ready'
 
-    async def go(self, moves, seconds, elo=None, search_moves=None):
-        """Searches the position after moves (Move.getCode codes from the start position) for seconds, at most
-        elo strong (None: full strength). Returns (best move code or None, score in pawns for the side to move,
-        or None), or None when the engine isn't ready or fails."""
+    async def go(self, moves, seconds, elo=None, search_moves=None, start=None):
+        """Searches the position after moves (Move.getCode codes from the start position, or from the FEN start)
+        for seconds, at most elo strong (None: full strength). Returns (best move code or None, score in pawns for
+        the side to move, or None), or None when the engine isn't ready or fails."""
         if self.state != 'ready':
             return None
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
             try:
-                return await self._search(moves, seconds, elo, search_moves)
+                return await self._search(moves, seconds, elo, search_moves, start)
             except asyncio.CancelledError:
                 if self._searching:
                     self._send('stop')  # the next search first reads this one's bestmove (see _search)
@@ -307,7 +307,7 @@ class Engine:
                 self.close()
                 return None
 
-    async def _search(self, moves, seconds, elo, search_moves=None):
+    async def _search(self, moves, seconds, elo, search_moves=None, start=None):
         # a search cancelled earlier may still be answering: its bestmove comes first (an engine answers isready
         # even while it searches, so readyok alone doesn't mean it is done)
         if self._searching:
@@ -323,7 +323,8 @@ class Engine:
                 self._send('setoption name UCI_LimitStrength value true')
                 self._send('setoption name UCI_Elo value %d' % elo)
             self._elo = elo
-        self._send('position startpos' + (' moves ' + ' '.join(moves) if moves else ''))
+        self._send(('position fen ' + start if start else 'position startpos')
+                   + (' moves ' + ' '.join(moves) if moves else ''))
         go = 'go movetime %d' % max(1, round(seconds * 1000))
         if search_moves:  # last: Stockfish reads every word after searchmoves as a move, movetime too
             go += ' searchmoves ' + ' '.join(search_moves)
@@ -532,7 +533,7 @@ async def findBestMove(gs, validMoves, level=None, history=()):
     repeating = repeatingMoves(validMoves, candidates)
     name, seconds = chessAi.LEVELS[level][:2]
     if len(validMoves) > 1 and not gs.playerWantsToPlayAsBlack and await engine.ready(READY_WAIT):
-        found = await engine.go(moveCodes(gs), seconds, LEVEL_ELO[level],
+        found = await engine.go(moveCodes(gs), seconds, LEVEL_ELO[level], start=gs.startFen,
                                 search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move in candidates:
@@ -553,7 +554,7 @@ async def searchPosition(gs, validMoves, seconds, history=()):
     """Like chessAi.searchPosition: (score for the side to move in pawns, best move, depth), searched by Stockfish
     at full strength when it is there (depth is then 0: Stockfish keeps it to itself)."""
     if validMoves and not gs.playerWantsToPlayAsBlack and await engine.ready(READY_WAIT):
-        found = await engine.go(moveCodes(gs), seconds)
+        found = await engine.go(moveCodes(gs), seconds, start=gs.startFen)
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move is not None and found[1] is not None:
             return found[1], move, 0
@@ -566,7 +567,7 @@ async def searchHintPosition(gs, validMoves, seconds, history=()):
     answers meanwhile."""
     if validMoves and await hintEngine.ready(0):
         candidates = nonRepetitionMoves(gs, validMoves, history)
-        found = await hintEngine.go(moveCodes(gs), seconds,
+        found = await hintEngine.go(moveCodes(gs), seconds, start=gs.startFen,
                                     search_moves=[move.getCode() for move in candidates])
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move is not None and found[1] is not None:
@@ -581,7 +582,7 @@ async def analyzePosition(gs, validMoves, seconds, history=()):
     """Like searchPosition, for the analysis after the game: searched by the hint engine (the full build), which it
     waits for while it loads, so one game's scores all come from the same engine."""
     if validMoves and not gs.playerWantsToPlayAsBlack and await hintEngine.ready(HINT_START_SECONDS):
-        found = await hintEngine.go(moveCodes(gs), seconds)
+        found = await hintEngine.go(moveCodes(gs), seconds, start=gs.startFen)
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move is not None and found[1] is not None:
             return found[1], move, 0
@@ -593,7 +594,7 @@ async def evaluate(gs, seconds):
     isn't ready or is busy (the caller then judges for itself)."""
     if engine.state != 'ready' or engine.busy or gs.playerWantsToPlayAsBlack:
         return None
-    found = await engine.go(moveCodes(gs), seconds)
+    found = await engine.go(moveCodes(gs), seconds, start=gs.startFen)
     return found[1] if found else None
 
 

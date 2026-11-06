@@ -34,6 +34,7 @@ import pgn
 import hints
 import i18n
 import puzzles
+import mistakes
 import settings
 import browser
 from textfield import TextField
@@ -110,7 +111,8 @@ ROW_GAP = 8
 STRIP_HEIGHT = 52
 TURN_BAR_WIDTH = 5  # the accent bar on the strip of the player to move
 STATUS_HEIGHT = 46  # the status message slot above the lower player strip
-CONTROL_WEIGHTS = {'menu': 0.45}  # share of a row's width, against 1 for other controls (the menu is an icon)
+# share of a row's width, against 1 for other controls (the menu is an icon; Practice shares a row with four arrows)
+CONTROL_WEIGHTS = {'menu': 0.45, 'practice': 3}
 INFO_HEIGHT = 54  # the review info box after the game
 
 # --- layouts: how the canvas is arranged. 'landscape' (desktop always, and a browser window wider than tall): the
@@ -253,8 +255,10 @@ def toBoard(pos):
 def onBoard(pos):
     return LAYOUT.board.collidepoint(pos)
 
-MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer", "Puzzles"]
+MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer", "Puzzles", "Your mistakes"]
 PUZZLE_MODE = 3  # the index of Puzzles in MODE_OPTIONS
+MISTAKES_MODE = 4  # Your mistakes: the player's own mistakes (mistakes.py) as puzzles
+PUZZLE_MODES = (PUZZLE_MODE, MISTAKES_MODE)  # the modes that play puzzles
 PUZZLE_REPLY_MS = 500  # the opponent's answer in a puzzle comes this long after the player's move
 PUZZLE_UNDO_MS = 900  # a wrong move stays on the board this long, and is taken back
 PUZZLE_SHOW_MS = 800  # the solution of a puzzle given up on is played out, a move this often
@@ -269,6 +273,8 @@ ANALYSIS_SECONDS = 0.8  # thinking time per position when analyzing a finished g
 # a move that loses at least this much (in pawns, against the best move) is marked in the move log
 MOVE_MARKS = [(3.0, "??"), (1.5, "?"), (0.8, "?!")]  # blunder, mistake, inaccuracy
 EVAL_CAP = 10  # evaluations are capped at +-10 pawns before comparing, so won positions don't flag everything
+# in one of the player's mistakes, a move other than the best that loses less than an inaccuracy against it solves it
+ALTERNATIVE_LOSS = MOVE_MARKS[-1][0]
 # the AI accepts a draw offer only when its evaluation is below this (it is losing)
 AI_DRAW_ACCEPT_SCORE = -1
 DRAW_EVAL_SECONDS = 0.3  # how long Stockfish looks at the position when the player offers a draw
@@ -670,7 +676,8 @@ async def pawnPromotionPopup(screen, color, row, col, flip=False):
 
 
 # names of the panel controls, row by row from the top; which controls exist depends on the mode
-# graph: after the game, once an analysis exists, its evaluation graph replaces the Analyze game button
+# graph: after the game, once an analysis exists, its evaluation graph replaces the Analyze game button, and Practice
+# (the player's mistakes as puzzles) joins the moves' arrows
 # guest: online in a room as the guest, who has no invite link to copy (only the host invites)
 # online in a room the hint shares the row of Copy link and Chat
 def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=False, guest=False):
@@ -678,7 +685,7 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
         rows = [['mode'], ['level', 'side'], ['clock', 'hint']]
     elif modeIndex == 1:  # Local 2-Player
         rows = [['mode'], ['clock', 'hint']]
-    elif modeIndex == PUZZLE_MODE:  # the puzzle's text, the hint, and skipping to the next one
+    elif modeIndex in PUZZLE_MODES:  # the puzzle's text, the hint, and skipping to the next one
         rows = [['mode'], ['puzzleInfo'], ['hint', 'skip']]
     elif not connected:  # Online, choosing a room
         rows = [['mode'], ['room', 'clock'], ['host', 'join']]
@@ -693,7 +700,7 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
         rows = [[name for name in row if name not in ('hint', 'invite')] for row in rows
                 if not set(row) & {'level', 'side', 'clock', 'roomInfo'}]
     if reviewing:  # after the game: analysis and stepping through the moves
-        rows += [['graph' if graph else 'analyze'], ['first', 'prev', 'next', 'last']]
+        rows += [['graph' if graph else 'analyze'], ['first', 'prev', 'next', 'last'] + (['practice'] if graph else [])]
     elif modeIndex in (0, 1) or (modeIndex == 2 and connected):  # online without a room: no game to resign yet
         rows.append(['resign', 'draw'])
     rows.append(['undo', 'restart', 'account', 'menu'])  # the menu holds the rarer actions (MENU_ITEMS)
@@ -1142,8 +1149,13 @@ async def main():
     outcome = None  # (text, PGN result) once the game is over, worked out every frame
     hintMove = None  # suggested move shown on the board
     # the puzzle being solved (mode Puzzles): {'data': Puzzle, 'seen': moves of the game already judged, 'wait':
-    # (ticks, 'reply' | 'undo') for what happens next, 'failed', 'hinted', 'done'}
+    # (ticks, 'reply' | 'undo' | 'show' | 'judge') for what happens next, 'failed', 'hinted', 'done'}; in mode Your
+    # mistakes data is a mistakes.Mistake, and 'judging' is the search judging a move other than the best ('judge')
     puzzle = None
+    # mode Your mistakes: the mistakes to practise, {'source': 'game' (Practice after an analysis) | 'account' | None
+    # (signed out: none kept), 'items': those still to come, 'seen': keys of those shown (an account's list leaves them
+    # out), 'loading', 'error', and from the account 'premium', 'locked' (only Premium brings them back), 'nextDue'}
+    mistakeSet = None
     hintState = None  # 'requested' -> 'searching' -> None
     puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
@@ -1264,13 +1276,17 @@ async def main():
             aiSearch = None
 
     # puzzle mode: the puzzle (the next one unless data is given) with the opponent's first move played and the
-    # player to move
+    # player to move; in mode Your mistakes the next of the player's mistakes (none, while there is none to practise)
     def startPuzzle(data=None):
         nonlocal gs, validMoves, positionHistory, playerWhiteHuman, playerBlackHuman, puzzle, puzzleNext
         nonlocal moveMade, animate, timeControl, clocks, clockHistory
         puzzleNext = None
-        data = data or puzzles.pick()
         timeControl = None
+        if currentModeIndex == MISTAKES_MODE:
+            data = data or nextMistake()
+            if data is None:
+                return  # the panel and the move list say why
+        data = data or puzzles.pick()
         if data is None:
             showStatus("No puzzles found")
             return
@@ -1281,16 +1297,102 @@ async def main():
         clockHistory = [dict(clocks)]
         playerWhiteHuman, playerBlackHuman = data.color == 'w', data.color == 'b'
         puzzle = {'data': data, 'seen': 1, 'wait': None, 'failed': False, 'hinted': False, 'done': False,
-                  'revealed': False, 'change': 0, 'hint': None}
+                  'revealed': False, 'change': 0, 'hint': None, 'judging': None}
+        if isinstance(data, mistakes.Mistake):  # the move played in the game, and the best one, as the panel says them
+            if mistakeSet is not None:
+                mistakeSet['seen'].add(data.key)
+            for key, code in (('playedSan', data.played), ('bestSan', data.moves[1])):
+                move = gs.findMoveByCode(code, validMoves)
+                puzzle[key] = gs.getSan(move, validMoves) if move is not None else code
         moveMade = animate = True  # the opponent's move slides into place
         playSound(moveSoundName(first))
 
-    # the next puzzle is the same one when the player starts it over
+    # the next of the player's mistakes to practise, or None. Once the set is used up, the account's mistakes follow
+    # Practice's (they come later: the first starts then); the account's are asked for once per set
+    def nextMistake():
+        if mistakeSet is not None and mistakeSet['items']:
+            return mistakeSet['items'].pop(0)
+        if mistakeSet is None or (mistakeSet['source'] == 'game' and account.signedIn):
+            loadMistakes()
+        return None
+
+    # asks the account for the mistakes to practise, leaving out those shown already (signed out none are kept)
+    def loadMistakes():
+        nonlocal mistakeSet
+        mistakeSet = {'source': 'account' if account.signedIn else None, 'items': [],
+                      'seen': mistakeSet['seen'] if mistakeSet is not None else set(), 'loading': account.signedIn,
+                      'error': None, 'premium': account.isPremium, 'locked': 0, 'nextDue': None}
+        if not account.signedIn:
+            return
+        current = mistakeSet
+
+        def loaded(data):
+            found = [mistakes.fromRow(row) for row in data.get('mistakes') or []]
+            locked = data.get('locked')
+            current.update(loading=False, premium=data.get('premium') is True, nextDue=data.get('next_due'),
+                           locked=locked if isinstance(locked, int) and locked > 0 else 0,
+                           items=[m for m in found if m is not None and m.key not in current['seen']])
+            if mistakeSet is current and currentModeIndex == MISTAKES_MODE and puzzle is None:
+                resetGame()  # the first one
+
+        def failed(message):
+            current.update(loading=False, error=message)
+
+        startRequest(account.listMistakes(), loaded, failed, inWindow=False)
+
+    # the player's mistakes in the analyzed game (both sides' in a game of two players here), worked out once
+    def gameMistakes():
+        if analysis is None or not analysis['done']:
+            return []
+        if analysis.get('mistakes') is None:
+            colors = 'wb' if currentModeIndex == 1 else myColor()
+            opponent = "" if currentModeIndex == 1 else playerName('b' if colors == 'w' else 'w', forPgn=True)
+            analysis['mistakes'] = mistakes.fromGame(gs.moveLog, analysis['best'], analysis['evals'],
+                                                     moveMarks(analysis, gs.moveLog), colors, opponent)
+        return analysis['mistakes']
+
+    # signed in, the account keeps the mistakes of a game played here once it is analyzed (once per analysis); the
+    # ids it gives them go on the mistakes, so practising them counts there too
+    def keepMistakes():
+        found = gameMistakes()
+        if not found:
+            return
+
+        def kept(rows):
+            ids = {(row['fen'], row['moves'], row['played']): row['id'] for row in rows}
+            for mistake in found:
+                mistake.id = ids.get(mistake.key, mistake.id)
+
+        startRequest(account.saveMistakes([mistake.payload() for mistake in found]), kept,
+                     lambda message: print("Main: the mistakes weren't kept -", message), inWindow=False)
+
+    # Practice, after the analysis: the player's mistakes in this game as puzzles, in mode Your mistakes
+    def practiseGame():
+        nonlocal mistakeSet
+        mistakeSet = {'source': 'game', 'items': list(gameMistakes()), 'seen': set(), 'loading': False,
+                      'error': None, 'premium': account.isPremium, 'locked': 0, 'nextDue': None}
+        switchMode(MISTAKES_MODE)
+
+    # the next puzzle is the same one when the player starts it over; in mode Your mistakes with none on the board,
+    # the account is asked again (missed mistakes come back soon)
     def restartPuzzle():
-        nonlocal puzzleNext
+        nonlocal puzzleNext, mistakeSet
         if puzzle is not None:
             puzzleNext = puzzle['data']
+        elif currentModeIndex == MISTAKES_MODE:
+            mistakeSet = None
         resetGame(startSound=False)
+
+    # a puzzle is over, solved or not: see puzzles.finish (returns the rating's change). One of the player's mistakes
+    # changes no rating; the account hears whether it was solved at the first try, with no hint
+    def finishPuzzle(solved):
+        data = puzzle['data']
+        if not isinstance(data, mistakes.Mistake):
+            return puzzles.finish(data, solved, hinted=puzzle['hinted'])
+        if data.id is not None and account.signedIn:
+            startRequest(account.mistakeResult(data.id, solved and not puzzle['hinted']), None,
+                         lambda message: print("Main: the practice wasn't saved -", message), inWindow=False)
+        return 0
 
     # the player's move was right (or mated): the opponent answers, or the puzzle is solved
     def puzzleCorrect(count):
@@ -1299,22 +1401,26 @@ async def main():
         if count >= len(data.moves) or gs.checkmate:
             puzzle['done'] = True
             if not puzzle['failed']:
-                puzzle['change'] = puzzles.finish(data, True, hinted=puzzle['hinted'])  # the panel says how it went
+                puzzle['change'] = finishPuzzle(True)  # the panel says how it went
             playSound('game-end')
         else:
             puzzle['wait'] = (p.time.get_ticks() + PUZZLE_REPLY_MS, 'reply')
 
-    # not the move: it stays a moment, then comes back; the first mistake lowers the rating
-    def puzzleWrong():
+    # not the move: it stays a moment, then comes back; the first mistake lowers the rating (message: what to say)
+    def puzzleWrong(message=None):
         puzzle['wait'] = (p.time.get_ticks() + PUZZLE_UNDO_MS, 'undo')
         if puzzle['failed']:
-            showStatus("Not that one. Try again", 2500)
+            showStatus(message or "Not that one. Try again", 2500)
         else:
             puzzle['failed'] = True
-            change = puzzle['change'] = puzzles.finish(puzzle['data'], False)
-            showStatus("Not that one. Rating %+d. Try again" % change, 3000)
+            change = puzzle['change'] = finishPuzzle(False)
+            if message is None:
+                message = ("Not that one. Try again" if isinstance(puzzle['data'], mistakes.Mistake)
+                           else "Not that one. Rating %+d. Try again" % change)
+            showStatus(message, 3000)
 
-    # the puzzle's moves are judged and answered once the move is on the board
+    # the puzzle's moves are judged and answered once the move is on the board. In one of the player's mistakes the
+    # move of the game is wrong at once, and another than the best is searched (judgeAlternative) while the board waits
     def puzzleStep():
         nonlocal hintMove, moveMade, animate
         now = p.time.get_ticks()
@@ -1325,8 +1431,24 @@ async def main():
             expected, code = data.moves[count - 1], gs.moveLog[-1].getCode()
             if (code[:4] == expected[:4] and (len(expected) < 5 or code[4:5] == expected[4:5])) or gs.checkmate:
                 puzzleCorrect(count)
+            elif isinstance(data, mistakes.Mistake) and code == data.played:
+                puzzleWrong("That's the move you played in the game. Try again")
+            elif isinstance(data, mistakes.Mistake):
+                puzzle['wait'] = (math.inf, 'judge')
+                puzzle['judging'] = asyncio.ensure_future(judgeAlternative(data, [m.getCode() for m in gs.moveLog]))
+                showStatus("Checking your move...", 60000)
             else:
                 puzzleWrong()
+        elif puzzle['wait'] is not None and puzzle['wait'][1] == 'judge':
+            task = puzzle['judging']
+            if task.done():
+                puzzle['wait'] = puzzle['judging'] = None
+                showStatus("", 0)
+                if not task.cancelled() and task.exception() is None and task.result():
+                    puzzle['alternative'] = True  # the panel names the best move too
+                    puzzleCorrect(len(gs.moveLog))
+                else:
+                    puzzleWrong()
         elif puzzle['wait'] is not None and now >= puzzle['wait'][0]:
             kind = puzzle['wait'][1]
             puzzle['wait'] = None
@@ -1342,6 +1464,15 @@ async def main():
                 takeBack(1)
                 puzzle['seen'] = len(gs.moveLog)
 
+    # the two lines of the puzzle's panel row (puzzleInfoLines, mistakeInfoLines); in mode Your mistakes with none on
+    # the board, why (mistakesStatusLines); None in puzzle mode with no puzzle
+    def puzzleLines():
+        if puzzle is None:
+            return mistakesStatusLines(mistakeSet) if currentModeIndex == MISTAKES_MODE else None
+        if isinstance(puzzle['data'], mistakes.Mistake):
+            return mistakeInfoLines(puzzle, len(mistakeSet['items']) if mistakeSet is not None else 0)
+        return puzzleInfoLines(puzzle, puzzles.current())
+
     # the hint shows the next move of the solution; a puzzle solved with a hint doesn't change the rating
     def puzzleHint():
         nonlocal hintMove
@@ -1355,8 +1486,11 @@ async def main():
             showStatus("Hint: the move is shown", 3000)
         else:
             puzzle['hint'] = (ply, (move.startRow, move.startCol))
-            showStatus("Hint: this piece moves. Hint again shows the move. Solving it with a hint doesn't change "
-                       "your rating", 5000)
+            if isinstance(puzzle['data'], mistakes.Mistake):  # no rating here
+                showStatus("Hint: this piece moves. Hint again shows the move", 5000)
+            else:
+                showStatus("Hint: this piece moves. Hint again shows the move. Solving it with a hint doesn't "
+                           "change your rating", 5000)
 
     # Skip gives the puzzle up: it counts as a miss unless it was failed already, and its solution is played out on the
     # board; the button then says Next puzzle, which is free
@@ -1366,11 +1500,15 @@ async def main():
         if puzzle['done']:
             resetGame(startSound=False)
             return
-        if puzzle['wait'] is not None and puzzle['wait'][1] == 'undo':
-            takeBack(1)  # a wrong move waiting to come back goes now
+        if puzzle['wait'] is not None and puzzle['wait'][1] in ('undo', 'judge'):
+            if puzzle['judging'] is not None:
+                puzzle['judging'].cancel()
+                puzzle['judging'] = None
+                showStatus("", 0)
+            takeBack(1)  # a wrong move waiting to come back (or a move being judged) goes now
             puzzle['seen'] = len(gs.moveLog)
         if not puzzle['failed']:
-            puzzle['change'] = puzzles.finish(puzzle['data'], False)
+            puzzle['change'] = finishPuzzle(False)
         puzzle['done'] = puzzle['revealed'] = True
         puzzle['wait'] = (p.time.get_ticks() + PUZZLE_SHOW_MS, 'show')
 
@@ -1384,6 +1522,9 @@ async def main():
         nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered, hintUsedOnline
         clearReview()
         clearAnnotations()
+        if puzzle is not None and puzzle['judging'] is not None:
+            puzzle['judging'].cancel()
+            showStatus("", 0)
         puzzle = None
         undoAsked = drawOffered = hintUsedOnline = False
         endSoundPlayed = False
@@ -1425,11 +1566,23 @@ async def main():
         clocks = {'w': startMs, 'b': startMs}
         clockHistory = [dict(clocks)]
         lastClockTick = p.time.get_ticks()
-        if currentModeIndex == PUZZLE_MODE:
+        if currentModeIndex in PUZZLE_MODES:
             startPuzzle(puzzleNext)
             return
         if startSound and not (currentModeIndex == 2 and not networkConnected):
             playSound('game-start')
+
+    # the Mode list, and Practice: another mode starts a new game, and online play leaves its room
+    def switchMode(index):
+        nonlocal currentModeIndex, multiplayerMode, inputBoxActive, roomCode, networkConnected, multiplayerRole
+        currentModeIndex = index
+        multiplayerMode = currentModeIndex == 2
+        inputBoxActive = False
+        net.running = False
+        roomCode = ""
+        networkConnected = False
+        multiplayerRole = None
+        resetGame(startSound=True)
 
     # the result card's buttons: against the computer the player can also switch sides
     def resultButtons():
@@ -1450,7 +1603,7 @@ async def main():
     # asks first when that would throw away a game in progress or leave an online room
     def askToRestart():
         nonlocal pendingPrompt
-        if currentModeIndex == PUZZLE_MODE:
+        if currentModeIndex in PUZZLE_MODES:
             restartPuzzle()
         elif multiplayerMode and networkConnected:
             pendingPrompt = {'kind': 'restart', 'text': "Leave this room?", 'yes': "Leave", 'no': "Stay",
@@ -1541,7 +1694,7 @@ async def main():
 
     # Undo button / z key outside online play
     def playerUndo():
-        if currentModeIndex == PUZZLE_MODE:
+        if currentModeIndex in PUZZLE_MODES:
             return
         if currentModeIndex == 0:
             # take back the AI's reply too, so it's the player's turn again
@@ -1738,14 +1891,17 @@ async def main():
     def myColor():
         if currentModeIndex == 2:
             return ourColor()
-        if currentModeIndex in (0, PUZZLE_MODE):
+        if currentModeIndex in (0,) + PUZZLE_MODES:
             return 'w' if playerWhiteHuman else 'b'
         return 'w' if gs.whiteToMove else 'b'  # local game: the side to move
 
     def playerName(color, forPgn=False):
-        if currentModeIndex == PUZZLE_MODE and puzzle is not None:
+        if currentModeIndex in PUZZLE_MODES and puzzle is not None:
+            mistake = isinstance(puzzle['data'], mistakes.Mistake)  # the game's opponent, and no ratings
             if (color == 'w') == playerWhiteHuman:
-                return "You (%d)" % puzzles.current()['rating']
+                return "You" if mistake else "You (%d)" % puzzles.current()['rating']
+            if mistake:
+                return puzzle['data'].opponent or "Opponent"
             return "Puzzle (%d)" % puzzle['data'].rating
         if currentModeIndex == 0:
             if (color == 'w') == playerWhiteHuman:
@@ -1770,7 +1926,7 @@ async def main():
     def controlStates():
         inProgress = not gameOver
         online = currentModeIndex == 2
-        if currentModeIndex == PUZZLE_MODE:
+        if currentModeIndex in PUZZLE_MODES:
             return {'hint': puzzle is not None and not puzzle['done'] and humanTurn, 'skip': puzzle is not None,
                     'undo': False, 'save': False, 'load': False, 'analyze': False, 'first': shownPly() > 0,
                     'prev': shownPly() > 0, 'next': shownPly() < len(gs.moveLog), 'last': shownPly() < len(gs.moveLog)}
@@ -1785,6 +1941,7 @@ async def main():
             'join': bool(roomCode),
             'chat': chatReady(p.time.get_ticks(), lastChatSent),
             'analyze': analysis is None and len(gs.moveLog) > 0,
+            'practice': bool(gameMistakes()),
             'first': shownPly() > 0,
             'prev': shownPly() > 0,
             'next': shownPly() < len(gs.moveLog),
@@ -1795,9 +1952,11 @@ async def main():
         return len(gs.moveLog) if reviewPly is None else reviewPly
 
     def reasonDisabled(name):
-        if currentModeIndex == PUZZLE_MODE:
+        if currentModeIndex in PUZZLE_MODES:
             if name in ('undo', 'save', 'load'):
                 return "Not in puzzles"
+            if name in ('hint', 'skip') and puzzle is None:
+                return "No mistakes to practise" if currentModeIndex == MISTAKES_MODE else "No puzzles found"
             if name == 'hint':
                 return "The puzzle is solved" if puzzle is not None and puzzle['done'] else "Wait for your turn"
         return disabledReason(name, gameOver=gameOver, online=currentModeIndex == 2, connected=networkConnected,
@@ -1874,7 +2033,7 @@ async def main():
                     return name, tooltipText(name), 'ibeam'
                 if states.get(name, True):
                     return name, tooltipText(name, multiplayerMode and networkConnected, account.signedIn,
-                                             currentModeIndex == PUZZLE_MODE), True
+                                             currentModeIndex in PUZZLE_MODES), True
                 return name, reasonDisabled(name), False
         if not onBoard(pos):  # the moves in the log show their position, during the game too
             if scrollbarPart(moveList, pos):
@@ -2592,11 +2751,11 @@ async def main():
             not gs.whiteToMove and playerBlackHuman)
         if multiplayerMode and networkConnected:
             humanTurn = gs.whiteToMove == (ourColor() == 'w')
-        if currentModeIndex == PUZZLE_MODE:  # not while the opponent's answer or a wrong move's undo is due
+        if currentModeIndex in PUZZLE_MODES:  # not while the opponent's answer, a wrong move's undo or a judging is due
             humanTurn = (puzzle is not None and not puzzle['done'] and puzzle['wait'] is None and humanTurn)
         # Black at the bottom for the online guest, and when playing Black against the AI
         flip_board = (multiplayerMode and networkConnected and ourColor() == 'b') or \
-            (currentModeIndex in (0, PUZZLE_MODE) and playerBlackHuman and not playerWhiteHuman)
+            (currentModeIndex in (0,) + PUZZLE_MODES and playerBlackHuman and not playerWhiteHuman)
         flip_board = flip_board != boardFlipped  # Flip board (F) turns it around from there
         canRejoin = currentModeIndex == 2 and not networkConnected and savedSession is not None
         guest = currentModeIndex == 2 and networkConnected and multiplayerRole == 'client'  # no Copy link
@@ -2781,16 +2940,9 @@ async def main():
                             clockIndex = chosen
                             resetGame(startSound=True)
                     elif name == 'mode' and chosen != currentModeIndex:
-                        currentModeIndex = chosen
-                        multiplayerMode = currentModeIndex == 2
-                        inputBoxActive = False
-                        # Reset multiplayer state on every mode change
-                        net.running = False
-                        roomCode = ""
-                        networkConnected = False
-                        multiplayerRole = None
-                        # Reset game on mode change
-                        resetGame(startSound=True)
+                        if chosen == MISTAKES_MODE:
+                            mistakeSet = None  # the account's mistakes (Practice brings the game's)
+                        switchMode(chosen)
                     continue
 
                 # an open menu takes the click too: run an item or close it
@@ -2888,7 +3040,7 @@ async def main():
                     askToRestart()
                 elif clicked == 'skip':
                     skipPuzzle()
-                elif clicked == 'hint' and currentModeIndex == PUZZLE_MODE:
+                elif clicked == 'hint' and currentModeIndex in PUZZLE_MODES:
                     puzzleHint()
                 elif clicked == 'hint':
                     hintState = 'requested'
@@ -2945,8 +3097,12 @@ async def main():
                     await asyncio.sleep(0)  # yield so poll task can start
 
                 elif clicked == 'analyze':
-                    analysis = {'evals': [], 'best': [], 'bestSan': [], 'done': False, 'task': None}
+                    # 'mistakes': the player's, as puzzles (gameMistakes), 'kept': sent to the account
+                    analysis = {'evals': [], 'best': [], 'bestSan': [], 'done': False, 'task': None,
+                                'mistakes': None, 'kept': False}
                     analysis['task'] = asyncio.ensure_future(analyzeGame(analysis))
+                elif clicked == 'practice':
+                    practiseGame()
                 elif clicked == 'graph':  # shows the position at that point; dragging keeps following
                     graphHeld = e.button == 1
                     reviewTo(graphPly(layout['graph'], len(gs.moveLog), location[0]))
@@ -3188,7 +3344,7 @@ async def main():
                 unrated = multiplayerMode and networkConnected and account.signedIn  # it would have been rated
                 if multiplayerMode and networkConnected:
                     hintUsedOnline = True
-                if account.isAdmin:
+                if account.isPremium:  # unlimited: the day's count is left alone
                     showStatus("Hint: %s" % san + (" - this game won't be rated" if unrated else ""), 4000)
                 else:
                     hints.use()
@@ -3205,9 +3361,9 @@ async def main():
             animate = False
             moveUndone = False
 
-        if currentModeIndex == PUZZLE_MODE and puzzle is not None:
+        if currentModeIndex in PUZZLE_MODES and puzzle is not None:
             puzzleStep()
-        outcome = None if currentModeIndex == PUZZLE_MODE else getOutcome(gs, positionHistory, gameResult)
+        outcome = None if currentModeIndex in PUZZLE_MODES else getOutcome(gs, positionHistory, gameResult)
         gameOver = outcome is not None
         if GAME_VIEW is not None:
             GAME_VIEW.update(moves=[move.getCode() for move in gs.moveLog], whiteToMove=gs.whiteToMove,
@@ -3216,7 +3372,7 @@ async def main():
                              version=onlineVersion, color=ourColor() if multiplayerMode and networkConnected else None,
                              prompt=pendingPrompt['kind'] if pendingPrompt else None,
                              status=statusText if p.time.get_ticks() < statusUntil else "", frames=p.time.get_ticks(),
-                             puzzle=puzzleInfoLines(puzzle, puzzles.current()) if puzzle is not None else None,
+                             puzzle=puzzleLines(),
                              hintMove=hintMove.getCode() if hintMove is not None else None,
                              hintPiece=puzzle['hint'][1] if puzzle is not None and puzzle['hint'] else None)
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
@@ -3261,6 +3417,11 @@ async def main():
                 and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True
             saveFinishedGame()
+        # and once its analysis is done, the player's mistakes in it (to practise as puzzles later)
+        if (gameOver and analysis is not None and analysis['done'] and not analysis['kept'] and account.signedIn
+                and not gameLoaded and (currentModeIndex != 2 or liveGameId == onlineGameId)):
+            analysis['kept'] = True
+            keepMistakes()
 
         # arrows: the hint, and after the game the better move instead of an analysed mistake
         marks = moveMarks(analysis, gs.moveLog) if analysis else {}
@@ -3317,9 +3478,10 @@ async def main():
         moveLogScroll = moveList['scroll']
         figurines = settingValue('figurines')
         drawMoveList(screen, moveList, gs.moveLog, highlighted, marks, thumbGrab is not None, figurines)
-        if not gs.moveLog and not gameOver:  # nothing to list yet: say how to begin
-            drawEmptyListNote(screen, areas['list'], emptyListNote(currentModeIndex, networkConnected, guest,
-                                                                    browser.touchScreen()))
+        if not gs.moveLog and not gameOver:  # nothing to list yet: say how to begin (or why no mistake is shown)
+            note = (mistakesNote(mistakeSet, account.signedIn) if currentModeIndex == MISTAKES_MODE
+                    else emptyListNote(currentModeIndex, networkConnected, guest, browser.touchScreen()))
+            drawEmptyListNote(screen, areas['list'], note)
         reviewScroll = False
         if gameOver:  # the shown position, its evaluation and the analysis, and the evaluation graph
             drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate, outcome[0],
@@ -3355,7 +3517,7 @@ async def main():
             'level': "AI: " + LEVEL_OPTIONS[chessAi.LEVEL],
             'side': "Play as: " + SIDE_OPTIONS[sideIndex],
             'clock': "Clock: " + CLOCK_OPTIONS[clockIndex][0],
-            'hint': hintLabel(hints.remaining(), account.isAdmin, gameOver),
+            'hint': hintLabel(hints.remaining(), account.isPremium, gameOver),
             'host': "Host (White)",
             'join': "Join (Black)",
             'menu': "",  # drawn as three lines
@@ -3369,7 +3531,8 @@ async def main():
             'first': "", 'prev': "", 'next': "", 'last': "",  # drawn as arrow icons
         }
         labels['analyze'] = "Analyze game"  # once the analysis starts its graph takes the button's place
-        if currentModeIndex == PUZZLE_MODE:
+        labels['practice'] = practiceLabel(len(gameMistakes()))
+        if currentModeIndex in PUZZLE_MODES:
             labels['hint'] = ("Show move" if puzzle is not None and puzzle['hint'] is not None
                               and puzzle['hint'][0] == len(gs.moveLog) and hintMove is None else "Hint")
             labels['skip'] = "Next puzzle" if puzzle is not None and puzzle['done'] else "Skip"
@@ -3389,8 +3552,9 @@ async def main():
             elif name == 'graph':
                 pass  # drawn with the review info above
             elif name == 'puzzleInfo':
-                if puzzle is not None:
-                    drawPuzzleInfo(screen, rect, puzzleInfoLines(puzzle, puzzles.current()))
+                lines = puzzleLines()
+                if lines is not None:
+                    drawPuzzleInfo(screen, rect, lines)
             elif name == 'roomInfo':
                 textObj = get_text_surface(f"Room: {roomCode}", scaled(20), UI['text'], True)
                 textLoc = rect.move(rect.width / 2 - textObj.get_width() / 2, 0)
@@ -4026,7 +4190,14 @@ def drawProfile(screen, box, account):
     if not profile:
         return
     rated = profile.get('rated_games', 0)
-    screen.blit(get_text_surface("Rating %d" % profile.get('rating', 0), 30, UI['text'], True), (x, y))
+    ratingObj = get_text_surface("Rating %d" % profile.get('rating', 0), 30, UI['text'], True)
+    screen.blit(ratingObj, (x, y))
+    if account.isPremium:  # and until when, on the rating's line at the right
+        until = account.premiumUntil
+        premiumObj = get_fitting_text("Premium until %s" % until if until else "Premium",
+                                      width - ratingObj.get_width() - 16, 18, UI['accent'], True)
+        screen.blit(premiumObj, (x + width - premiumObj.get_width(),
+                                 y + ratingObj.get_height() - premiumObj.get_height()))
     y += 36
     note = countGames(rated) + " rated online" if rated else "Play online games while signed in to get rated"
     screen.blit(get_fitting_text(note, width, 18, UI['textDim'], False), (x, y))
@@ -4269,6 +4440,9 @@ HELP_PAGES = [
         (None, "Your rating",
          "Puzzles get harder as your puzzle rating rises. The rating and your streak are kept on this device, "
          "and the puzzle's themes show once it is solved."),
+        (None, "Your mistakes",
+         "After Analyze game, Practice turns your mistakes into puzzles: find a better move. Signed in, Your "
+         "mistakes in the Mode list brings back your last game's, and with Premium every game's."),
     ]),
     ("Playing online", [
         (None, "Hosting a room",
@@ -4805,8 +4979,6 @@ def scrollForListDrag(startScroll, dy):
     return startScroll + round(dy / LAYOUT.moveRow)
 
 
-# what the move list says before the first move, as (heading, text): how to move, and what to do online
-# touch: a phone or tablet (tap, and no keyboard for the How to play key)
 # the two lines of the puzzle's panel row: what to do (or how it went, with the rating's change), and the ratings (or
 # what the puzzle was about, and the streak: parts, each translated by itself)
 def puzzleInfoLines(state, progress):
@@ -4826,6 +4998,104 @@ def puzzleInfoLines(state, progress):
             ["Puzzle %d  ·  You %d" % (data.rating, progress['rating'])])
 
 
+# the same for one of the player's mistakes (mode Your mistakes): what to do and the move played in the game, then how
+# it went and the best move; left: the mistakes still to come
+def mistakeInfoLines(state, left):
+    data = state['data']
+    more = ["%d more" % left] if left else []
+    if state.get('revealed'):
+        return "The solution", ["Best: %s" % state['bestSan']] + more
+    if state['done']:
+        if state['failed']:
+            first = "Solved after a mistake"
+        elif state['hinted']:
+            first = "Solved with a hint"
+        else:
+            first = "Good move!" if state.get('alternative') else "Solved!"
+        return first, ["Best: %s" % state['bestSan']] + more
+    return ("Find a better move for " + ("White" if data.color == 'w' else "Black"),
+            ["You played %s" % state['playedSan']] + more)
+
+
+# the panel row in mode Your mistakes while none is on the board (state: main's mistakeSet), as two lines like those
+def mistakesStatusLines(state):
+    if state is None or state['loading']:
+        return "Loading your mistakes...", []
+    if state['error']:
+        return "Couldn't load your mistakes", []
+    if state['source'] == 'game':  # signed out: nothing follows Practice's
+        return "That's all of this game's mistakes", []
+    locked = ["%d more with Premium" % state['locked']] if state['locked'] else []
+    return ("Done for now" if state['seen'] or state['nextDue'] else "No mistakes to practise"), locked
+
+
+# what the empty move list says in mode Your mistakes, as (heading, text) like emptyListNote: how mistakes get here,
+# when they come back, and what Premium adds (now: the time, for the tests)
+def mistakesNote(state, signedIn, now=None):
+    if state is not None and state['error']:
+        return "Your mistakes", state['error']
+    if state is None or state['loading']:
+        return "Your mistakes", "Looking for the mistakes to practise..."
+    if not signedIn:
+        return ("Your mistakes", "After a game press Analyze game, then Practice: your mistakes become puzzles. Sign "
+                "in to keep them for later.")
+    if state['premium']:
+        seconds = mistakes.secondsUntil(state['nextDue'], now) if state['nextDue'] else None
+        if seconds is not None:
+            return "Done for now", dueText(seconds)
+        if state['seen']:
+            return "Done for now", "Mistakes you missed come back in a few minutes, those you solved in a few days."
+        return ("Your mistakes", "Analyze your games: their mistakes (? and ??) come back here as puzzles until "
+                "you solve each twice.")
+    if state['seen']:
+        return ("Done for now", "Restart goes through your last game's mistakes again. Premium brings back those "
+                "of all your games until you solve each twice.")
+    return ("Your mistakes", "Analyze a game: its mistakes (? and ??) come back here as puzzles. Premium brings back "
+            "those of all your games until you solve each twice.")
+
+
+# when the next mistake is due, as a sentence: in minutes, hours up to two days, then days (rounded up)
+def dueText(seconds):
+    minutes = max(1, math.ceil(seconds / 60))
+    if minutes == 1:
+        return "The next mistake comes back in a minute."
+    if minutes < 60:
+        return "The next mistake comes back in %d minutes." % minutes
+    hours = math.ceil(minutes / 60)
+    if hours == 1:
+        return "The next mistake comes back in an hour."
+    if hours < 48:
+        return "The next mistake comes back in %d hours." % hours
+    return "The next mistake comes back in %d days." % math.ceil(hours / 24)
+
+
+# Practice's label: how many of the player's mistakes the analysis found
+def practiceLabel(count):
+    return "Practice (%d)" % count if count else "Practice"
+
+
+# whether a move other than the best is about as good in one of the player's mistakes: it loses less than an
+# inaccuracy against the best move's score (both for the player, in pawns)
+def alternativeSolves(best, score):
+    return capEval(best) - capEval(score) < ALTERNATIVE_LOSS
+
+
+# searches the position after a move the player tried in one of their mistakes (codes: the moves from its FEN), on a
+# board of its own (a search makes and takes back moves), as the analysis did; True when it solves it too
+async def judgeAlternative(mistake, codes):
+    board = GameState.fromFen(mistake.fen)
+    history = [board.getPositionKey()]
+    for code in codes:
+        board.makeMove(board.findMoveByCode(code, board.getValidMoves()))
+        history.append(board.getPositionKey())
+    moves = board.getValidMoves()
+    if moves:
+        score, _, _ = await stockfish.analyzePosition(board, moves, ANALYSIS_SECONDS, history=history)
+    else:  # stalemate (a mate is the best move already)
+        score = -chessAi.CHECKMATE if board.inCheck else chessAi.STALEMATE
+    return alternativeSolves(mistake.score, -score)
+
+
 def drawPuzzleInfo(screen, rect, lines):
     first = get_fitting_text(lines[0], rect.width, scaled(20), UI['text'], True)
     screen.blit(first, (rect.centerx - first.get_width() / 2, rect.y))
@@ -4834,6 +5104,8 @@ def drawPuzzleInfo(screen, rect, lines):
     screen.blit(second, (rect.centerx - second.get_width() / 2, rect.y + scaled(24)))
 
 
+# what the move list says before the first move, as (heading, text): how to move, and what to do online
+# touch: a phone or tablet (tap, and no keyboard for the How to play key)
 def emptyListNote(modeIndex, connected, guest=False, touch=False):
     moving = "Drag a piece, or %s it and then a square." % ("tap" if touch else "click")
     if modeIndex == 2 and not connected:
@@ -5388,6 +5660,7 @@ TOOLTIPS = {
     'resign': "Give up this game",
     'draw': "Offer your opponent a draw",
     'analyze': "Let the computer mark the mistakes",
+    'practice': "Turn your mistakes in this game into puzzles",
     'graph': "White is ahead above the line. Click or drag to see a move",
     'first': "First move", 'prev': "Previous move (Left)", 'next': "Next move (Right)", 'last': "Last move",
     'undo': "Undo (Z)",
@@ -5413,14 +5686,14 @@ def tooltipText(name, connected=False, signedIn=False, puzzle=False):
     return TOOLTIPS.get(name)
 
 
-# the Hint button's label: the hints left today, but not for an admin (no limit) or after the game (none to take)
+# the Hint button's label: the hints left today, but not for Premium (no limit) or after the game (none to take)
 def hintLabel(left, unlimited, gameOver):
     return "Hint" if unlimited or gameOver else "Hint (%d left)" % left
 
 
-# hints left today; an admin account (account.isAdmin) has no limit
+# hints left today; a Premium account (account.isPremium, admins too) has no limit
 def hintsLeft():
-    return math.inf if account.isAdmin else hints.remaining()
+    return math.inf if account.isPremium else hints.remaining()
 
 
 # why a panel control can't be clicked right now (None when it can, or no reason applies)
@@ -5460,6 +5733,8 @@ def disabledReason(name, gameOver=False, online=False, connected=False, humanTur
         if moves == 0:
             return "Make a move first"
         return "The game is already analyzed" if analysis == 'done' else "The analysis is running"
+    elif name == 'practice':
+        return "The analysis is running" if analysis == 'running' else "No mistakes (? or ??) to practise"
     elif name in ('first', 'prev') and atStart:
         return "This is the start of the game"
     elif name in ('next', 'last') and atEnd:

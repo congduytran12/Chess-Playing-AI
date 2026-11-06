@@ -35,6 +35,7 @@ class GameState():
         self.playerWantsToPlayAsBlack = False
         Move.is_playing_as_black = self.playerWantsToPlayAsBlack
         self.moveLog = []
+        self.startFen = None  # the FEN the game started from (fromFen); None: the usual starting position
         # keeping track of king positions to prevent from checks and also it makes castling easier
         if (self.playerWantsToPlayAsBlack):
             self.whiteKinglocation = (0, 4)
@@ -65,6 +66,7 @@ class GameState():
         move log starts empty, the move counters of the FEN are ignored."""
         parts = fen.split()
         gs = cls()
+        gs.startFen = fen
         gs.board = []
         for rank in parts[0].split('/'):
             row = []
@@ -91,6 +93,29 @@ class GameState():
                                if len(target) == 2 and target != '-' else ())
         gs.enpasantPossibleLog = [gs.enpasantPossible]
         return gs
+
+    def toFen(self):
+        """The position as a FEN string, as fromFen reads it (the move counters are always 0 1)."""
+        ranks = []
+        for row in self.board:
+            rank, empty = "", 0
+            for square in row:
+                if square == '--':
+                    empty += 1
+                    continue
+                if empty:
+                    rank += str(empty)
+                    empty = 0
+                letter = 'P' if square[1] == 'p' else square[1]
+                rank += letter if square[0] == 'w' else letter.lower()
+            ranks.append(rank + (str(empty) if empty else ""))
+        rights = (('K' if self.whiteCastleKingside else '') + ('Q' if self.whiteCastleQueenside else '')
+                  + ('k' if self.blackCastleKingside else '') + ('q' if self.blackCastleQueenside else '')) or '-'
+        target = '-'
+        if self.enpasantPossible:
+            row, col = self.enpasantPossible
+            target = Move.colsToFiles[col] + Move.rowsToRanks[row]
+        return "%s %s %s %s 0 1" % ("/".join(ranks), 'w' if self.whiteToMove else 'b', rights, target)
 
     def makeMove(self, move):
         self.board[move.startRow][move.startCol] = "--"

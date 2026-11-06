@@ -9,8 +9,10 @@
 
 import os
 import re
+import math
 import importlib.util
 import hashlib
+from datetime import datetime, timedelta, timezone
 import requests
 from flask import Flask, request, jsonify
 
@@ -34,6 +36,18 @@ MIN_RATED_PLIES = 4  # shorter online games don't change ratings
 MAX_CHECKED_PLIES = 600  # longer reports aren't replayed (a game is at most about this long)
 MOVE_PATTERN = re.compile(r'^[a-h][1-8][a-h][1-8][qrbn]?$')  # Move.getCode in the game
 ADMIN_USERNAMES = {'congduytran12'}  # lower case; their profiles say 'admin' (the game gives them unlimited hints)
+# Your mistakes (game/mistakes.py): a mistake solved MISTAKE_SOLVES times in a row is learned and doesn't come back;
+# one missed comes back after MISTAKE_AGAIN, one solved after MISTAKE_LATER. Premium practises every game's mistakes
+# that are due, without it the latest game's
+MISTAKE_SOLVES = 2
+MISTAKE_AGAIN = timedelta(minutes=10)
+MISTAKE_LATER = timedelta(days=3)
+MISTAKES_LISTED = 30  # the mistakes sent for one round of practice at most
+MAX_MISTAKES_SAVED = 30  # the mistakes of one game kept at most (game/mistakes.py MAX_PER_GAME)
+MAX_MISTAKES_READ = 1000  # a player's mistakes looked through for those to practise
+MISTAKE_SCORE_CAP = 10  # pawns; scores are kept within +-this (game/mistakes.py SCORE_CAP)
+FEN_PATTERN = re.compile(r'^[1-8pnbrqkPNBRQK]{1,8}(/[1-8pnbrqkPNBRQK]{1,8}){7} [wb] (-|K?Q?k?q?) (-|[a-h][36])'
+                         r'( \d{1,3} \d{1,4})?$')
 CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -105,12 +119,32 @@ def authUnavailable(res):
     return ApiError('The account service is busy, please try again', 503)
 
 
+def now():
+    return datetime.now(timezone.utc)
+
+
+# a timestamp from the database (ISO 8601, any number of digits after the second's point), or None
+def parseTime(value):
+    if not isinstance(value, str) or not value:
+        return None
+    value = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], value.replace('Z', '+00:00'))
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+# select=*: premium_until, which schema.sql adds to an older table, is read once it is there and left out until then
+# (an admin has Premium too)
 def getProfile(userId):
-    rows = rest('GET', 'profiles', params={'id': 'eq.' + userId, 'select': 'id,username,rating,rated_games'})
+    rows = rest('GET', 'profiles', params={'id': 'eq.' + userId, 'select': '*'})
     if not rows:
         raise ApiError('This account has no profile', 404)
-    profile = rows[0]
-    profile['admin'] = str(profile.get('username', '')).lower() in ADMIN_USERNAMES
+    profile = {key: rows[0].get(key) for key in ('id', 'username', 'rating', 'rated_games', 'premium_until')}
+    profile['admin'] = str(profile.get('username') or '').lower() in ADMIN_USERNAMES
+    until = parseTime(profile['premium_until'])
+    profile['premium'] = profile['admin'] or (until is not None and until > now())
     return profile
 
 
@@ -372,6 +406,112 @@ def leaderboard(data):
     return {'players': rows}
 
 
+def number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def legalMistake(fen, moves, played):
+    try:
+        game = engine.GameState.fromFen(fen)
+        squares = [square for row in game.board for square in row]
+        if (len(game.board) != 8 or any(len(row) != 8 for row in game.board) or squares.count('wK') != 1
+                or squares.count('bK') != 1):
+            return False
+        first = game.findMoveByCode(moves[0], game.getValidMoves())
+        if first is None:
+            return False
+        game.makeMove(first)
+        answers = game.getValidMoves()
+        return all(game.findMoveByCode(code, answers) is not None for code in (moves[1], played))
+    except Exception:  # a position the rules can't make sense of
+        return False
+
+
+# A mistake of the player's (game/mistakes.py Mistake.payload), checked with the game's rules: the position, the
+# opponent's move and the best answer to it, and the move played in the game instead, all legal. Returns the row kept
+def checkMistake(item):
+    if not isinstance(item, dict):
+        raise ApiError('Not a mistake')
+    fen = text(item, 'fen', 100)
+    moves = text(item, 'moves', 20).split()
+    played = text(item, 'played', 10)
+    score, loss, ply = item.get('score'), item.get('loss'), item.get('ply')
+    if (not FEN_PATTERN.match(fen) or len(moves) != 2 or played == moves[1]
+            or not all(MOVE_PATTERN.match(code) for code in moves + [played])
+            or not number(score) or not number(loss) or not isinstance(ply, int) or not 0 < ply <= MAX_CHECKED_PLIES):
+        raise ApiError('Not a mistake')
+    if engine is not None and not legalMistake(fen, moves, played):
+        raise ApiError('The moves are not legal')
+    return {'fen': fen, 'moves': ' '.join(moves), 'played': played,
+            'score': round(max(-MISTAKE_SCORE_CAP, min(MISTAKE_SCORE_CAP, score)), 2),
+            'loss': round(max(0, min(2 * MISTAKE_SCORE_CAP, loss)), 2),
+            'opponent': str(item.get('opponent') or '')[:60], 'ply': ply}
+
+
+# keeps the mistakes of an analyzed game; one kept before (the same position, moves and move played: made again)
+# starts over, due now. Returns them with their ids
+def saveMistakes(data):
+    userId = currentUser(data)
+    items = data.get('mistakes')
+    if not isinstance(items, list) or not items:
+        raise ApiError('Missing mistakes')
+    if len(items) > MAX_MISTAKES_SAVED:
+        raise ApiError('Too many mistakes at once')
+    found = now().isoformat()
+    rows = [dict(checkMistake(item), user_id=userId, solved=0, due_at=found, found_at=found) for item in items]
+    saved = rest('POST', 'mistakes', params={'on_conflict': 'user_id,fen,moves,played'}, json=rows,
+                 headers={'Prefer': 'resolution=merge-duplicates,return=representation'})
+    return {'mistakes': [{key: row[key] for key in ('id', 'fen', 'moves', 'played')} for row in saved or []]}
+
+
+# The mistakes to practise now: Premium's that are due, oldest due first, or without Premium those of the latest game
+# (still to be learned, due or not). 'total' counts every mistake still to be learned, 'locked' those only Premium
+# brings back, and 'next_due' says when Premium's next one is due when none is now
+def listMistakes(data):
+    userId = currentUser(data)
+    premium = getProfile(userId)['premium']
+    rows = rest('GET', 'mistakes', params={'user_id': 'eq.' + userId, 'order': 'found_at.desc,ply.asc',
+                                           'limit': str(MAX_MISTAKES_READ), 'select': 'id,solved,due_at,found_at'})
+    rows = rows or []
+    moment = now()
+    learning = [row for row in rows if row['solved'] < MISTAKE_SOLVES]
+    if premium:
+        due = [row for row in learning if (parseTime(row['due_at']) or moment) <= moment]
+        chosen = sorted(due, key=lambda row: parseTime(row['due_at']) or moment)[:MISTAKES_LISTED]
+    else:
+        chosen = [row for row in learning if row['found_at'] == rows[0]['found_at']][:MISTAKES_LISTED]
+    nextDue = None
+    if premium and not chosen:
+        nextDue = min((due for due in (parseTime(row['due_at']) for row in learning) if due is not None), default=None)
+    found = []
+    if chosen:
+        found = rest('GET', 'mistakes', params={
+            'user_id': 'eq.' + userId, 'id': 'in.(%s)' % ','.join(str(row['id']) for row in chosen),
+            'select': 'id,fen,moves,played,score,loss,opponent,ply,solved'}) or []
+        order = {row['id']: i for i, row in enumerate(chosen)}
+        found.sort(key=lambda row: order.get(row['id'], 0))
+    return {'mistakes': found, 'premium': premium, 'total': len(learning),
+            'locked': 0 if premium else len(learning) - len(chosen),
+            'next_due': nextDue.isoformat() if nextDue else None}
+
+
+# a round of practice of one mistake: solved (at the first try, with no hint) counts towards learning it, anything
+# else starts it over
+def mistakeResult(data):
+    userId = currentUser(data)
+    mistakeId = data.get('id')
+    if not isinstance(mistakeId, int) or isinstance(mistakeId, bool):
+        raise ApiError('Missing mistake id')
+    rows = rest('GET', 'mistakes', params={'id': 'eq.%d' % mistakeId, 'user_id': 'eq.' + userId, 'select': 'id,solved'})
+    if not rows:
+        raise ApiError('Mistake not found', 404)
+    solved = rows[0]['solved'] + 1 if data.get('solved') is True else 0
+    due = now() + (MISTAKE_LATER if solved else MISTAKE_AGAIN)
+    rest('PATCH', 'mistakes', params={'id': 'eq.%d' % mistakeId, 'user_id': 'eq.' + userId},
+         json={'solved': solved, 'due_at': due.isoformat()}, headers={'Prefer': 'return=minimal'})
+    return {'solved': solved, 'learned': solved >= MISTAKE_SOLVES, 'due_at': due.isoformat()}
+
+
 ACTIONS = {
     'register': register,
     'login': login,
@@ -384,6 +524,9 @@ ACTIONS = {
     'game': getGame,
     'report_online': reportOnline,
     'leaderboard': leaderboard,
+    'save_mistakes': saveMistakes,
+    'mistakes': listMistakes,
+    'mistake_result': mistakeResult,
 }
 
 

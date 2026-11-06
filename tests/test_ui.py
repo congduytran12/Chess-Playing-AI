@@ -6,6 +6,7 @@ import math
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import support
 
@@ -2050,13 +2051,16 @@ class GameLoopTest(unittest.TestCase):
         graphRows = main.panelRows(0, False, reviewing=True, graph=True)
         self.assertEqual(rows[3], ['analyze'])
         self.assertEqual(graphRows[3], ['graph'], "the graph takes the Analyze game row's place")
-        self.assertEqual(rows[:3] + rows[4:], graphRows[:3] + graphRows[4:])
+        self.assertEqual(graphRows[4], rows[4] + ['practice'], "and Practice joins the moves' arrows")
+        self.assertEqual(rows[:3] + rows[5:], graphRows[:3] + graphRows[5:])
         before, after = main.panelLayout(0, False, False, True), main.panelLayout(0, False, False, True, True)
         graph = after['graph']
         self.assertEqual((graph.height, graph.width), (main.GRAPH_HEIGHT, main.CONTROL_WIDTH))
         self.assertGreaterEqual(main.GRAPH_HEIGHT, 2 * main.ROW_HEIGHT)
-        for name in ('first', 'undo', 'menu'):
+        for name in ('undo', 'menu'):
             self.assertEqual(before[name], after[name], name)
+        self.assertEqual(before['first'].topleft, after['first'].topleft)
+        self.assertEqual(after['practice'].right, before['last'].right, "the arrows make room for it")
         self.assertEqual(before['mode'].y - after['mode'].y, main.GRAPH_HEIGHT - main.ROW_HEIGHT)
         self.assertEqual(graph.bottom + main.ROW_GAP, after['first'].y)
         self.assertTrue(main.tooltipText('graph'))
@@ -4748,6 +4752,284 @@ class GameLoopTest(unittest.TestCase):
         modeRect = self.main.panelLayout(0, False)['mode']
         await self.tap(modeRect.center)
         await self.tap(self.main.dropdownOptionRects(modeRect, len(self.main.MODE_OPTIONS))[1].center, 0.5)
+
+    # --- Premium, and your mistakes as puzzles
+
+    def test_premium_has_unlimited_hints_and_says_so_in_the_profile(self):
+        main = self.main
+        import hints
+        from account import account
+        profile = {'id': 'P', 'username': 'someone', 'rating': 1200, 'rated_games': 0, 'admin': False,
+                   'premium': True, 'premium_until': '2026-12-06T10:00:00+00:00'}
+        texts = []
+        realFitting = main.get_fitting_text
+
+        def recordFitting(text, *args, **kwargs):
+            texts.append(text)
+            return realFitting(text, *args, **kwargs)
+        main.get_fitting_text = recordFitting
+        saved = account.profile
+        try:
+            account.profile = profile
+            self.assertEqual((account.isPremium, account.isAdmin, main.hintsLeft()), (True, False, math.inf))
+            self.assertEqual(account.premiumUntil, '2026-12-06')
+            main.drawProfile(p.Surface(main.WINDOW_SIZE), main.accountLayout('profile')['box'], account)
+            self.assertIn("Premium until 2026-12-06", texts)
+            account.profile = dict(profile, premium=False, admin=True)
+            self.assertEqual((account.isPremium, account.premiumUntil), (True, None), "an admin's has no end")
+            account.profile = dict(profile, premium=False)
+            self.assertFalse(account.isPremium)
+            self.assertEqual(main.hintsLeft(), hints.remaining())
+            texts.clear()
+            main.drawProfile(p.Surface(main.WINDOW_SIZE), main.accountLayout('profile')['box'], account)
+            self.assertFalse([text for text in texts if text.startswith("Premium")])
+        finally:
+            account.profile = saved
+            main.get_fitting_text = realFitting
+
+    def test_the_mistake_panel_texts(self):
+        main = self.main
+        import mistakes
+        data = mistakes.Mistake(AFTER_F3, ['e7e5', 'e2e4'], 'g2g4', -0.1)
+        state = {'data': data, 'failed': False, 'hinted': False, 'done': False, 'revealed': False,
+                 'playedSan': "g4", 'bestSan': "e4"}
+        self.assertEqual(main.mistakeInfoLines(state, 2), ("Find a better move for White", ["You played g4", "2 more"]))
+        self.assertEqual(main.mistakeInfoLines(state, 0)[1], ["You played g4"])
+        state['done'] = True
+        self.assertEqual(main.mistakeInfoLines(state, 0), ("Solved!", ["Best: e4"]))
+        state['alternative'] = True
+        self.assertEqual(main.mistakeInfoLines(state, 1), ("Good move!", ["Best: e4", "1 more"]))
+        state['hinted'] = True
+        self.assertEqual(main.mistakeInfoLines(state, 0)[0], "Solved with a hint")
+        state['failed'] = True
+        self.assertEqual(main.mistakeInfoLines(state, 0)[0], "Solved after a mistake")
+        state['revealed'] = True
+        self.assertEqual(main.mistakeInfoLines(state, 0), ("The solution", ["Best: e4"]))
+
+        def mistakeSet(**changes):
+            state = {'source': 'account', 'items': [], 'seen': set(), 'loading': False, 'error': None,
+                     'premium': False, 'locked': 0, 'nextDue': None}
+            state.update(changes)
+            return state
+        lines = main.mistakesStatusLines
+        self.assertEqual(lines(None), ("Loading your mistakes...", []))
+        self.assertEqual(lines(mistakeSet(loading=True)), ("Loading your mistakes...", []))
+        self.assertEqual(lines(mistakeSet(error="Database error")), ("Couldn't load your mistakes", []))
+        self.assertEqual(lines(mistakeSet(source='game')), ("That's all of this game's mistakes", []))
+        self.assertEqual(lines(mistakeSet()), ("No mistakes to practise", []))
+        self.assertEqual(lines(mistakeSet(locked=4)), ("No mistakes to practise", ["4 more with Premium"]))
+        self.assertEqual(lines(mistakeSet(seen={'x'}, locked=4)), ("Done for now", ["4 more with Premium"]))
+        note = main.mistakesNote
+        now = datetime(2026, 11, 6, 9, tzinfo=timezone.utc)
+        self.assertEqual(note(mistakeSet(error="Database error"), True), ("Your mistakes", "Database error"))
+        self.assertIn("Sign in to keep them", note(mistakeSet(source=None), False)[1])
+        self.assertIn("Premium brings back", note(mistakeSet(), True)[1], "what Premium adds")
+        self.assertIn("Restart goes through", note(mistakeSet(seen={'x'}), True)[1])
+        self.assertNotIn("Premium", note(mistakeSet(premium=True), True)[1])
+        self.assertEqual(note(mistakeSet(premium=True, nextDue='2026-11-06T11:30:00+00:00'), True, now),
+                         ("Done for now", "The next mistake comes back in 3 hours."))
+        self.assertIn("in a few minutes", note(mistakeSet(premium=True, seen={'x'}), True)[1])
+        for seconds, text in ((30, "in a minute."), (600, "in 10 minutes."), (3590, "in an hour."),
+                              (7200, "in 2 hours."), (47 * 3600, "in 47 hours."), (3 * 86400, "in 3 days.")):
+            self.assertEqual(main.dueText(seconds), "The next mistake comes back " + text)
+        self.assertEqual((main.practiceLabel(0), main.practiceLabel(3)), ("Practice", "Practice (3)"))
+        self.assertTrue(main.alternativeSolves(-0.1, -0.8), "0.7 worse: still good")
+        self.assertFalse(main.alternativeSolves(-0.1, -1.0))
+        self.assertTrue(main.alternativeSolves(999.0, 12.0), "winning either way")
+        self.assertEqual(main.disabledReason('practice', analysis='running'), "The analysis is running")
+        self.assertEqual(main.disabledReason('practice', analysis='done'), "No mistakes (? or ??) to practise")
+        self.assertTrue(main.tooltipText('practice'))
+        self.assertEqual(main.MODE_OPTIONS[main.MISTAKES_MODE], "Your mistakes")
+        self.assertEqual(main.panelRows(main.MISTAKES_MODE, False), main.panelRows(main.PUZZLE_MODE, False))
+
+    def test_another_move_as_good_as_the_best_solves_a_mistake(self):
+        main = self.main
+        import mistakes
+        import stockfish
+        data = mistakes.Mistake(AFTER_F3, ['e7e5', 'e2e4'], 'g2g4', -0.1)
+        searched, scores = [], [0.6, 1.0]  # for Black, after White's move: 0.5 and 0.9 worse than the best
+
+        async def analyzePosition(gs, validMoves, seconds, history=()):
+            searched.append(([m.getCode() for m in gs.moveLog], gs.startFen, len(history), gs.whiteToMove))
+            return scores.pop(0), validMoves[0], 0
+        saved = stockfish.analyzePosition
+        stockfish.analyzePosition = analyzePosition
+        try:
+            self.assertTrue(asyncio.run(main.judgeAlternative(data, ['e7e5', 'd2d4'])))
+            self.assertFalse(asyncio.run(main.judgeAlternative(data, ['e7e5', 'd2d4'])))
+        finally:
+            stockfish.analyzePosition = saved
+        self.assertEqual(searched[0], (['e7e5', 'd2d4'], AFTER_F3, 3, False), "the position after it, from the FEN")
+
+    def fakeFoolsMateAnalysis(self, judgeScore=0.3):
+        """The analysis's search for 1. f3 e5 2. g4 Qh4# (2. g4 lets Black mate: a blunder; 2. e4 is best), and a move
+        tried in one of the player's mistakes (a game from a FEN) scoring judgeScore for the opponent. Returns (the
+        moves judged, restore)."""
+        import stockfish
+        plan = {0: (0.3, 'e2e4'), 1: (0.2, 'e7e5'), 2: (-0.1, 'e2e4'), 3: (999.0, 'd8h4')}
+        judged = []
+
+        async def analyzePosition(gs, validMoves, seconds, history=()):
+            await asyncio.sleep(0)
+            if gs.startFen is not None:
+                judged.append([m.getCode() for m in gs.moveLog])
+                return judgeScore, validMoves[0], 0
+            score, code = plan[len(gs.moveLog)]
+            return score, gs.findMoveByCode(code, validMoves), 0
+        saved = stockfish.analyzePosition
+        stockfish.analyzePosition = analyzePosition
+
+        def restore():
+            stockfish.analyzePosition = saved
+        return judged, restore
+
+    async def foolsMateAnalyzed(self):
+        """Two players here play Fool's mate, and Analyze game."""
+        main = self.main
+        await self.chooseTwoPlayers()
+        for start, end in (((6, 5), (5, 5)), ((1, 4), (3, 4)), ((6, 6), (4, 6)), ((0, 3), (4, 7))):
+            await self.move(start, end)
+        await asyncio.sleep(0.3)
+        await self.click(main.panelLayout(1, False, False, True)['analyze'].center, 1.0)
+
+    async def playCode(self, code, wait):
+        await self.move(self.puzzleCell(code[:2]), self.puzzleCell(code[2:4]), wait)
+
+    def test_practice_turns_the_games_mistakes_into_puzzles(self):
+        main = self.main
+        seen = {}
+        main.GAME_VIEW = view = {}
+        practice = main.panelLayout(1, False, False, True, True)['practice']
+        panel = main.panelLayout(main.MISTAKES_MODE, False)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.foolsMateAnalyzed()
+            await self.click(practice.center, 1.0)
+            seen['start'] = (list(view['moves']), view['puzzle'], main.MODE_OPTIONS.index("Your mistakes"))
+            await self.playCode('g2g4', 0.4)  # the move of the game: wrong at once
+            seen['played'] = [text for text in shown['status'] if text.startswith("That's the move")]
+            await asyncio.sleep(1.2)
+            seen['back'] = list(view['moves'])
+            await self.playCode('d2d4', 1.0)  # not the best, about as good: searched
+            seen['judged'] = (list(judged), view['puzzle'], "Checking your move..." in shown['status'])
+            await self.click(panel['restart'].center, 1.0)  # the same one again
+            await self.playCode('d2d4', 1.0)
+            seen['again'] = view['puzzle']
+            await self.click(panel['skip'].center, 1.0)  # Next puzzle: there is none
+            seen['end'] = (view['puzzle'], list(view['moves']))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        judged, restoreAnalysis = self.fakeFoolsMateAnalysis()
+        shown, restoreShown = self.recordShown()
+        try:
+            self.runGame(script)
+        finally:
+            restoreShown()
+            restoreAnalysis()
+            main.GAME_VIEW = None
+        moves, lines, _ = seen['start']
+        self.assertEqual(moves, ['e7e5'], "the position before the mistake, with the opponent's move")
+        self.assertEqual(lines, ("Find a better move for White", ["You played g4"]))
+        self.assertTrue(seen['played'])
+        self.assertEqual(seen['back'], ['e7e5'], "taken back")
+        self.assertEqual(seen['judged'][0], [['e7e5', 'd2d4']])
+        self.assertEqual(seen['judged'][1], ("Solved after a mistake", ["Best: e4"]))
+        self.assertTrue(seen['judged'][2])
+        self.assertEqual(seen['again'], ("Good move!", ["Best: e4"]))
+        self.assertEqual(seen['end'], (("That's all of this game's mistakes", []), []), "signed out: nothing follows")
+
+    def test_signed_in_mistakes_are_kept_and_practised_from_the_account(self):
+        main = self.main
+        seen = {}
+        calls = {'save': [], 'result': [], 'list': 0}
+        main.GAME_VIEW = view = {}
+        practice = main.panelLayout(1, False, False, True, True)['practice']
+        panel = main.panelLayout(main.MISTAKES_MODE, False)
+        laterRow = {'id': 42, 'fen': AFTER_E4, 'moves': 'e7e5 g1f3', 'played': 'd1h5', 'score': 0.2, 'loss': 2.0,
+                    'opponent': "Computer (Hard)", 'ply': 2, 'solved': 0}
+
+        async def saveGame(game):
+            return 7
+
+        async def saveMistakes(items):
+            calls['save'].append(items)
+            return [{'id': 41, 'fen': item['fen'], 'moves': item['moves'], 'played': item['played']} for item in items]
+
+        async def mistakeResult(mistakeId, solved):
+            calls['result'].append((mistakeId, solved))
+            return {}
+
+        async def listMistakes():
+            calls['list'] += 1
+            await asyncio.sleep(0.1)
+            if calls['list'] == 1:  # the one just practised comes too (its result may not be in yet): left out
+                kept = dict(laterRow, id=41, fen=AFTER_F3, moves='e7e5 e2e4', played='g2g4')
+                return {'mistakes': [kept, laterRow], 'premium': False, 'total': 4, 'locked': 2, 'next_due': None}
+            return {'mistakes': [], 'premium': True, 'total': 1, 'locked': 0,
+                    'next_due': (datetime.now(timezone.utc) + timedelta(hours=2, minutes=30)).isoformat()}
+
+        notes = []
+        realNote = main.drawEmptyListNote
+
+        def recordNote(screen, area, note):
+            notes.append(note)
+            return realNote(screen, area, note)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.foolsMateAnalyzed()
+            seen['saved'] = [dict(item) for item in calls['save'][0]] if calls['save'] else None
+            await self.click(practice.center, 1.0)
+            await self.playCode('e2e4', 1.0)  # the best move
+            seen['solved'] = (view['puzzle'], list(calls['result']))
+            await self.click(panel['skip'].center, 1.5)  # Next puzzle: the account's
+            seen['next'] = (calls['list'], list(view['moves']), view['puzzle'])
+            await self.click(panel['skip'].center, 0.3)  # Skip: a miss, the solution is shown
+            seen['skipped'] = list(calls['result'])
+            await asyncio.sleep(1.2)
+            await self.click(panel['skip'].center, 1.0)  # Next puzzle: none left
+            seen['done'] = view['puzzle']
+            modeRect = main.panelLayout(main.MISTAKES_MODE, False)['mode']  # another mode and back: asked again
+            for index in (main.PUZZLE_MODE, main.MISTAKES_MODE):
+                await self.click(modeRect.center)
+                await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[index].center, 1.0)
+            seen['later'] = (calls['list'], view['puzzle'], notes[-1] if notes else None)
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        account, restoreAccount = self.fakeAccount(saveGame=saveGame, saveMistakes=saveMistakes,
+                                                   mistakeResult=mistakeResult, listMistakes=listMistakes)
+        account.profile = {'id': 'ME', 'username': 'Me', 'rating': 1200, 'rated_games': 0}
+        judged, restoreAnalysis = self.fakeFoolsMateAnalysis()
+        main.drawEmptyListNote = recordNote
+        import puzzles
+        savedPick = puzzles.pick
+        puzzles.pick = lambda *args, **kwargs: None  # Puzzles on the way back shows none
+        try:
+            self.runGame(script)
+        finally:
+            puzzles.pick = savedPick
+            main.drawEmptyListNote = realNote
+            restoreAnalysis()
+            restoreAccount()
+            main.GAME_VIEW = None
+        self.assertEqual(seen['saved'], [{'fen': AFTER_F3, 'moves': 'e7e5 e2e4', 'played': 'g2g4', 'score': -0.1,
+                                          'loss': 9.9, 'opponent': "", 'ply': 2}], "kept once the analysis is done")
+        self.assertEqual(len(calls['save']), 1, "once")
+        self.assertEqual(seen['solved'], (("Solved!", ["Best: e4"]), [(41, True)]), "the account hears it")
+        self.assertEqual(seen['next'][0], 1)
+        self.assertEqual(seen['next'][1:], (['e7e5'], ("Find a better move for White", ["You played Qh5"])),
+                         "the account's next mistake, not the one just practised")
+        self.assertEqual(seen['skipped'], [(41, True), (42, False)], "a skipped one is a miss")
+        self.assertEqual(seen['done'], ("Done for now", ["2 more with Premium"]))
+        self.assertEqual(seen['later'][:2], (2, ("Done for now", [])))
+        self.assertEqual(seen['later'][2], ("Done for now", "The next mistake comes back in 3 hours."))
+
+
+AFTER_F3 = 'rnbqkbnr/pppppppp/8/8/8/5P2/PPPPP1PP/RNBQKBNR b KQkq - 0 1'
+AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1'
 
 
 if __name__ == '__main__':

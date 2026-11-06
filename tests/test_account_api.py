@@ -1,5 +1,6 @@
 # api/account.py against an in-memory stand-in for Supabase (no network)
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import support
 
@@ -19,6 +20,44 @@ class FakeSupabase:
         self.rpcAnswer = rpcAnswer
         self.authCalls = []  # (method, path, token, kwargs) of the auth requests for a reset link or a new password
         self.authStatus = 200  # the auth service's answer to them
+        self.profile = {'id': 'U1', 'username': 'Duy_T', 'rating': 1200, 'rated_games': 0}  # the profiles row
+        self.mistakes = []  # the mistakes table's rows
+        self.nextId = 1
+
+    def mistakesTable(self, method, params, json):
+        """The part of PostgREST the mistakes use: eq and in filters, order, limit, select, and an upsert."""
+        def matches(row):
+            for key, value in params.items():
+                operator, _, operand = value.partition('.')
+                if key in ('order', 'limit', 'select', 'on_conflict'):
+                    continue
+                if operator == 'eq' and str(row[key]) != operand:
+                    return False
+                if operator == 'in' and str(row[key]) not in operand.strip('()').split(','):
+                    return False
+            return True
+        if method == 'POST':  # merge-duplicates on (user_id, fen, moves, played)
+            saved = []
+            for new in json:
+                old = next((row for row in self.mistakes
+                            if all(row[key] == new[key] for key in ('user_id', 'fen', 'moves', 'played'))), None)
+                if old is None:
+                    old = {'id': self.nextId}
+                    self.nextId += 1
+                    self.mistakes.append(old)
+                old.update(new)
+                saved.append(dict(old))
+            return saved
+        rows = [row for row in self.mistakes if matches(row)]
+        if method == 'PATCH':
+            for row in rows:
+                row.update(json)
+            return None
+        for part in reversed(params.get('order', '').split(',') if params.get('order') else []):
+            key, direction = part.split('.')
+            rows.sort(key=lambda row: row[key], reverse=direction == 'desc')
+        rows = rows[:int(params['limit'])] if 'limit' in params else rows
+        return [{key: row[key] for key in params['select'].split(',')} for row in rows]
 
     def rest(self, method, path, params=None, json=None, headers=None):
         if path == 'online_reports' and method == 'POST':
@@ -38,7 +77,9 @@ class FakeSupabase:
         if path == 'profiles' and 'username' in params:
             return [{'id': 'U1'}] if params['username'].lower() == r'ilike.duy\_t' else []
         if path == 'profiles':
-            return [{'id': 'U1', 'username': 'Duy_T', 'rating': 1200, 'rated_games': 0}]
+            return [dict(self.profile)]
+        if path == 'mistakes':
+            return self.mistakesTable(method, params or {}, json)
         raise AssertionError((method, path))
 
     def supabase(self, method, path, token=None, **kwargs):
@@ -66,10 +107,13 @@ class Response:
 class AccountApiTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeSupabase()
-        self.patched = {name: getattr(api, name) for name in ('rest', 'supabase', 'currentUser')}
+        self.patched = {name: getattr(api, name) for name in ('rest', 'supabase', 'currentUser', 'now',
+                                                              'ADMIN_USERNAMES')}
         api.rest, api.supabase = self.fake.rest, self.fake.supabase
         self.user = 'W'
         api.currentUser = lambda data: self.user
+        self.clock = [datetime(2026, 11, 1, 12, tzinfo=timezone.utc)]
+        api.now = lambda: self.clock[0]
 
     def tearDown(self):
         for name, value in self.patched.items():
@@ -213,6 +257,118 @@ class AccountApiTest(unittest.TestCase):
         self.assertIs(api.ACTIONS['recover'], api.recover)
         self.assertIs(api.ACTIONS['set_password'], api.setPassword)
         self.assertEqual(api.GAMES_LISTED, 50)
+        self.assertIs(api.ACTIONS['save_mistakes'], api.saveMistakes)
+        self.assertIs(api.ACTIONS['mistakes'], api.listMistakes)
+        self.assertIs(api.ACTIONS['mistake_result'], api.mistakeResult)
+
+    # --- Premium
+
+    def test_premium_comes_from_the_profile(self):
+        self.assertIs(api.getProfile('U1')['premium'], False, "a table without the column yet")
+        self.fake.profile['premium_until'] = '2026-12-01T12:00:00+00:00'
+        profile = api.getProfile('U1')
+        self.assertEqual((profile['premium'], profile['premium_until']), (True, '2026-12-01T12:00:00+00:00'))
+        self.assertEqual(set(profile), {'id', 'username', 'rating', 'rated_games', 'premium_until', 'admin', 'premium'})
+        self.fake.profile['premium_until'] = '2026-11-01T11:59:59.5+00:00'
+        self.assertIs(api.getProfile('U1')['premium'], False, "it ended")
+        self.fake.profile['premium_until'] = None
+        api.ADMIN_USERNAMES = {'duy_t'}
+        self.assertIs(api.getProfile('U1')['premium'], True, "an admin has it too")
+
+    def test_times_from_the_database(self):
+        for text in ('2026-11-01T12:00:00+00:00', '2026-11-01T12:00:00Z', '2026-11-01T12:00:00.000+00:00',
+                     '2026-11-01T19:00:00+07:00'):
+            self.assertEqual(api.parseTime(text), self.clock[0], text)
+        self.assertEqual(api.parseTime('2026-11-01T12:00:00.1234567+00:00'),
+                         self.clock[0] + timedelta(microseconds=123456))
+        for value in (None, '', 'soon', 5):
+            self.assertIsNone(api.parseTime(value))
+
+    # --- your mistakes: kept from analyzed games, then practised as puzzles
+
+    def mistake(self, **changes):
+        """A mistake as the game sends it: after 1. f3 e5, 2. g4?? (2. e4 is best)."""
+        item = {'fen': AFTER_F3, 'moves': 'e7e5 e2e4', 'played': 'g2g4', 'score': 0.1, 'loss': 10.1,
+                'opponent': 'Computer (Hard)', 'ply': 2}
+        item.update(changes)
+        return item
+
+    def test_mistakes_are_checked_and_kept_once(self):
+        self.user = 'U1'
+        kept = api.saveMistakes({'mistakes': [self.mistake(), self.mistake(fen=AFTER_E4, moves='e7e5 g1f3',
+                                                                               played='d1h5', score=55)]})['mistakes']
+        self.assertEqual([(row['id'], row['played']) for row in kept], [(1, 'g2g4'), (2, 'd1h5')])
+        first, second = self.fake.mistakes
+        self.assertEqual((first['user_id'], first['solved'], first['opponent']), ('U1', 0, 'Computer (Hard)'))
+        self.assertEqual(second['score'], api.MISTAKE_SCORE_CAP, "a mate is kept as a won position")
+        self.assertEqual(first['due_at'], first['found_at'], "due at once")
+        first['solved'] = 1
+        self.clock[0] += timedelta(days=1)
+        again = api.saveMistakes({'mistakes': [self.mistake()]})['mistakes']
+        self.assertEqual((again[0]['id'], len(self.fake.mistakes)), (1, 2), "made again: kept once")
+        self.assertEqual((first['solved'], api.parseTime(first['found_at'])), (0, self.clock[0]), "and it starts over")
+
+    def test_what_isnt_a_mistake_is_refused(self):
+        self.user = 'U1'
+        for changes in ({'fen': 'nonsense'}, {'fen': '8/8/8/8/8/8/8/8 w - - 0 1'}, {'moves': 'e7e5'},
+                        {'moves': 'e7e5 e2e5'}, {'moves': 'e2e4 e7e5'}, {'played': 'e2e4'}, {'played': 'a1a8'},
+                        {'score': float('nan')}, {'score': True}, {'loss': '3'}, {'ply': 0}, {'ply': 'two'}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(api.ApiError):
+                    api.saveMistakes({'mistakes': [self.mistake(**changes)]})
+        for data in ({}, {'mistakes': []}, {'mistakes': 'all'}, {'mistakes': [self.mistake()] * 31}):
+            with self.assertRaises(api.ApiError):
+                api.saveMistakes(data)
+        self.assertEqual(self.fake.mistakes, [], "nothing kept")
+
+    def test_free_accounts_practise_the_latest_game_premium_every_due_one(self):
+        self.user = 'U1'
+        api.saveMistakes({'mistakes': [self.mistake()]})  # the first game
+        self.clock[0] += timedelta(days=1)
+        api.saveMistakes({'mistakes': [self.mistake(fen=AFTER_E4, moves='e7e5 g1f3', played='d1h5'),
+                                       self.mistake(fen=AFTER_E4, moves='e7e5 b1c3', played='f2f3')]})
+        free = api.listMistakes({})
+        self.assertEqual([row['played'] for row in free['mistakes']], ['d1h5', 'f2f3'], "the latest game's")
+        self.assertEqual((free['premium'], free['total'], free['locked'], free['next_due']), (False, 3, 1, None))
+        self.assertEqual(set(free['mistakes'][0]),
+                         {'id', 'fen', 'moves', 'played', 'score', 'loss', 'opponent', 'ply', 'solved'})
+        self.fake.profile['premium_until'] = '2027-01-01T00:00:00+00:00'
+        premium = api.listMistakes({})
+        self.assertEqual([row['played'] for row in premium['mistakes']], ['g2g4', 'd1h5', 'f2f3'],
+                         "every game's, the longest due first")
+        self.assertEqual((premium['premium'], premium['locked']), (True, 0))
+        for row in premium['mistakes']:
+            api.mistakeResult({'id': row['id'], 'solved': True})
+        later = api.listMistakes({})
+        self.assertEqual(later['mistakes'], [], "none is due")
+        self.assertEqual(api.parseTime(later['next_due']), self.clock[0] + api.MISTAKE_LATER, "and when one is")
+        self.clock[0] += api.MISTAKE_LATER
+        self.assertEqual(len(api.listMistakes({})['mistakes']), 3, "they come back")
+
+    def test_practice_until_a_mistake_is_learned(self):
+        self.user = 'U1'
+        mistakeId = api.saveMistakes({'mistakes': [self.mistake()]})['mistakes'][0]['id']
+        result = api.mistakeResult({'id': mistakeId, 'solved': True})
+        self.assertEqual((result['solved'], result['learned']), (1, False))
+        self.assertEqual(api.parseTime(result['due_at']), self.clock[0] + api.MISTAKE_LATER)
+        missed = api.mistakeResult({'id': mistakeId, 'solved': False})
+        self.assertEqual((missed['solved'], api.parseTime(missed['due_at'])), (0, self.clock[0] + api.MISTAKE_AGAIN),
+                         "a miss starts it over, soon")
+        api.mistakeResult({'id': mistakeId, 'solved': True})
+        self.assertTrue(api.mistakeResult({'id': mistakeId, 'solved': True})['learned'])
+        listed = api.listMistakes({})
+        self.assertEqual((listed['mistakes'], listed['total']), ([], 0), "a learned mistake doesn't come back")
+        self.user = 'U2'
+        with self.assertRaises(api.ApiError) as caught:
+            api.mistakeResult({'id': mistakeId, 'solved': True})
+        self.assertEqual(caught.exception.status, 404, "another player's")
+        for bad in ('1', True, None):
+            with self.assertRaises(api.ApiError):
+                api.mistakeResult({'id': bad, 'solved': True})
+
+
+AFTER_F3 = 'rnbqkbnr/pppppppp/8/8/8/5P2/PPPPP1PP/RNBQKBNR b KQkq - 0 1'
+AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1'
 
 
 if __name__ == '__main__':

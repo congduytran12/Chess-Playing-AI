@@ -10,6 +10,10 @@ create table if not exists public.profiles (
     rated_games integer not null default 0,
     created_at timestamptz not null default now()
 );
+-- Premium (unlimited hints, and the mistakes of every game come back as puzzles) until this time; null: never had it.
+-- Until payments are set up it is given by hand, e.g.
+--     update public.profiles set premium_until = now() + interval '30 days' where lower(username) = 'someone';
+alter table public.profiles add column if not exists premium_until timestamptz;
 -- usernames are unique regardless of case
 create unique index if not exists profiles_username_lower on public.profiles (lower(username));
 create index if not exists profiles_rating on public.profiles (rating desc) where rated_games > 0;
@@ -41,6 +45,26 @@ create table if not exists public.online_reports (
     unique (game_hash, reporter)
 );
 create index if not exists online_reports_hash on public.online_reports (game_hash);
+
+-- the player's mistakes from analyzed games, kept as puzzles (game/mistakes.py): the position before the opponent's
+-- move (fen), that move and the best answer (moves), and the move played in the game instead (played). solved counts
+-- the solves in a row (2: learned), due_at is when it comes back, found_at when a game last had it (see api/account.py)
+create table if not exists public.mistakes (
+    id bigint generated always as identity primary key,
+    user_id uuid not null references public.profiles (id) on delete cascade,
+    fen text not null,
+    moves text not null,
+    played text not null,
+    score real not null,
+    loss real not null,
+    opponent text,
+    ply integer,
+    solved integer not null default 0,
+    due_at timestamptz not null default now(),
+    found_at timestamptz not null default now(),
+    unique (user_id, fen, moves, played)
+);
+create index if not exists mistakes_user_found on public.mistakes (user_id, found_at desc);
 
 -- every new account gets a profile, with the username passed as sign-up metadata
 create or replace function public.handle_new_user() returns trigger
@@ -96,3 +120,4 @@ revoke execute on function public.apply_rated_game(text, uuid, uuid, numeric) fr
 alter table public.profiles enable row level security;
 alter table public.games enable row level security;
 alter table public.online_reports enable row level security;
+alter table public.mistakes enable row level security;

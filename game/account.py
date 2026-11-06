@@ -50,7 +50,7 @@ class Account:
     def __init__(self):
         self.token = None  # access token, valid for about an hour
         self.refreshToken = None
-        self.profile = None  # {'id', 'username', 'rating', 'rated_games'}
+        self.profile = None  # {'id', 'username', 'rating', 'rated_games', 'admin', 'premium', 'premium_until'}
         self.stats = {}  # 'ai0'..'ai4' / 'online' -> {'won', 'lost', 'drawn'}
         self._jsReady = False
         self._nextRequestId = 0
@@ -68,6 +68,18 @@ class Account:
     def isAdmin(self):
         """An admin account (the server says so in the profile): unlimited hints."""
         return bool(self.profile and self.profile.get('admin') is True)
+
+    @property
+    def isPremium(self):
+        """A Premium account (the server says so in the profile; an admin has it too): unlimited hints, and the
+        mistakes of every game come back as puzzles."""
+        return self.isAdmin or bool(self.profile and self.profile.get('premium') is True)
+
+    @property
+    def premiumUntil(self):
+        """The day Premium ends ('YYYY-MM-DD'), None when it has no end (an admin) or the account hasn't it."""
+        until = self.profile.get('premium_until') if self.isPremium and not self.isAdmin else None
+        return until[:10] if isinstance(until, str) and len(until) >= 10 else None
 
     # --- requests
 
@@ -226,6 +238,21 @@ class Account:
 
     async def leaderboard(self):
         return (await self._post({'action': 'leaderboard'}))['players']
+
+    # --- your mistakes (see mistakes.py)
+
+    async def saveMistakes(self, items):
+        """Keeps the mistakes of an analyzed game (Mistake.payload() each); returns them as kept: [{'id', 'fen',
+        'moves', 'played'}]."""
+        return (await self._authed('save_mistakes', mistakes=items))['mistakes']
+
+    async def listMistakes(self):
+        """The mistakes to practise now: {'mistakes': [rows], 'premium', 'total', 'locked', 'next_due'}."""
+        return await self._authed('mistakes')
+
+    async def mistakeResult(self, mistakeId, solved):
+        """A round of practice of a kept mistake: solved at the first try with no hint, or not."""
+        return await self._authed('mistake_result', id=mistakeId, solved=bool(solved))
 
     # --- remembered sign-in
 

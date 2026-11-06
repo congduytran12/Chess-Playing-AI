@@ -137,6 +137,26 @@ class StockfishTest(unittest.TestCase):
         self.assertTrue(any(command.startswith('go movetime %d ' % round(chessAi.LEVELS[0][1] * 1000))
                             for command in sent), "the level's time")
 
+    def test_a_game_from_a_fen_is_sent_from_its_fen(self):
+        # a puzzle or one of the player's mistakes starts from a FEN: the moves go after it, not after the start
+        fen = "rnbqkbnr/pppppppp/8/8/8/5P2/PPPPP1PP/RNBQKBNR b KQkq - 0 1"
+
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            gs = GameState.fromFen(fen)
+            gs.makeMove(gs.findMoveByCode('e7e5', gs.getValidMoves()))
+            await stockfish.analyzePosition(gs, gs.getValidMoves(), 0.05)
+            await stockfish.searchPosition(GameState(), GameState().getValidMoves(), 0.05)
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.engine  # the stand-in answers for the analysis too
+        try:
+            asyncio.run(run())
+        finally:
+            stockfish.hintEngine = saved
+        sent = self.commands()
+        self.assertIn('position fen %s moves e7e5' % fen, sent)
+        self.assertIn('position startpos', sent, "a game from the start goes as before")
+
     def test_a_repetition_draw_only_when_playing_on_loses(self):
         self.assertTrue(stockfish.takesTheDraw(-0.6))
         self.assertFalse(stockfish.takesTheDraw(-0.4))
