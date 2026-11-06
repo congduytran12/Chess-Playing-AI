@@ -28,6 +28,7 @@ import chessAi
 from engine import GameState, Move
 from chessAi import findRandomMoves
 import stockfish
+import llm
 import asyncio
 from network import net
 import pgn
@@ -1166,7 +1167,7 @@ async def main():
     reviewGs = None  # the position at reviewPly
     wasGameOver = False  # the game was over last frame (a game that just ended leaves any looking back)
     reviewScroll = False  # scroll the move log to the shown move on the next draw
-    analysis = None  # {'evals', 'best', 'bestSan', 'done', 'task'}, filled in while the analysis runs
+    analysis = None  # analysis plus optional {'coachTask', 'coach'} from llm.py
     moveList = moveListLayout(0, STRIP_HEIGHT, STRIP_HEIGHT + 100)  # the move list as last drawn (moveListLayout)
     # pressing on the move list: {'pos', 'scroll' (at the press), 'active'}; it scrolls the list once the pointer
     # moved DRAG_THRESHOLD px with the button held, else the release selects the move under the press
@@ -1215,6 +1216,8 @@ async def main():
         nonlocal reviewPly, reviewGs, analysis
         if analysis is not None and analysis['task'] is not None:
             analysis['task'].cancel()
+        if analysis is not None and analysis.get('coachTask') is not None:
+            analysis['coachTask'].cancel()
         reviewPly = None
         reviewGs = None
         analysis = None
@@ -3099,7 +3102,8 @@ async def main():
                 elif clicked == 'analyze':
                     # 'mistakes': the player's, as puzzles (gameMistakes), 'kept': sent to the account
                     analysis = {'evals': [], 'best': [], 'bestSan': [], 'done': False, 'task': None,
-                                'mistakes': None, 'kept': False}
+                                'mistakes': None, 'kept': False, 'coachTask': None, 'coach': None,
+                                'coachError': None}
                     analysis['task'] = asyncio.ensure_future(analyzeGame(analysis))
                 elif clicked == 'practice':
                     practiseGame()
@@ -3413,6 +3417,24 @@ async def main():
         # progress, so joining a room whose game already ended (or rejoining it) doesn't save it again
         if multiplayerMode and networkConnected and not gameOver:
             liveGameId = onlineGameId
+        # Coaching is optional and runs only after Stockfish has finished. The LLM receives analysis evidence,
+        # not authority to choose a move; failures are surfaced once without affecting the game.
+        if (gameOver and analysis is not None and analysis['done'] and analysis.get('coachTask') is None
+                and not gameLoaded):
+            marksForCoach = moveMarks(analysis, gs.moveLog)
+            analysis['coachTask'] = asyncio.ensure_future(llm.explain_game(
+                [move.getCode() for move in gs.moveLog], analysis['bestSan'], analysis['evals'],
+                marksForCoach, outcome[0] if outcome else ""))
+        if (analysis is not None and analysis.get('coachTask') is not None
+                and analysis['coachTask'].done() and analysis.get('coach') is None
+                and analysis.get('coachError') is None):
+            try:
+                analysis['coach'] = analysis['coachTask'].result()
+                if analysis['coach']:
+                    showStatus("Coach: " + analysis['coach'], 12000)
+            except llm.LLMError as error:
+                analysis['coachError'] = str(error)
+                showStatus("Coach unavailable: " + str(error), 5000)
         if (gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog
                 and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True

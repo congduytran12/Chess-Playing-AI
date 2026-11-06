@@ -8,6 +8,10 @@
       "maxDuration": 15,
       "includeFiles": "game/engine.py",
       "excludeFiles": "game/build/**"
+    },
+    "api/llm.py": {
+      "maxDuration": 25,
+      "excludeFiles": "game/build/**"
     }
   },
   "headers": [
@@ -30,6 +34,10 @@
     {
       "source": "/api/account",
       "destination": "/api/account.py"
+    },
+    {
+      "source": "/api/llm",
+      "destination": "/api/llm.py"
     }
   ]
 }

@@ -119,7 +119,9 @@ In chess, pawn promotion occurs when a pawn reaches the eighth rank. The pawn ca
 
 3. Optional, for Stockfish: download Stockfish from [stockfishchess.org](https://stockfishchess.org/download/) and either put the program in the repository's `engines/` folder, install it so `stockfish` is on your `PATH`, or set the `STOCKFISH_PATH` environment variable to it. Without it, the desktop game uses its built-in AI.
 
-4. Start the game from the repository root:
+4. Optional, for the free-tier LLM coach: create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey). For desktop, set `CHESS_LLM_API_KEY`. For browser coaching, set the Vercel environment variable `GEMINI_API_KEY` and redeploy. The default model is `gemini-2.5-flash-lite`; free-tier quotas apply. The browser uses `/api/llm`, so the key is never exposed in the game bundle. The LLM never selects or validates moves.
+
+5. Start the game from the repository root:
    ```bash
    cd ..
    python main.py
