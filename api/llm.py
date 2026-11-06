@@ -10,7 +10,7 @@ app = Flask(__name__)
 MAX_PROMPT_LENGTH = 24000
 
 
-@app.route("/", methods=["POST", "OPTIONS"])
+@app.route("/api/llm", methods=["POST", "OPTIONS"])
 def coach():
     if request.method == "OPTIONS":
         return "", 204
