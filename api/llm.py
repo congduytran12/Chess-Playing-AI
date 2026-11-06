@@ -10,6 +10,12 @@ app = Flask(__name__)
 MAX_PROMPT_LENGTH = 24000
 
 
+def _content_text(content):
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
+    return (content or "").strip() if isinstance(content, str) else ""
+
+
 @app.route("/api/llm", methods=["POST", "OPTIONS"])
 def coach():
     if request.method == "OPTIONS":
@@ -40,11 +46,7 @@ def coach():
         return jsonify(error="The coaching service returned an error"), 502
     try:
         data = response.json()
-        content = data["choices"][0]["message"].get("content")
-        if isinstance(content, list):
-            text = "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
-        else:
-            text = (content or "").strip()
+        text = _content_text(data["choices"][0]["message"].get("content"))
         if not text:
             raise ValueError("empty response")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):

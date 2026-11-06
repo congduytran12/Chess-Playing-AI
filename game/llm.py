@@ -45,6 +45,12 @@ class LLMError(Exception):
     """A user-actionable error returned by the optional coaching service."""
 
 
+def _content_text(content):
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
+    return (content or "").strip() if isinstance(content, str) else ""
+
+
 def enabled():
     return WASM or bool(os.environ.get("GROQ_API_KEY"))
 
@@ -101,7 +107,7 @@ def _request_groq(prompt):
     except (urllib.error.URLError, TimeoutError, ValueError) as error:
         raise LLMError("Groq request failed: %s" % error) from error
     try:
-        text = data["choices"][0]["message"]["content"].strip()
+        text = _content_text(data["choices"][0]["message"].get("content"))
     except (KeyError, IndexError, TypeError, AttributeError) as error:
         raise LLMError("Groq returned an invalid response") from error
     return text or None
@@ -127,14 +133,19 @@ async def _request_browser(prompt):
         if asyncio.get_running_loop().time() > deadline:
             raise LLMError("The coaching server didn't answer")
         await asyncio.sleep(0.05)
-    reply = json.loads(str(raw))
     try:
+        reply = json.loads(str(raw))
         data = json.loads(reply["body"]) if reply["body"] else {}
-    except ValueError as error:
+        status = int(reply["status"])
+    except (ValueError, TypeError, KeyError) as error:
         raise LLMError("The coaching server returned an invalid response") from error
-    if reply["status"] != 200:
-        raise LLMError(data.get("error") or "The coaching server returned an error")
-    return data.get("text") or None
+    if status != 200:
+        message = data.get("error") if isinstance(data, dict) else None
+        raise LLMError(message or "The coaching server returned an error")
+    text = data.get("text")
+    if not isinstance(text, str):
+        raise LLMError("The coaching server returned an invalid response")
+    return text.strip() or None
 
 
 async def explain_game(move_codes, best_san, evals, marks, result):

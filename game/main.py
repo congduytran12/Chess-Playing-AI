@@ -3422,6 +3422,7 @@ async def main():
         if (gameOver and analysis is not None and analysis['done'] and analysis.get('coachTask') is None
                 and not gameLoaded):
             marksForCoach = moveMarks(analysis, gs.moveLog)
+            showStatus("Coach is thinking...", 25000)
             analysis['coachTask'] = asyncio.ensure_future(llm.explain_game(
                 [move.getCode() for move in gs.moveLog], analysis['bestSan'], analysis['evals'],
                 marksForCoach, outcome[0] if outcome else ""))
