@@ -5,7 +5,7 @@ analysis that Stockfish has already produced. Configure Google's Gemini
 free-tier API with:
 
     CHESS_LLM_API_KEY
-    CHESS_LLM_MODEL     (optional, defaults to gemini-2.5-flash-lite)
+    CHESS_LLM_MODEL     (optional, defaults to gemini-3.8-flash)
 
 The browser uses the site's /api/llm proxy so the API key is never shipped to
 the client. Set GEMINI_API_KEY (or CHESS_LLM_API_KEY) on the Vercel project.
@@ -75,7 +75,7 @@ def _prompt(move_codes, best_san, evals, marks, result):
 
 def _request_gemini(prompt):
     key = os.environ["CHESS_LLM_API_KEY"]
-    model = os.environ.get("CHESS_LLM_MODEL", "gemini-2.5-flash-lite")
+    model = os.environ.get("CHESS_LLM_MODEL", "gemini-3.8-flash")
     url = os.environ.get(
         "CHESS_LLM_API_URL",
         "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % model,

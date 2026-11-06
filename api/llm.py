@@ -21,7 +21,7 @@ def coach():
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("CHESS_LLM_API_KEY")
     if not key:
         return jsonify(error="Browser coaching is not configured"), 503
-    model = os.environ.get("CHESS_LLM_MODEL", "gemini-2.5-flash-lite")
+    model = os.environ.get("CHESS_LLM_MODEL", "gemini-3.8-flash")
     url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % model
     try:
         response = requests.post(url, headers={"x-goog-api-key": key}, json={
