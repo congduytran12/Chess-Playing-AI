@@ -1,4 +1,4 @@
-"""Server-side proxy for the browser's optional Gemini chess coach."""
+"""Server-side proxy for the browser's optional Groq chess coach."""
 
 import json
 import os
@@ -18,15 +18,20 @@ def coach():
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT_LENGTH:
         return jsonify(error="Invalid coaching request"), 400
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("CHESS_LLM_API_KEY")
+    key = os.environ.get("GROQ_API_KEY")
     if not key:
         return jsonify(error="Browser coaching is not configured"), 503
-    model = os.environ.get("CHESS_LLM_MODEL", "gemini-3.8-flash")
-    url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % model
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+    url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
     try:
-        response = requests.post(url, headers={"x-goog-api-key": key}, json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 180},
+        response = requests.post(url, headers={"Authorization": "Bearer " + key}, json={
+            "model": model,
+            "temperature": 0.2,
+            "max_tokens": 180,
+            "messages": [
+                {"role": "system", "content": "You explain chess analysis accurately and briefly."},
+                {"role": "user", "content": prompt},
+            ],
         }, timeout=20)
     except requests.RequestException:
         return jsonify(error="The coaching service could not be reached"), 502

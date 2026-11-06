@@ -1,14 +1,13 @@
 """Optional LLM coaching built on top of the game's Stockfish analysis.
 
 The LLM is never used to choose or validate a chess move.  It only explains
-analysis that Stockfish has already produced. Configure Google's Gemini
-free-tier API with:
+analysis that Stockfish has already produced. Configure Groq with:
 
-    CHESS_LLM_API_KEY
-    CHESS_LLM_MODEL     (optional, defaults to gemini-3.8-flash)
+    GROQ_API_KEY
+    GROQ_MODEL          (optional, defaults to openai/gpt-oss-120b)
 
 The browser uses the site's /api/llm proxy so the API key is never shipped to
-the client. Set GEMINI_API_KEY (or CHESS_LLM_API_KEY) on the Vercel project.
+the client. Set GROQ_API_KEY on the Vercel project.
 """
 
 import asyncio
@@ -47,7 +46,7 @@ class LLMError(Exception):
 
 
 def enabled():
-    return WASM or bool(os.environ.get("CHESS_LLM_API_KEY"))
+    return WASM or bool(os.environ.get("GROQ_API_KEY"))
 
 
 def _prompt(move_codes, best_san, evals, marks, result):
@@ -73,43 +72,10 @@ def _prompt(move_codes, best_san, evals, marks, result):
     )
 
 
-def _request_gemini(prompt):
-    key = os.environ["CHESS_LLM_API_KEY"]
-    model = os.environ.get("CHESS_LLM_MODEL", "gemini-3.8-flash")
-    url = os.environ.get(
-        "CHESS_LLM_API_URL",
-        "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % model,
-    )
-    separator = "&" if "?" in url else "?"
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 180},
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json", "x-goog-api-key": key},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")[:200]
-        raise LLMError("Gemini request failed (%d): %s" % (error.code, detail)) from error
-    except (urllib.error.URLError, TimeoutError, ValueError) as error:
-        raise LLMError("Gemini request failed: %s" % error) from error
-    try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, TypeError, AttributeError) as error:
-        raise LLMError("Gemini returned an invalid or blocked response") from error
-    return text or None
-
-
-def _request_openai_compatible(prompt):
-    key = os.environ.get("CHESS_LLM_API_KEY")
-    url = os.environ["CHESS_LLM_API_URL"]
-    model = os.environ["CHESS_LLM_MODEL"]
+def _request_groq(prompt):
+    key = os.environ["GROQ_API_KEY"]
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+    url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
     body = json.dumps({
         "model": model,
         "temperature": 0.2,
@@ -119,29 +85,29 @@ def _request_openai_compatible(prompt):
             {"role": "user", "content": prompt},
         ],
     }).encode("utf-8")
-    request = urllib.request.Request(url, data=body, method="POST", headers={
-        "Authorization": "Bearer " + key,
-        "Content-Type": "application/json",
-    })
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
+    )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:200]
-        raise LLMError("LLM request failed (%d): %s" % (error.code, detail)) from error
+        raise LLMError("Groq request failed (%d): %s" % (error.code, detail)) from error
     except (urllib.error.URLError, TimeoutError, ValueError) as error:
-        raise LLMError("LLM request failed: %s" % error) from error
+        raise LLMError("Groq request failed: %s" % error) from error
     try:
         text = data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError, AttributeError) as error:
-        raise LLMError("LLM returned an invalid response") from error
+        raise LLMError("Groq returned an invalid response") from error
     return text or None
 
 
 def _request(prompt):
-    if os.environ.get("CHESS_LLM_PROVIDER", "gemini").lower() == "gemini":
-        return _request_gemini(prompt)
-    return _request_openai_compatible(prompt)
+    return _request_groq(prompt)
 
 
 async def _request_browser(prompt):
