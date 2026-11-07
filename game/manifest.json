@@ -1,0 +1,18 @@
+{
+  "name": "Chess Playing AI",
+  "short_name": "Chess AI",
+  "description": "Play chess against Stockfish NNUE, local 2-player or online multiplayer.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#18181b",
+  "theme_color": "#18181b",
+  "icons": [
+    {
+      "src": "./favicon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

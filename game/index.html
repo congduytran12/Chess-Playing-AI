@@ -2,8 +2,17 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <title>Chess Playing AI - Online Multiplayer</title>
+    <meta name="description" content="Play chess against Stockfish NNUE, local 2-player or online multiplayer.">
+    <meta name="theme-color" content="#18181b">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Chess AI">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" type="image/png" href="./favicon.png">
+    <link rel="apple-touch-icon" href="./favicon.png">
     <!-- Use local (proxied) paths to bypass ORB/CORS security blocks -->
     <script src="./browserfs.min.js"></script>
     <script src="./pythons.js" type="module" id="site" data-python="python3.12" 
@@ -19,8 +28,23 @@ async def main():
 asyncio.run(main())
 //--></script>
     <style>
-        body { margin: 0; background-color: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #pygame { display: block; margin: 0 auto; width: 100vw; height: 100vh; }
+        body {
+            margin: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: sans-serif;
+            overflow: hidden;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        #pygame {
+            display: block;
+            margin: 0 auto;
+            width: 100vw;
+            height: 100vh;
+            touch-action: none;
+        }
     </style>
 </head>
 <body>

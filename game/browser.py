@@ -187,7 +187,7 @@ JS_HELPERS = r'''
     if (!window.__chessCanvasGuard) {
         window.__chessCanvasGuard = true;
         const style = document.createElement('style');
-        style.textContent = 'canvas.emscripten { max-width: 100vw; max-height: 100vh; }';
+        style.textContent = 'canvas.emscripten, canvas { max-width: 100vw; max-height: 100vh; touch-action: none; -webkit-touch-callout: none; }';
         document.head.appendChild(style);
     }
 
