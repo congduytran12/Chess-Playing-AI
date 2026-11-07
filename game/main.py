@@ -1654,6 +1654,10 @@ async def main():
             moveLogScroll += 1  # a new row: the rows the player scrolled back to stay where they are
         if sound:
             playSound(moveSoundName(move))
+        if len(gs.moveLog) <= 16:
+            opening = chessAi.detectOpening(gs)
+            if opening:
+                showStatus(opening, 3500)
 
     # undo plies and restore everything tied to them
     def takeBack(plies):

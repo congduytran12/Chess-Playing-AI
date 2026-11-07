@@ -469,47 +469,51 @@ def scoreBoard(gs):
     return score
 
 
-# common opening lines; the book is built from them on first use
-BOOK_LINES = [
-    "e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6",  # Ruy Lopez
-    "e4 e5 Nf3 Nc6 Bb5 Nf6 O-O Nxe4 d4 Nd6",  # Berlin
-    "e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6 O-O O-O",  # Italian
-    "e4 e5 Nf3 Nc6 Bc4 Nf6 d3 Be7 O-O O-O",  # Two Knights
-    "e4 e5 Nf3 Nc6 d4 exd4 Nxd4 Nf6 Nxc6 bxc6",  # Scotch
-    "e4 e5 Nf3 Nf6 Nxe5 d6 Nf3 Nxe4 d4 d5 Bd3",  # Petrov
-    "e4 e5 Nc3 Nf6 Nf3 Nc6 d4 exd4 Nxd4",  # Four Knights
-    "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6 Be2 e5",  # Najdorf
-    "e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 Nf6 Nc3 e5 Ndb5 d6",  # Sveshnikov
-    "e4 c5 Nf3 e6 d4 cxd4 Nxd4 Nc6 Nc3 Qc7",  # Taimanov
-    "e4 c5 Nc3 Nc6 g3 g6 Bg2 Bg7 d3 d6",  # Closed Sicilian
-    "e4 e6 d4 d5 Nc3 Nf6 Bg5 Be7 e5 Nfd7",  # French
-    "e4 e6 d4 d5 e5 c5 c3 Nc6 Nf3 Qb6",  # French Advance
-    "e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng3 Bg6",  # Caro-Kann
-    "e4 c6 d4 d5 e5 Bf5 Nf3 e6 Be2",  # Caro-Kann Advance
-    "e4 d5 exd5 Qxd5 Nc3 Qa5 d4 Nf6 Nf3 c6",  # Scandinavian
-    "e4 Nf6 e5 Nd5 d4 d6 Nf3 Bg4 Be2 e6",  # Alekhine
-    "e4 d6 d4 Nf6 Nc3 g6 Nf3 Bg7 Be2 O-O",  # Pirc
-    "d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e3 O-O Nf3",  # Queen's Gambit Declined
-    "d4 d5 c4 c6 Nf3 Nf6 Nc3 dxc4 a4 Bf5",  # Slav
-    "d4 d5 c4 dxc4 Nf3 Nf6 e3 e6 Bxc4 c5 O-O",  # Queen's Gambit Accepted
-    "d4 Nf6 c4 g6 Nc3 Bg7 e4 d6 Nf3 O-O Be2 e5",  # King's Indian
-    "d4 Nf6 c4 e6 Nc3 Bb4 e3 O-O Bd3 d5 Nf3",  # Nimzo-Indian
-    "d4 Nf6 c4 e6 Nf3 b6 g3 Bb7 Bg2 Be7 O-O O-O",  # Queen's Indian
-    "d4 Nf6 c4 g6 Nc3 d5 cxd5 Nxd5 e4 Nxc3 bxc3 Bg7",  # Grunfeld
-    "d4 Nf6 Nf3 d5 Bf4 e6 e3 c5 c3 Nc6",  # London
-    "d4 d5 Nf3 Nf6 e3 e6 Bd3 c5 c3 Nc6",  # Colle
-    "c4 e5 Nc3 Nf6 Nf3 Nc6 g3 d5 cxd5 Nxd5",  # English
-    "c4 c5 Nf3 Nc6 Nc3 g6 g3 Bg7 Bg2 Nf6",  # Symmetrical English
-    "c4 Nf6 Nc3 e6 e4 d5 e5 d4",  # Mikenas
-    "Nf3 d5 g3 Nf6 Bg2 c6 O-O Bg4 d3",  # Reti
-    "Nf3 Nf6 c4 g6 Nc3 Bg7 e4 d6 d4 O-O",  # transposes to the King's Indian
+# common opening lines and their names; the book is built from them on first use
+BOOK_DEFINITIONS = [
+    ("e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6 O-O Be7 Re1 b5 Bb3 d6", "Ruy Lopez"),
+    ("e4 e5 Nf3 Nc6 Bb5 Nf6 O-O Nxe4 d4 Nd6", "Berlin Defense"),
+    ("e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6 O-O O-O", "Italian Game"),
+    ("e4 e5 Nf3 Nc6 Bc4 Nf6 d3 Be7 O-O O-O", "Two Knights Defense"),
+    ("e4 e5 Nf3 Nc6 d4 exd4 Nxd4 Nf6 Nxc6 bxc6", "Scotch Game"),
+    ("e4 e5 Nf3 Nf6 Nxe5 d6 Nf3 Nxe4 d4 d5 Bd3", "Petrov's Defense"),
+    ("e4 e5 Nc3 Nf6 Nf3 Nc6 d4 exd4 Nxd4", "Four Knights Game"),
+    ("e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6 Be2 e5", "Sicilian Defense: Najdorf"),
+    ("e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 Nf6 Nc3 e5 Ndb5 d6", "Sicilian Defense: Sveshnikov"),
+    ("e4 c5 Nf3 e6 d4 cxd4 Nxd4 Nc6 Nc3 Qc7", "Sicilian Defense: Taimanov"),
+    ("e4 c5 Nc3 Nc6 g3 g6 Bg2 Bg7 d3 d6", "Closed Sicilian"),
+    ("e4 e6 d4 d5 Nc3 Nf6 Bg5 Be7 e5 Nfd7", "French Defense"),
+    ("e4 e6 d4 d5 e5 c5 c3 Nc6 Nf3 Qb6", "French Defense: Advance"),
+    ("e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng3 Bg6", "Caro-Kann Defense"),
+    ("e4 c6 d4 d5 e5 Bf5 Nf3 e6 Be2", "Caro-Kann Defense: Advance"),
+    ("e4 d5 exd5 Qxd5 Nc3 Qa5 d4 Nf6 Nf3 c6", "Scandinavian Defense"),
+    ("e4 Nf6 e5 Nd5 d4 d6 Nf3 Bg4 Be2 e6", "Alekhine's Defense"),
+    ("e4 d6 d4 Nf6 Nc3 g6 Nf3 Bg7 Be2 O-O", "Pirc Defense"),
+    ("d4 d5 c4 e6 Nc3 Nf6 Bg5 Be7 e3 O-O Nf3", "Queen's Gambit Declined"),
+    ("d4 d5 c4 c6 Nf3 Nf6 Nc3 dxc4 a4 Bf5", "Slav Defense"),
+    ("d4 d5 c4 dxc4 Nf3 Nf6 e3 e6 Bxc4 c5 O-O", "Queen's Gambit Accepted"),
+    ("d4 Nf6 c4 g6 Nc3 Bg7 e4 d6 Nf3 O-O Be2 e5", "King's Indian Defense"),
+    ("d4 Nf6 c4 e6 Nc3 Bb4 e3 O-O Bd3 d5 Nf3", "Nimzo-Indian Defense"),
+    ("d4 Nf6 c4 e6 Nf3 b6 g3 Bb7 Bg2 Be7 O-O O-O", "Queen's Indian Defense"),
+    ("d4 Nf6 c4 g6 Nc3 d5 cxd5 Nxd5 e4 Nxc3 bxc3 Bg7", "Grünfeld Defense"),
+    ("d4 Nf6 Nf3 d5 Bf4 e6 e3 c5 c3 Nc6", "London System"),
+    ("d4 d5 Nf3 Nf6 e3 e6 Bd3 c5 c3 Nc6", "Colle System"),
+    ("c4 e5 Nc3 Nf6 Nf3 Nc6 g3 d5 cxd5 Nxd5", "English Opening"),
+    ("c4 c5 Nf3 Nc6 Nc3 g6 g3 Bg7 Bg2 Nf6", "Symmetrical English"),
+    ("c4 Nf6 Nc3 e6 e4 d5 e5 d4", "English: Mikenas Attack"),
+    ("Nf3 d5 g3 Nf6 Bg2 c6 O-O Bg4 d3", "Réti Opening"),
+    ("Nf3 Nf6 c4 g6 Nc3 Bg7 e4 d6 d4 O-O", "King's Indian Defense"),
 ]
+BOOK_LINES = [line for line, _ in BOOK_DEFINITIONS]
 _book = None  # position key -> move codes (repeated codes are picked more often)
+_opening_names = None  # position key -> opening name
 
 
 def buildBook():
+    global _opening_names
     book = {}
-    for line in BOOK_LINES:
+    names = {}
+    for line, name in BOOK_DEFINITIONS:
         gs = GameState()
         moves = gs.getValidMoves()
         for san in line.split():
@@ -519,8 +523,18 @@ def buildBook():
                 break
             book.setdefault(gs.getPositionKey(), []).append(move.getCode())
             gs.makeMove(move)
+            names[gs.getPositionKey()] = name
             moves = gs.getValidMoves()
+    _opening_names = names
     return book
+
+
+def detectOpening(gs):
+    """Returns the recognized opening name for the current position, or None."""
+    global _book, _opening_names
+    if _book is None:
+        _book = buildBook()
+    return _opening_names.get(gs.getPositionKey()) if _opening_names else None
 
 
 def bookMove(gs, validMoves):
