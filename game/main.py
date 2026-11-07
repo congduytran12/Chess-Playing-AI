@@ -3771,9 +3771,15 @@ def drawPlayerStrip(screen, y, color, name, captured, advantage, clockMs, clockA
 
     if clockMs is not None:
         clockRect = p.Rect(rect.right - scaled(12) - scaled(96), rect.y + scaled(8), scaled(96), scaled(36))
-        p.draw.rect(screen, p.Color(UI['clockActive'] if clockActive else UI['clockIdle']), clockRect, border_radius=6)
+        clockBg = UI['clockActive'] if clockActive else UI['clockIdle']
+        p.draw.rect(screen, p.Color(clockBg), clockRect, border_radius=6)
         if clockActive and clockMs < 20000:
             textColor = p.Color(UI['clockLow'])
+            if clockMs < 10000:
+                # pulse urgency outline on critical time (<10s and <5s)
+                cycle = (clockMs % 1000) / 1000.0
+                if cycle < 0.5:
+                    p.draw.rect(screen, p.Color(UI['clockLow']), clockRect, width=scaled(2), border_radius=6)
         else:
             textColor = p.Color(UI['clockText'] if clockActive else UI['clockTextIdle'])
         textObj = get_font(scaled(24), True).render(formatClock(clockMs), True, textColor)
