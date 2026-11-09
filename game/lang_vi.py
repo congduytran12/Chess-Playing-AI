@@ -38,6 +38,7 @@ EXACT = {
     "London System": "Hệ thống London", "Colle System": "Hệ thống Colle", "English Opening": "Khai cuộc Anh",
     "Symmetrical English": "Khai cuộc Anh đối xứng", "English: Mikenas Attack": "Khai cuộc Anh: Tấn công Mikenas",
     "Réti Opening": "Khai cuộc Réti",
+    "Play as: Random": "Quân: Tùy ý",  # shorter than "Quân: Ngẫu nhiên", which shrank the row's labels
     "Coach": "Huấn luyện viên", "Coach is thinking...": "Huấn luyện viên đang suy nghĩ...",
     "Close": "Đóng", "Back": "Quay lại", "Next": "Tiếp", "Show": "Hiện", "Hide": "Ẩn",
     # quick chat

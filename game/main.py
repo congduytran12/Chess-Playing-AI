@@ -4615,9 +4615,23 @@ def helpKey(page, key):
     return page
 
 
+TOUCH_WORDS = [(re.compile(r"\bClick(ing|s)?\b"), lambda m: {"": "Tap", "ing": "Tapping", "s": "Taps"}[m.group(1) or ""]),
+               (re.compile(r"\bclick(ing|s)?\b"), lambda m: {"": "tap", "ing": "tapping", "s": "taps"}[m.group(1) or ""]),
+               (re.compile(r"\bNhấp\b"), lambda m: "Chạm"), (re.compile(r"\bnhấp\b"), lambda m: "chạm")]
+
+
+# a text that tells the player to click, for a phone or tablet: tap (applied to the translation)
+def touchWording(text):
+    for pattern, replacement in TOUCH_WORDS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 # splits text into lines that fit in maxWidth
-def wrapText(text, font, maxWidth):
+def wrapText(text, font, maxWidth, touch=False):
     text = i18n.tr(text)  # the lines are cut from the translation
+    if touch:
+        text = touchWording(text)
     lines = []
     line = ""
     for word in text.split():
@@ -4655,7 +4669,7 @@ def helpPageLayout(page):
             diagramWidth, diagramHeight = diagramSize(diagram)
             diagramRect = p.Rect(right - diagramWidth, y + 4, diagramWidth, diagramHeight)
             right = diagramRect.x - HELP_DIAGRAM_GAP
-        lines = wrapText(text, font, right - textX)
+        lines = wrapText(text, font, right - textX, touch=browser.touchScreen())
         bottom = max(y + 24 + 20 * len(lines), y + (HELP_ICON_SIZE if icon else 0),
                      diagramRect.bottom if diagramRect else 0)
         layout.append({'top': y, 'textX': textX, 'lines': lines, 'diagram': diagramRect, 'bottom': bottom})

@@ -99,6 +99,22 @@ class LanguageTest(unittest.TestCase):
         missing = sorted(text for text in texts if '%' not in text and i18n.tr(text) == text)
         self.assertEqual(missing, [], "texts with no Vietnamese")
 
+    def test_touch_screens_are_told_to_tap(self):
+        self.assertEqual(main.touchWording("Click one of your pieces, then click a square. Clicking twice clicks."),
+                         "Tap one of your pieces, then tap a square. Tapping twice taps.")
+        self.assertEqual(main.touchWording("nhấp vào quân. Nhấp"), "chạm vào quân. Chạm")
+        self.assertEqual(main.touchWording("Right-click or Esc"), "Right-tap or Esc")  # not on a phone's help page
+        font = main.get_font(17, False)
+        self.assertEqual(main.wrapText("Click here", font, 500, touch=True), ["Tap here"])
+        self.assertEqual(main.wrapText("Click here", font, 500), ["Click here"])
+
+    def test_the_random_side_label_is_short_in_vietnamese(self):
+        i18n.setLanguage('vi')
+        try:
+            self.assertLessEqual(len(i18n.tr("Play as: Random")), len(i18n.tr("Play as: Black")) + 3)
+        finally:
+            i18n.setLanguage('en')
+
     def test_the_help_pages_fit_in_vietnamese(self):
         box, buttonsTop = main.ACCOUNT_BOX, main.helpLayout()['prev'].y
         x, width = box.x + 40, box.width - 80
