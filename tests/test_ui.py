@@ -815,13 +815,15 @@ class GameLoopTest(unittest.TestCase):
             await self.click(menu)
             await self.click(menu)  # its own button closes it again
             seen['after button again'] = probeColor()
-            # Save is disabled before the first move: its tooltip and a click say why, and the menu stays open
+            # Save is disabled before the first move: its tooltip and a click say why, and the menu closes (the
+            # reason in the status slot would be half hidden behind it)
             await self.click(menu)
             save = self.menuItem('save').center
             self.mouse[0] = save
             await asyncio.sleep(0.9)
             await self.click(save)
             seen['after disabled click'] = probeColor()
+            await self.click(menu)
             await self.click(self.menuItem('flip').center, 0.4)  # Flip board runs and closes the menu
             seen['after flip'] = probeColor()
             seen['corner'] = self.squareSample(p.display.get_surface(), 0, 0)
@@ -842,7 +844,7 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['after Esc'], panel)
         self.assertEqual(seen['after outside click'], panel)
         self.assertEqual(seen['after button again'], panel)
-        self.assertEqual(seen['after disabled click'], button)
+        self.assertEqual(seen['after disabled click'], panel)
         self.assertEqual(seen['after flip'], panel)
         self.assertIn("Make a move first", shown['tooltip'])
         self.assertIn("Make a move first", shown['status'])

@@ -256,6 +256,7 @@ def toBoard(pos):
 def onBoard(pos):
     return LAYOUT.board.collidepoint(pos)
 
+ACCOUNT_LABEL_CHARACTERS = 9  # the Account button shows at most this many characters of the username
 MODE_OPTIONS = ["Local vs AI", "Local 2-Player", "Online Multiplayer", "Puzzles", "Your mistakes"]
 PUZZLE_MODE = 3  # the index of Puzzles in MODE_OPTIONS
 MISTAKES_MODE = 4  # Your mistakes: the player's own mistakes (mistakes.py) as puzzles
@@ -1157,7 +1158,9 @@ async def main():
     # (signed out: none kept), 'items': those still to come, 'seen': keys of those shown (an account's list leaves them
     # out), 'loading', 'error', and from the account 'premium', 'locked' (only Premium brings them back), 'nextDue'}
     mistakeSet = None
-    hintState = None  # 'requested' -> 'searching' -> None
+    hintState = None  # 'requested' -> 'searching' -> 'running' (hintTask) -> None
+    hintTask = None  # the hint's search, running in the background
+    hintPly = 0  # the number of moves in the position the hint is for
     puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
@@ -1289,6 +1292,7 @@ async def main():
         if currentModeIndex == MISTAKES_MODE:
             data = data or nextMistake()
             if data is None:
+                playerWhiteHuman, playerBlackHuman = True, False  # an empty board: White at the bottom
                 return  # the panel and the move list say why
         data = data or puzzles.pick()
         if data is None:
@@ -2988,8 +2992,7 @@ async def main():
                         reason = reasonDisabled(chosen)
                         if reason:
                             showStatus(reason)
-                        menuOpen = True  # stays open, so another item can be picked
-                        continue
+                        continue  # the menu closes, so the reason in the status slot isn't half hidden behind it
                     menuAction(chosen)
                     continue
 
@@ -3375,10 +3378,30 @@ async def main():
         if hintState == 'requested':
             hintState = 'searching'
         elif hintState == 'searching':
-            hintState = None
+            # the search runs as a task, so the game keeps drawing and answering clicks meanwhile
             if humanTurn and not gameOver and gameResult is None and validMoves:
-                _, suggestion, _ = await stockfish.searchHintPosition(gs, validMoves, HINT_SECONDS,
-                                                                      history=positionHistory)
+                hintState = 'running'
+                hintPly = len(gs.moveLog)
+                board = copyGame(gs)  # a copy: the player may move on while it searches
+                hintTask = asyncio.ensure_future(stockfish.searchHintPosition(
+                    board, board.getValidMoves(), HINT_SECONDS, history=list(positionHistory)))
+            else:
+                hintState = None
+        if hintTask is not None and (hintState != 'running' or len(gs.moveLog) != hintPly or gameOver):
+            hintTask.cancel()  # the game moved on (a move, undo, a new game): the hint is for another position
+            hintTask = None
+            if hintState == 'running':
+                hintState = None
+        elif hintTask is not None and hintTask.done():
+            task, hintTask, hintState = hintTask, None, None
+            try:
+                _, suggestion, _ = task.result()
+            except Exception as error:
+                print("Main: hint search failed: %s" % error)
+                suggestion = None
+            if suggestion is not None:  # found on a copy: the move of the game's own list
+                suggestion = gs.findMoveByCode(suggestion.getCode(), validMoves)
+            if humanTurn and not gameOver and gameResult is None and validMoves:
                 if suggestion is None:
                     suggestion = findRandomMoves(validMoves)
                 hintMove = suggestion
@@ -3594,7 +3617,10 @@ async def main():
             'draw': "Offer Draw",
             'undo': "Undo",
             'restart': "Restart",
-            'account': account.username or "Sign in",
+            # a long name is cut, so it can't shrink the labels of the row's other buttons
+            'account': (account.username if len(account.username or "") <= ACCOUNT_LABEL_CHARACTERS
+                        else account.username[:ACCOUNT_LABEL_CHARACTERS - 3] + "...") if account.username
+                        else "Sign in",
             'invite': "Copy link",
             'chat': "Chat",
             'first': "", 'prev': "", 'next': "", 'last': "",  # drawn as arrow icons

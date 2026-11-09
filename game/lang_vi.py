@@ -21,6 +21,23 @@ EXACT = {
     "Save game (PGN)": "Lưu ván (PGN)", "Load game (PGN)": "Mở ván (PGN)", "Flip board (F)": "Xoay bàn cờ (F)",
     "Settings": "Cài đặt", "How to play (H)": "Hướng dẫn chơi (H)", "How to play": "Hướng dẫn chơi",
     "Accept": "Đồng ý", "Decline": "Từ chối", "Cancel": "Hủy", "Join": "Vào", "Leave": "Rời", "Stay": "Ở lại",
+    # opening names (chessAi.BOOK_DEFINITIONS)
+    "Ruy Lopez": "Ruy Lopez", "Berlin Defense": "Phòng thủ Berlin", "Italian Game": "Khai cuộc Ý",
+    "Two Knights Defense": "Phòng thủ Hai Mã", "Scotch Game": "Khai cuộc Scotland",
+    "Petrov's Defense": "Phòng thủ Petrov", "Four Knights Game": "Khai cuộc Bốn Mã",
+    "Sicilian Defense: Najdorf": "Phòng thủ Sicilia: Najdorf",
+    "Sicilian Defense: Sveshnikov": "Phòng thủ Sicilia: Sveshnikov",
+    "Sicilian Defense: Taimanov": "Phòng thủ Sicilia: Taimanov", "Closed Sicilian": "Sicilia đóng",
+    "French Defense": "Phòng thủ Pháp", "French Defense: Advance": "Phòng thủ Pháp: Tiến Tốt",
+    "Caro-Kann Defense": "Phòng thủ Caro-Kann", "Caro-Kann Defense: Advance": "Phòng thủ Caro-Kann: Tiến Tốt",
+    "Scandinavian Defense": "Phòng thủ Scandinavia", "Alekhine's Defense": "Phòng thủ Alekhine",
+    "Pirc Defense": "Phòng thủ Pirc", "Queen's Gambit Declined": "Gambit Hậu từ chối",
+    "Slav Defense": "Phòng thủ Slav", "Queen's Gambit Accepted": "Gambit Hậu chấp nhận",
+    "King's Indian Defense": "Phòng thủ Ấn Độ Vua", "Nimzo-Indian Defense": "Phòng thủ Nimzo-Ấn Độ",
+    "Queen's Indian Defense": "Phòng thủ Ấn Độ Hậu", "Grünfeld Defense": "Phòng thủ Grünfeld",
+    "London System": "Hệ thống London", "Colle System": "Hệ thống Colle", "English Opening": "Khai cuộc Anh",
+    "Symmetrical English": "Khai cuộc Anh đối xứng", "English: Mikenas Attack": "Khai cuộc Anh: Tấn công Mikenas",
+    "Réti Opening": "Khai cuộc Réti",
     "Coach": "Huấn luyện viên", "Coach is thinking...": "Huấn luyện viên đang suy nghĩ...",
     "Close": "Đóng", "Back": "Quay lại", "Next": "Tiếp", "Show": "Hiện", "Hide": "Ẩn",
     # quick chat
@@ -381,7 +398,7 @@ EXACT = {
 
 TEMPLATES = {
     "Mode: %s": "Chế độ: {0}", "AI: %s": "Máy: {0}", "Language: %s": "Ngôn ngữ: {0}", "Mate in %d": "Chiếu hết sau {0} nước",
-    "The solution. Rating %+d": "Lời giải. Điểm {0}", "Play as: %s": "Chơi quân: {0}", "Clock: %s": "Đồng hồ: {0}",
+    "The solution. Rating %+d": "Lời giải. Điểm {0}", "Play as: %s": "Quân: {0}", "Clock: %s": "Đồng hồ: {0}",
     "Room: %s": "Phòng: {0}", "Rejoin %s as %s": "Vào lại phòng {0}, quân {1}", "Hint (%d left)": "Gợi ý (còn {0})",
     "Hint: %s - this game won't be rated": "Gợi ý: {0} - ván này sẽ không tính điểm",
     "Hint: %s (%d left today) - this game won't be rated": "Gợi ý: {0} (hôm nay còn {1}) - ván này sẽ không tính điểm",
