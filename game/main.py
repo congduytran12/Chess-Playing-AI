@@ -759,11 +759,15 @@ def labelFitSize(text, width):
 def evenLabelSizes(rows, rects, labels):
     sizes = {}
     for row in rows:
-        names = [name for name in row if name in rects and labels.get(name)]
+        # the Account button's label is the player's own name (or "Sign in"): it fits on its own, so a long one
+        # can't shrink the labels of Undo and Restart beside it
+        names = [name for name in row if name in rects and labels.get(name) and name != 'account']
         size = min([labelFitSize(labels[name], buttonTextWidth(rects[name], name in DROPDOWNS)) for name in names]
                    or [LAYOUT.labelSize])
         for name in row:
             sizes[name] = size
+        if 'account' in row and 'account' in rects and labels.get('account'):
+            sizes['account'] = min(size, labelFitSize(labels['account'], buttonTextWidth(rects['account'])))
     return sizes
 
 
@@ -3370,7 +3374,8 @@ async def main():
 
         # once a player is signed in (a form, or the session from last time), the hint engine is saved on the device
         # the first time and loaded, so their hints don't wait for its download
-        if account.signedIn and not hintEnginePrepared:
+        # (not while the sign-in's own requests are out: the download of the engine's 100+ MB would slow them down)
+        if account.signedIn and not hintEnginePrepared and not accountRequests:
             hintEnginePrepared = True
             stockfish.prepareHintEngine()
 
@@ -4392,11 +4397,12 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
             if view == 'games':
                 if rect.collidepoint(mouse_pos) and not busy:
                     p.draw.rect(screen, p.Color(UI['logHighlight']), rect, border_radius=4)
-                left = "%s   %s" % (str(row.get('played_at', ''))[:10], gameRowResult(row))
+                # a text built from parts is translated part by part (the date and the names are not texts)
+                left = "%s   %s" % (str(row.get('played_at', ''))[:10], i18n.tr(gameRowResult(row)))
                 right = row.get('opponent') or "Local game"
             else:
                 left = "%d. %s" % (i + 1, row['username'])
-                right = "%d  (%s)" % (row["rating"], countGames(row["rated_games"]))
+                right = "%d  (%s)" % (row["rating"], i18n.tr(countGames(row["rated_games"])))
             screen.blit(get_fitting_text(left, rect.width // 2, 18, UI['text'], False), (rect.x + 6, rect.y + 3))
             rightObj = get_fitting_text(right, rect.width // 2 - 10, 18, UI['textDim'], False)
             screen.blit(rightObj, (rect.right - 6 - rightObj.get_width(), rect.y + 3))

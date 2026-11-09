@@ -108,6 +108,27 @@ class LanguageTest(unittest.TestCase):
         self.assertEqual(main.wrapText("Click here", font, 500, touch=True), ["Tap here"])
         self.assertEqual(main.wrapText("Click here", font, 500), ["Click here"])
 
+    def test_the_account_lists_are_translated_part_by_part(self):
+        i18n.setLanguage('vi')
+        try:
+            self.assertEqual(i18n.tr(main.countGames(3)), "3 ván")
+            self.assertEqual(i18n.tr(main.countGames(1)), "1 ván")
+            for row, shown in (({'result': '1-0', 'color': 'w'}, "Thắng"), ({'result': '1-0', 'color': 'b'}, "Thua"),
+                               ({'result': '1/2-1/2'}, "Hòa")):
+                self.assertEqual(i18n.tr(main.gameRowResult(row)), shown)
+        finally:
+            i18n.setLanguage('en')
+
+    def test_a_long_account_name_does_not_shrink_the_other_labels(self):
+        rows = main.panelRows(0, False, False, False, False, False)
+        rects = main.panelLayout(0, False, False, False, False, False)
+        labels = {'undo': "Undo", 'restart': "Restart", 'account': "Sign in", 'menu': ""}
+        normal = main.evenLabelSizes(rows, rects, labels)
+        labels['account'] = "VeryLongName"
+        long = main.evenLabelSizes(rows, rects, labels)
+        self.assertEqual((long['undo'], long['restart']), (normal['undo'], normal['restart']))
+        self.assertLessEqual(long['account'], long['undo'])
+
     def test_the_random_side_label_is_short_in_vietnamese(self):
         i18n.setLanguage('vi')
         try:
