@@ -11,6 +11,7 @@
     },
     "api/llm.py": {
       "maxDuration": 25,
+      "includeFiles": "game/llm.py",
       "excludeFiles": "game/build/**"
     }
   },

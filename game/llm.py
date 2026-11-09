@@ -117,14 +117,13 @@ def _request(prompt):
     return _request_groq(prompt)
 
 
-async def _request_browser(prompt):
+async def _request_browser(analysis):
+    """Ask the site's proxy, which builds the prompt itself from this analysis (it takes no free text)."""
     if js is None:
         raise LLMError("Browser coaching is unavailable")
     js.eval(JS_HELPERS)
-    request_id = "coach_" + str(id(prompt))
-    js.eval("window.chessLlmRequest(%s, %s)" % (json.dumps(request_id), json.dumps(json.dumps({
-        "prompt": prompt,
-    }))))
+    request_id = "coach_" + str(id(analysis))
+    js.eval("window.chessLlmRequest(%s, %s)" % (json.dumps(request_id), json.dumps(json.dumps(analysis))))
     deadline = asyncio.get_running_loop().time() + 20
     while True:
         raw = js.eval("window.chessLlmTake(%s)" % json.dumps(request_id))
@@ -152,8 +151,11 @@ async def explain_game(move_codes, best_san, evals, marks, result):
     """Return a short explanation, or None when coaching is not configured."""
     if not enabled():
         return None
-    prompt = _prompt(move_codes, best_san, evals, marks, result)
     if WASM:
-        return await _request_browser(prompt)
+        return await _request_browser({
+            "moves": list(move_codes), "best": list(best_san), "evals": [round(e, 2) for e in evals],
+            "marks": [[ply, mark, round(loss, 2)] for ply, (mark, loss) in sorted(marks.items())],
+            "result": result or ""})
+    prompt = _prompt(move_codes, best_san, evals, marks, result)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _request, prompt)
