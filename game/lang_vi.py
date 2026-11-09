@@ -21,6 +21,7 @@ EXACT = {
     "Save game (PGN)": "Lưu ván (PGN)", "Load game (PGN)": "Mở ván (PGN)", "Flip board (F)": "Xoay bàn cờ (F)",
     "Settings": "Cài đặt", "How to play (H)": "Hướng dẫn chơi (H)", "How to play": "Hướng dẫn chơi",
     "Accept": "Đồng ý", "Decline": "Từ chối", "Cancel": "Hủy", "Join": "Vào", "Leave": "Rời", "Stay": "Ở lại",
+    "Coach": "Huấn luyện viên", "Coach is thinking...": "Huấn luyện viên đang suy nghĩ...",
     "Close": "Đóng", "Back": "Quay lại", "Next": "Tiếp", "Show": "Hiện", "Hide": "Ẩn",
     # quick chat
     "Hello!": "Xin chào!", "Good luck!": "Chúc may mắn!", "Good game!": "Ván hay!", "Thanks!": "Cảm ơn!",

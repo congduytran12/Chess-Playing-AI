@@ -1167,7 +1167,8 @@ async def main():
     reviewGs = None  # the position at reviewPly
     wasGameOver = False  # the game was over last frame (a game that just ended leaves any looking back)
     reviewScroll = False  # scroll the move log to the shown move on the next draw
-    analysis = None  # analysis plus optional {'coachTask', 'coach'} from llm.py
+    analysis = None  # analysis plus optional {'coachTask', 'coach', 'coachOpen'} from llm.py
+    coachRect = None  # where the coach's card was drawn this frame (None: not showing); a click on it closes it
     moveList = moveListLayout(0, STRIP_HEIGHT, STRIP_HEIGHT + 100)  # the move list as last drawn (moveListLayout)
     # pressing on the move list: {'pos', 'scroll' (at the press), 'active'}; it scrolls the list once the pointer
     # moved DRAG_THRESHOLD px with the button held, else the release selects the move under the press
@@ -1942,7 +1943,7 @@ async def main():
                      and hintsLeft() > 0),
             'resign': inProgress and (not online or networkConnected),
             'draw': inProgress and (not online or networkConnected) and pendingPrompt is None,
-            'undo': not online or networkConnected,
+            'undo': not online or (networkConnected and len(gs.moveLog) > 0 and pendingPrompt is None),
             'save': len(gs.moveLog) > 0,
             'load': not online,
             'join': bool(roomCode),
@@ -2936,20 +2937,42 @@ async def main():
                             chosen = i
                     if chosen is None:
                         continue
-                    if name == 'level':
-                        chessAi.LEVEL = chosen
-                    elif name == 'side':
-                        if chosen != sideIndex or SIDE_OPTIONS[chosen] == "Random":
+                    # a change that throws away a game in progress (or leaves an online room) asks first
+                    def applyChoice(name=name, chosen=chosen):
+                        nonlocal sideIndex, clockIndex, mistakeSet
+                        if name == 'side':
                             sideIndex = chosen
                             resetGame(startSound=True)
-                    elif name == 'clock':
-                        if chosen != clockIndex:
+                        elif name == 'clock':
                             clockIndex = chosen
                             resetGame(startSound=True)
-                    elif name == 'mode' and chosen != currentModeIndex:
-                        if chosen == MISTAKES_MODE:
-                            mistakeSet = None  # the account's mistakes (Practice brings the game's)
-                        switchMode(chosen)
+                        elif name == 'mode':
+                            if chosen == MISTAKES_MODE:
+                                mistakeSet = None  # the account's mistakes (Practice brings the game's)
+                            switchMode(chosen)
+
+                    if name == 'level':
+                        chessAi.LEVEL = chosen
+                        continue
+                    if name == 'side':
+                        changes = chosen != sideIndex or SIDE_OPTIONS[chosen] == "Random"
+                    elif name == 'clock':
+                        changes = chosen != clockIndex
+                    else:
+                        changes = name == 'mode' and chosen != currentModeIndex
+                    if not changes:
+                        continue
+                    leavesRoom = name == 'mode' and multiplayerMode and networkConnected
+                    losesGame = (bool(gs.moveLog) and not gameOver and currentModeIndex not in PUZZLE_MODES
+                                 and gameResult is None)
+                    if leavesRoom:
+                        pendingPrompt = {'kind': 'restart', 'text': "Leave this room?", 'yes': "Leave", 'no': "Stay",
+                                         'confirm': True, 'action': applyChoice}
+                    elif losesGame:
+                        pendingPrompt = {'kind': 'restart', 'text': "Start a new game?", 'yes': "Restart",
+                                         'no': "Cancel", 'confirm': True, 'action': applyChoice}
+                    else:
+                        applyChoice()
                     continue
 
                 # an open menu takes the click too: run an item or close it
@@ -3012,7 +3035,10 @@ async def main():
                             if multiplayerMode and networkConnected:
                                 publishChange('resign')
                         elif kind == 'restart' and accepted:
-                            restartGame()
+                            if prompt.get('action'):
+                                prompt['action']()
+                            else:
+                                restartGame()
                         elif kind == 'joinInvite' and accepted:  # opened from an invite link
                             roomCode = prompt['room']
                             connectOnline('client')
@@ -3020,6 +3046,10 @@ async def main():
                         continue
                     if promptBox.collidepoint(location):  # the rest of its box hides the moves under it
                         continue
+
+                if coachRect is not None and coachRect.collidepoint(location):  # the coach's card: a click closes it
+                    analysis['coachOpen'] = False
+                    continue
 
                 clicked = None
                 for name, rect in layout.items():
@@ -3243,6 +3273,9 @@ async def main():
                         reviewTo(len(gs.moveLog))
                     continue
 
+                if e.key == p.K_ESCAPE and coachRect is not None:  # closes the coach's card
+                    analysis['coachOpen'] = False
+                    continue
                 if e.key in (p.K_h, p.K_F1):  # How to play (it closes an open dropdown, as a click would)
                     helpPage, openDropdown = 0, None
                     continue
@@ -3251,9 +3284,10 @@ async def main():
                     continue
                 if e.key == p.K_z:  # undo when z is pressed
                     if multiplayerMode and networkConnected:
-                        sendOnline({'type': 'undo_request'})
-                        undoAsked = True
-                        showStatus("Undo request sent")
+                        if controlStates()['undo']:
+                            sendOnline({'type': 'undo_request'})
+                            undoAsked = True
+                            showStatus("Undo request sent")
                         continue
                     playerUndo()
                 if e.key == p.K_r:  # reset board when 'r' is pressed
@@ -3426,7 +3460,6 @@ async def main():
         if (gameOver and analysis is not None and analysis['done'] and analysis.get('coachTask') is None
                 and not gameLoaded):
             marksForCoach = moveMarks(analysis, gs.moveLog)
-            showStatus("Coach is thinking...", 25000)
             analysis['coachTask'] = asyncio.ensure_future(llm.explain_game(
                 [move.getCode() for move in gs.moveLog], analysis['bestSan'], analysis['evals'],
                 marksForCoach, outcome[0] if outcome else ""))
@@ -3436,10 +3469,12 @@ async def main():
             try:
                 analysis['coach'] = analysis['coachTask'].result()
                 if analysis['coach']:
-                    showStatus("Coach: " + analysis['coach'], 12000)
+                    analysis['coachOpen'] = True  # shown as a card over the move list until it's closed
             except llm.LLMError as error:
                 analysis['coachError'] = str(error)
-                showStatus("Coach unavailable: " + str(error), 5000)
+                # the service's own words can be long (a JSON body): the status keeps the start of them
+                detail = " ".join(str(error).split())
+                showStatus("Coach unavailable: " + (detail if len(detail) <= 70 else detail[:67] + "..."), 5000)
         if (gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog
                 and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True
@@ -3516,6 +3551,13 @@ async def main():
             if 'graph' in layout:
                 drawEvalGraph(screen, layout['graph'], analysis['evals'], len(gs.moveLog), marks, shownPly(),
                               analysis['done'])
+        # the coach's explanation is too long for the status slot: a card over the move list, until it's closed
+        coachRect = None
+        if gameOver and analysis is not None and analysis.get('coachOpen') and analysis.get('coach'):
+            listTop, listBottom = areas['list']
+            coachRect = p.Rect(LAYOUT.panel.x + scaled(10), listTop + scaled(4), LAYOUT.panel.width - scaled(20),
+                               max(listBottom - listTop - scaled(8), scaled(40)))
+            drawCoachCard(screen, coachRect, analysis['coach'])
         taken = capturedPieces(shownGs)
         balance = materialBalance(shownGs.board)
         # during the game the clocks keep running while looking back; after it they show the reviewed move's times
@@ -5401,6 +5443,8 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
         second = "%s: loses %.1f. Best was %s" % (kind, loss, analysis['bestSan'][ply - 1])
     elif analysis and not analysis['done']:
         second = "Analyzing the game..."
+    elif analysis and analysis.get('coachTask') is not None and not analysis['coachTask'].done() and llm.enabled():
+        second = "Coach is thinking..."  # in the info box, so it covers nothing (the status slot lies over it)
     elif analysis:
         second = analysisSummary(marks)
         if get_font(scaled(14), False).size(second)[0] > width:
@@ -5408,6 +5452,31 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
     else:
         second = result if result and ply == len(moveLog) else "Step through the moves with the arrow keys"
     screen.blit(get_fitting_text(second, width, scaled(17), UI['textDim'], False), (rect.x + inset, rect.y + scaled(29)))
+
+
+# the coach's explanation in a box (title, text and "Close"); the text shrinks to fit and ends in "..." if it still
+# doesn't
+def drawCoachCard(screen, rect, text):
+    p.draw.rect(screen, p.Color(UI['infoBox']), rect, border_radius=BUTTON_RADIUS)
+    p.draw.rect(screen, p.Color(UI['infoBoxBorder']), rect, 1, border_radius=BUTTON_RADIUS)
+    inset = scaled(8)
+    title = get_text_surface("Coach", scaled(17), UI['text'], True)
+    screen.blit(title, (rect.x + inset, rect.y + scaled(5)))
+    close = get_text_surface("Close", scaled(13), UI['textDim'], False)
+    screen.blit(close, (rect.right - inset - close.get_width(), rect.y + scaled(7)))
+    top = rect.y + scaled(5) + title.get_height() + scaled(3)
+    width = rect.width - 2 * inset
+    for size in range(scaled(16), scaled(10), -1):
+        font = get_font(size, False)
+        lines = wrapText(text, font, width)
+        if len(lines) * font.get_linesize() <= rect.bottom - inset - top:
+            break
+    room = max(1, (rect.bottom - inset - top) // font.get_linesize())
+    if len(lines) > room:
+        lines = lines[:room]
+        lines[-1] = lines[-1].rstrip(" .,;") + "..."
+    for i, line in enumerate(lines):
+        screen.blit(font.render(line, True, p.Color(UI['text'])), (rect.x + inset, top + i * font.get_linesize()))
 
 
 # --- Settings window, drawn over the board like the other windows: a Board tab and a Game tab of settings rows,
@@ -5752,8 +5821,13 @@ def disabledReason(name, gameOver=False, online=False, connected=False, humanTur
             return "Join a room first"
         if name == 'draw' and prompt:
             return "Answer the open question first"
-    elif name == 'undo' and online and not connected:
-        return "No game yet"
+    elif name == 'undo' and online:
+        if not connected:
+            return "No game yet"
+        if moves == 0:
+            return "Make a move first"
+        if prompt:
+            return "Answer the open question first"
     elif name == 'save' and moves == 0:
         return "Make a move first"
     elif name == 'load' and online:

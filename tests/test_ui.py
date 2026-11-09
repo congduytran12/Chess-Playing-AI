@@ -587,7 +587,10 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(reason('resign', gameOver=True), "The game is over")
         self.assertEqual(reason('draw', gameOver=True), "The game is over")
         self.assertEqual(reason('undo', online=True), "No game yet")
-        self.assertIsNone(reason('undo', online=True, connected=True))
+        self.assertEqual(reason('undo', online=True, connected=True), "Make a move first")
+        self.assertEqual(reason('undo', online=True, connected=True, moves=3, prompt=True),
+                         "Answer the open question first")
+        self.assertIsNone(reason('undo', online=True, connected=True, moves=3))
         self.assertEqual(reason('join'), "Type a room code first")
         self.assertIsNone(reason('join', roomCode="AB12"))
         screen = (main.BOARD_WIDTH + main.MOVE_LOG_PANEL_WIDTH, main.BOARD_HEIGHT)

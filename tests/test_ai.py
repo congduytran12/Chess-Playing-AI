@@ -53,6 +53,19 @@ class SearchTest(unittest.TestCase):
         book = chessAi.buildBook()
         self.assertGreater(len(book), 50)
 
+    def test_opening_names_follow_the_line_not_the_last_book_entry(self):
+        chessAi.buildBook()
+
+        def nameAfter(sans):
+            gs = fromFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')
+            for san in sans.split():
+                gs.makeMove(gs.findMoveBySan(san, gs.getValidMoves()))
+            return chessAi.detectOpening(gs)
+
+        self.assertIsNone(nameAfter('e4'))  # shared by lines of many names
+        self.assertEqual(nameAfter('e4 e5 Nf3 Nc6 Bb5 a6'), 'Ruy Lopez')
+        self.assertEqual(nameAfter('e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6'), 'Sicilian Defense: Najdorf')
+
 
 if __name__ == '__main__':
     unittest.main()

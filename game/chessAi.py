@@ -523,9 +523,10 @@ def buildBook():
                 break
             book.setdefault(gs.getPositionKey(), []).append(move.getCode())
             gs.makeMove(move)
-            names[gs.getPositionKey()] = name
+            names.setdefault(gs.getPositionKey(), set()).add(name)
             moves = gs.getValidMoves()
-    _opening_names = names
+    # a position that lines of different names pass through (like 1.e4) is named by none of them
+    _opening_names = {key: next(iter(found)) for key, found in names.items() if len(found) == 1}
     return book
 
 
