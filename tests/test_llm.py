@@ -207,6 +207,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(facts['pawns_lost'], "không tính: sau đó bị chiếu hết bắt buộc")
         facts = self.facts(dict(self.MOVE, lang='vi', mark='?', loss=1.6, after=-1.8))
         self.assertEqual((facts['assessment_after'], facts['pawns_lost']), ("có lợi rõ rệt", 1.6))
+        self.assertEqual(facts['analysis_mark'], "sai lầm", "the mark's name is Vietnamese too")
 
     def test_scores_come_with_words_for_who_is_better(self):
         facts = self.facts(dict(self.MOVE, before=0.5, after=-1.8, mark='?', loss=2.3))  # Black moved

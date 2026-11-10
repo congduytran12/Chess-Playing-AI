@@ -168,6 +168,7 @@ VIETNAMESE_FACTS = {
     "forced mate for the player": "bạn có nước chiếu hết bắt buộc",
     "forced mate against the player": "bạn bị chiếu hết bắt buộc",
     "not counted: a forced mate follows": "không tính: sau đó bị chiếu hết bắt buộc",
+    "blunder": "sai lầm nặng", "mistake": "sai lầm", "inaccuracy": "nước kém chính xác",
 }
 
 
