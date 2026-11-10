@@ -81,7 +81,8 @@ def _language_note(lang):
         return (" Write the answer in Vietnamese. Keep every move exactly as given in algebraic notation (Nf3, O-O, "
                 "exd5) and call the pieces: king vua, queen hậu, rook xe, bishop tượng, knight mã, pawn tốt. "
                 "Write the sides as Trắng and Đen with a capital letter. Say a side is losing or winning only as the "
-                "evaluation says (a negative score is good for Black), and never call a worse position balanced.")
+                "evaluation says, never call a worse position balanced, and write a loss in pawns as a number "
+                "followed by \"điểm\" (pawn units), not \"tốt\", which means the piece.")
     return ""
 
 
@@ -132,6 +133,26 @@ def _pov_pawns(value, who):
     return round(value, 2)
 
 
+def _assess(value):
+    """Words for a score already from one side's point of view, so the model doesn't judge the number itself."""
+    size = abs(value)
+    if abs(value) >= MATE_THRESHOLD:
+        return "a forced mate for this side" if value > 0 else "a forced mate against this side"
+    if size < 0.3:
+        return "roughly equal"
+    degree = "slightly" if size < 1 else "clearly" if size < 2.5 else "decisively"
+    return "%s %s" % (degree, "better" if value > 0 else "worse")
+
+
+def _lost(loss, *after):
+    """The pawns a move gave up, as a number, or a note when a forced mate is behind it (the number is just a cap)."""
+    if loss is None:
+        return None
+    if any(abs(value) >= MATE_THRESHOLD for value in after):
+        return "not counted: a forced mate follows"
+    return round(loss, 2)
+
+
 def _mover_pawns(score, white):
     """A score from White's point of view, for the side that moved."""
     return _pov_pawns(score if white else -score, "the side that moved")
@@ -150,8 +171,10 @@ def _move_prompt(data, lang="en"):
         "engine_best_reply_to_the_move_played": data.get("reply"),
         "evaluation_before": _mover_pawns(data["before"], white),
         "evaluation_after": _mover_pawns(data["after"], white),
+        "assessment_before": _assess(data["before"] if white else -data["before"]),
+        "assessment_after": _assess(data["after"] if white else -data["after"]),
         "analysis_mark": marks.get(data.get("mark")),
-        "pawns_lost": round(data["loss"], 2) if data.get("loss") is not None else None,
+        "pawns_lost": _lost(data.get("loss"), data["after"]),
     }
     return (
         "You are a concise chess coach. Explain one move of a completed game to a club player, using only the "
@@ -160,7 +183,8 @@ def _move_prompt(data, lang="en"):
         "if the data doesn't show why, say what the move does in general terms. In two or three sentences, under 60 "
         "words: say what the move does. If it is the engine's best move or loses little, say why it is good; "
         "otherwise say what the best move does better and what the engine's reply to the move played takes "
-        "advantage of. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        "advantage of. Say who is better only in the words of the assessment fields, and give pawns_lost only when "
+        "it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps(facts, separators=(",", ":")))
 
 
@@ -175,7 +199,9 @@ def _mistake_prompt(data, lang="en"):
         "engine_best_reply_to_the_move_played": data.get("reply"),
         "evaluation_of_best_move": _pov_pawns(data["score"], "the player"),
         "evaluation_after_move_played": _pov_pawns(data["after"], "the player"),
-        "pawns_lost": round(data["loss"], 2),
+        "assessment_of_best_move": _assess(data["score"]),
+        "assessment_after_move_played": _assess(data["after"]),
+        "pawns_lost": _lost(data["loss"], data["after"]),
     }
     return (
         "You are a concise chess coach. The player made a mistake in their own game. Using only the supplied "
@@ -183,7 +209,8 @@ def _mistake_prompt(data, lang="en"):
         "Evaluations are in pawns from the player's point of view (positive: the player is better). Do not invent "
         "tactics, variations or evaluations that are not in the data; if the data doesn't show the reason, say so "
         "and describe the difference in general terms. In two or three sentences, under 60 words, speaking to the "
-        "player (\"you\"). Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        "player (\"you\"). Say who is better only in the words of the assessment fields, and give pawns_lost only "
+        "when it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps(facts, separators=(",", ":")))
 
 

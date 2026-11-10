@@ -172,6 +172,8 @@ class ProxyTests(unittest.TestCase):
     def test_a_move_the_analysis_marked_says_so(self):
         facts = self.facts(dict(self.MOVE, mark='??', loss=3.456, after=-3.0))
         self.assertEqual((facts['analysis_mark'], facts['pawns_lost']), ('blunder', 3.46))
+        facts = self.facts(dict(self.MOVE, mark='??', loss=9.9, after=-999.0))
+        self.assertEqual(facts['pawns_lost'], "not counted: a forced mate follows")
 
     def facts(self, payload):
         self.assertEqual(self.post(payload).status_code, 200)
@@ -192,8 +194,21 @@ class ProxyTests(unittest.TestCase):
         facts = self.facts(self.MISTAKE)
         self.assertEqual((facts['move_the_player_played'], facts['engine_best_move'], facts['opponents_last_move']),
                          ('g4', 'e4', 'e5'))
-        self.assertEqual(facts['pawns_lost'], 9.9)
+        self.assertEqual(facts['pawns_lost'], "not counted: a forced mate follows", "a mate's loss is only a cap")
+        self.assertEqual((facts['assessment_after_move_played'], facts['assessment_of_best_move']),
+                         ("a forced mate against this side", "roughly equal"))
         self.assertEqual(self.upstream.sent['max_completion_tokens'], 220)
+
+    def test_scores_come_with_words_for_who_is_better(self):
+        facts = self.facts(dict(self.MOVE, before=0.5, after=-1.8, mark='?', loss=2.3))  # Black moved
+        self.assertEqual((facts['assessment_before'], facts['assessment_after']),
+                         ("slightly worse", "clearly better"), "from Black's point of view")
+        self.assertEqual(facts['pawns_lost'], 2.3)
+        facts = self.facts(dict(self.MISTAKE, score=0.0, after=-0.76, loss=0.76))
+        self.assertEqual((facts['assessment_after_move_played'], facts['pawns_lost']), ("slightly worse", 0.76))
+        facts = self.facts(dict(self.MISTAKE, score=3.0, after=-3.0, loss=6.0))
+        self.assertEqual((facts['assessment_of_best_move'], facts['assessment_after_move_played']),
+                         ("decisively better", "decisively worse"))
 
     def test_the_answer_comes_in_the_chosen_language(self):
         for payload, tokens in ((dict(ANALYSIS, lang='vi'), 360), (dict(self.MOVE, lang='vi'), 440),
