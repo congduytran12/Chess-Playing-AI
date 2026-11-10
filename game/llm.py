@@ -82,7 +82,10 @@ def _language_note(lang):
                 "exd5) and call the pieces: king vua, queen hậu, rook xe, bishop tượng, knight mã, pawn tốt. "
                 "Write the sides as Trắng and Đen with a capital letter. Say a side is losing or winning only as the "
                 "evaluation says, never call a worse position balanced, and write a loss in pawns as a number "
-                "followed by \"điểm\" (pawn units), not \"tốt\", which means the piece.")
+                "followed by \"điểm\" (pawn units), not \"tốt\", which means the piece. Use no English words: say "
+                "\"sai lầm nặng\" for a blunder, \"sai lầm\" for a mistake, \"nước kém chính xác\" for an inaccuracy and "
+                "\"nước tốt nhất\" for the best move. Put the data's phrases in your own words, not in quotation marks, "
+                "and spell \"chiếu hết\" (checkmate) with its accents.")
     return ""
 
 
