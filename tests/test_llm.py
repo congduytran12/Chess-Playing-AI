@@ -208,6 +208,12 @@ class ProxyTests(unittest.TestCase):
         facts = self.facts(dict(self.MOVE, lang='vi', mark='?', loss=1.6, after=-1.8))
         self.assertEqual((facts['assessment_after'], facts['pawns_lost']), ("có lợi rõ rệt", 1.6))
         self.assertEqual(facts['analysis_mark'], "sai lầm", "the mark's name is Vietnamese too")
+        self.assertNotIn('evaluation_after', facts, "plain evaluation numbers are left out of a Vietnamese prompt")
+        facts = self.facts(dict(self.MISTAKE, lang='vi', score=0.0, after=-0.76, loss=0.76))
+        self.assertEqual((facts['assessment_after_move_played'], facts['pawns_lost']), ("hơi bất lợi", 0.76))
+        self.assertNotIn('evaluation_of_best_move', facts)
+        facts = self.facts(dict(self.MOVE, before=-0.3, after=-0.2))  # English keeps its numbers
+        self.assertEqual(facts['evaluation_after'], 0.2, "Black moved: White's -0.2 is +0.2 for Black")
 
     def test_scores_come_with_words_for_who_is_better(self):
         facts = self.facts(dict(self.MOVE, before=0.5, after=-1.8, mark='?', loss=2.3))  # Black moved

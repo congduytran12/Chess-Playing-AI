@@ -85,7 +85,8 @@ def _language_note(lang):
                 "followed by \"điểm\" (pawn units), not \"tốt\", which means the piece. Use no English words: say "
                 "\"sai lầm nặng\" for a blunder, \"sai lầm\" for a mistake, \"nước kém chính xác\" for an inaccuracy and "
                 "\"nước tốt nhất\" for the best move. Put the data's phrases in your own words, not in quotation marks, "
-                "and spell \"chiếu hết\" (checkmate) with its accents.")
+                "and spell \"chiếu hết\" (checkmate) with its accents. Name a bad move as a move, for example "
+                "\"nước g4 là một sai lầm nặng\", never \"chơi sai lầm nặng g4\", and do not write evaluation numbers.")
     return ""
 
 
@@ -176,8 +177,11 @@ def _in_language(facts, lang):
     """The facts with their English phrases in the answer's language."""
     if lang != "vi":
         return facts
+    # a small score next to its words confuses the model ("hơi thua 0.1 điểm"): the assessment says it, so the plain
+    # numbers of the evaluations go, keeping only the words for a mate
     return {key: VIETNAMESE_FACTS.get(value, value) if isinstance(value, str) else value
-            for key, value in facts.items()}
+            for key, value in facts.items()
+            if not (key.startswith("evaluation_") and isinstance(value, (int, float)))}
 
 
 def _mover_pawns(score, white):
