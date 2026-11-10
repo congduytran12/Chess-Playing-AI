@@ -19,12 +19,18 @@ app = Flask(__name__)
 
 MAX_PLIES = 1000  # more than any game worth explaining (an analysis lists one more position than moves)
 MOVE_CODE = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$")
-SAN = re.compile(r"^[A-Za-z0-9+#=\-]{1,12}$")
+# a move in algebraic notation (Nf3, exd5, Qh4xe1+, e8=Q#, O-O-O): no other text gets through as a "move"
+SAN = re.compile(r"^(?:O-O(?:-O)?|(?:[a-h]x)?[a-h][1-8](?:=[QRBN])?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8])[+#]?$")
+# a position: pieces, side to move, castling rights, en passant square, move counters
+FEN = re.compile(r"^[pnbrqkPNBRQK1-8/]{15,71} [wb] (?:-|[KQkq]{1,4}) (?:-|[a-h][36]) \d{1,3} \d{1,4}$")
 RESULT = re.compile(r"^[A-Za-z0-9 ,.()'/\-]{0,60}$")
 MARKS = ("??", "?", "?!")
+LANGUAGES = ("en", "vi")  # the languages the coach answers in (game/llm.py LANGUAGES)
+MAX_HISTORY = 12  # moves before the explained one
 MAX_NUMBER = 1000000
-# a request limit per visitor, best effort: it is kept in memory, so every serverless instance counts on its own
-LIMIT_REQUESTS = 12
+# a request limit per visitor, best effort: it is kept in memory, so every serverless instance counts on its own.
+# Explaining single moves is a request each, so the limit is roomier than a game summary alone would need
+LIMIT_REQUESTS = 30
 LIMIT_SECONDS = 600
 visits = {}
 visitsLock = threading.Lock()
@@ -85,6 +91,59 @@ def checkedAnalysis(payload):
     return moves, best, evals, markDict, result
 
 
+def _san(value, allowNone=False):
+    return (allowNone and value is None) or (isinstance(value, str) and SAN.match(value) is not None)
+
+
+def _fen(value):
+    return isinstance(value, str) and FEN.match(value) is not None
+
+
+def checkedMove(payload):
+    """The fields of a request about one move, or None. Nothing but these fields goes on to the prompt."""
+    fen, played, history = payload.get("fen"), payload.get("played"), payload.get("history", [])
+    best, reply = payload.get("best"), payload.get("reply")
+    before, after, mark, loss = payload.get("before"), payload.get("after"), payload.get("mark"), payload.get("loss")
+    if not (_fen(fen) and _san(played) and _san(best, True) and _san(reply, True)):
+        return None
+    if not (isinstance(history, list) and len(history) <= MAX_HISTORY and all(_san(m) for m in history)):
+        return None
+    if not (_number(before) and _number(after) and (mark is None or mark in MARKS)
+            and (loss is None or _number(loss))):
+        return None
+    return {"fen": fen, "played": played, "history": history, "best": best, "reply": reply, "before": before,
+            "after": after, "mark": mark, "loss": loss}
+
+
+def checkedMistake(payload):
+    """The fields of a request about one of the player's mistakes, or None."""
+    fen, opponent, played, best = payload.get("fen"), payload.get("opponent"), payload.get("played"), payload.get("best")
+    reply, score, after, loss = payload.get("reply"), payload.get("score"), payload.get("after"), payload.get("loss")
+    if not (_fen(fen) and _san(opponent, True) and _san(played) and _san(best) and _san(reply, True)):
+        return None
+    if not (_number(score) and _number(after) and _number(loss)):
+        return None
+    return {"fen": fen, "opponent": opponent, "played": played, "best": best, "reply": reply, "score": score,
+            "after": after, "loss": loss}
+
+
+def checkedRequest(payload):
+    """(kind, language, data) of a request that is chess data, or None. A request without a kind is a game's, in
+    English: what an older page sends."""
+    kind, lang = payload.get("kind", "game"), payload.get("lang", "en")
+    if lang not in LANGUAGES:
+        return None
+    if kind == "game":
+        data = checkedAnalysis(payload)
+    elif kind == "move":
+        data = checkedMove(payload)
+    elif kind == "mistake":
+        data = checkedMistake(payload)
+    else:
+        return None
+    return None if data is None else (kind, lang, data)
+
+
 def tooMany(visitor, now):
     with visitsLock:
         recent = [t for t in visits.get(visitor, []) if now - t < LIMIT_SECONDS]
@@ -109,22 +168,23 @@ def coach():
     if request.method == "OPTIONS":
         return "", 204
     payload = request.get_json(silent=True)
-    analysis = checkedAnalysis(payload) if isinstance(payload, dict) else None
-    if analysis is None:
+    checked = checkedRequest(payload) if isinstance(payload, dict) else None
+    if checked is None:
         return jsonify(error="Invalid coaching request"), 400
+    kind, lang, data = checked
     key = os.environ.get("GROQ_API_KEY")
     if not key or coach_module is None:
         return jsonify(error="Browser coaching is not configured"), 503
     if tooMany(visitorOf(request), time.time()):
         return jsonify(error="Too many coaching requests, try again later"), 429
-    prompt = coach_module._prompt(*analysis)
+    prompt = coach_module.prompt_for(kind, data, lang)
     model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
     url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
     try:
         response = requests.post(url, headers={"Authorization": "Bearer " + key}, json={
             "model": model,
             "temperature": 0.2,
-            "max_completion_tokens": 180,
+            "max_completion_tokens": coach_module.max_tokens(kind, lang),
             "reasoning_effort": "low",
             "messages": [
                 {"role": "system", "content": "You explain chess analysis accurately and briefly."},

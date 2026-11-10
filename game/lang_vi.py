@@ -40,6 +40,13 @@ EXACT = {
     "Réti Opening": "Khai cuộc Réti",
     "Play as: Random": "Quân: Tùy ý",  # shorter than "Quân: Ngẫu nhiên", which shrank the row's labels
     "Coach": "Huấn luyện viên", "Coach is thinking...": "Huấn luyện viên đang suy nghĩ...",
+    "Explain": "Giải thích", "The coach is thinking...": "Huấn luyện viên đang suy nghĩ...",
+    "Ask the coach to explain the move on the board (E)": "Nhờ huấn luyện viên giải thích nước đi trên bàn cờ (E)",
+    "Ask the coach why your move was a mistake (E)":
+        "Nhờ huấn luyện viên cho biết vì sao nước đi của bạn là sai lầm (E)",
+    "Pick a move first": "Hãy chọn một nước đi trước", "Try the puzzle first": "Hãy thử giải câu đố trước",
+    "Coach unavailable": "Huấn luyện viên không khả dụng",
+    "Coach unavailable: no answer": "Huấn luyện viên không khả dụng: không có câu trả lời",
     "Close": "Đóng", "Back": "Quay lại", "Next": "Tiếp", "Show": "Hiện", "Hide": "Ẩn",
     # quick chat
     "Hello!": "Xin chào!", "Good luck!": "Chúc may mắn!", "Good game!": "Ván hay!", "Thanks!": "Cảm ơn!",
@@ -440,4 +447,5 @@ TEMPLATES = {
     "The next mistake comes back in %d minutes.": "Nước sai tiếp theo sẽ quay lại sau {0} phút.",
     "The next mistake comes back in %d hours.": "Nước sai tiếp theo sẽ quay lại sau {0} giờ.",
     "The next mistake comes back in %d days.": "Nước sai tiếp theo sẽ quay lại sau {0} ngày.",
+    "Coach unavailable: %s": "Huấn luyện viên không khả dụng: {0}",
 }

@@ -136,6 +136,38 @@ class LanguageTest(unittest.TestCase):
         finally:
             i18n.setLanguage('en')
 
+    def test_the_coach_texts_are_translated(self):
+        for text in ("Explain", "The coach is thinking...", "Pick a move first", "Try the puzzle first",
+                     "Coach unavailable", "Coach unavailable: no answer", main.TOOLTIPS['explain'],
+                     main.tooltipText('explain', puzzle=True)):
+            self.assertNotEqual(i18n.tr(text), text, text)
+        self.assertEqual(i18n.tr(main.coachErrorText(RuntimeError("Too many requests"))),
+                         "Huấn luyện viên không khả dụng: Too many requests")
+
+    def test_the_coach_buttons_fit_their_rows_in_both_languages(self):
+        # the labels of the rows that hold Explain, at the label size the row ends up with (never below the smallest)
+        saved, main.llm.enabled = main.llm.enabled, lambda: True
+        try:
+            for kind in ('landscape', 'portrait'):
+                main.setLayout(kind, 1000 if kind == 'portrait' else None)
+                for language in ('en', 'vi'):
+                    main.applyLanguage(language)
+                    for args in ((1, False, False, True, True), (main.MISTAKES_MODE, False)):
+                        rows, rects = main.panelRows(*args), main.panelLayout(*args)
+                        labels = {name: i18n.tr(text) for name, text in (
+                            ('explain', "Explain"), ('practice', "Practice (3)"), ('skip', "Next puzzle"),
+                            ('hint', "Show move"))}
+                        sizes = main.evenLabelSizes(rows, rects, labels)
+                        for name in ('explain', 'practice', 'skip', 'hint'):
+                            if name in rects:
+                                width = main.get_font(sizes[name], True, True).size(labels[name])[0]
+                                self.assertLessEqual(width, main.buttonTextWidth(rects[name]),
+                                                     "%s: %s in %s" % (kind, name, language))
+        finally:
+            main.llm.enabled = saved
+            main.setLayout('landscape')
+            main.applyLanguage('vi')
+
     def test_the_help_pages_fit_in_vietnamese(self):
         box, buttonsTop = main.ACCOUNT_BOX, main.helpLayout()['prev'].y
         x, width = box.x + 40, box.width - 80

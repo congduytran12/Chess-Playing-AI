@@ -55,7 +55,42 @@ def enabled():
     return WASM or bool(os.environ.get("GROQ_API_KEY"))
 
 
-def _prompt(move_codes, best_san, evals, marks, result):
+# What the coach is asked, as the browser sends it to /api/llm (and the desktop turns into a prompt itself). There are
+# three kinds, each with the language to answer in; the server checks every field (api/llm.py), so no text of the
+# caller's own reaches the model:
+#   game     moves (codes), best (SAN, one per position), evals (White's point of view), marks, result
+#   move     fen (before the move), played, history (SAN), best, reply, before and after (White's point of view),
+#            mark, loss
+#   mistake  fen (the player to move), opponent (the move before it), played, best, reply, score (the best move's,
+#            for the player), after (the move played, for the player), loss
+KINDS = ("game", "move", "mistake")
+LANGUAGES = {"en": "English", "vi": "Vietnamese"}
+HISTORY_PLIES = 10  # the moves before the explained one that the coach is told
+CHECKMATE = 1000  # chessAi.CHECKMATE and MATE_THRESHOLD: this file stands alone (the server loads it by itself)
+MATE_THRESHOLD = 800
+TOKENS = {"game": 180, "move": 220, "mistake": 220}  # the answer's limit; Vietnamese needs about twice as many
+
+
+def max_tokens(kind, lang="en"):
+    return TOKENS.get(kind, TOKENS["game"]) * (2 if lang == "vi" else 1)
+
+
+# the instruction for the answer's language ("" for English)
+def _language_note(lang):
+    if lang == "vi":
+        return (" Write the answer in Vietnamese. Keep every move exactly as given in algebraic notation (Nf3, O-O, "
+                "exd5) and call the pieces: king vua, queen hậu, rook xe, bishop tượng, knight mã, pawn tốt.")
+    return ""
+
+
+def _pawns(score):
+    """A score in pawns for the model: a number, or a word for a forced mate (the analysis's mate scores are huge)."""
+    if abs(score) >= MATE_THRESHOLD:
+        return "forced mate for White" if score > 0 else "forced mate for Black"
+    return round(score, 2)
+
+
+def _prompt(move_codes, best_san, evals, marks, result, lang="en"):
     mistakes = []
     for ply, (mark, loss) in sorted(marks.items()):
         best = best_san[ply] if ply < len(best_san) else None
@@ -65,27 +100,109 @@ def _prompt(move_codes, best_san, evals, marks, result):
             "loss": round(loss, 2),
             "played": move_codes[ply] if ply < len(move_codes) else None,
             "best": best,
-            "evaluation_after": round(evals[ply], 2) if ply < len(evals) else None,
+            # evals[i] is the position before move i: the one after the move is the next
+            "evaluation_before": _pawns(evals[ply]) if ply < len(evals) else None,
+            "evaluation_after": _pawns(evals[ply + 1]) if ply + 1 < len(evals) else None,
         })
     return (
         "You are a concise chess coach. Explain the following completed game using only "
         "the supplied Stockfish analysis. Do not invent tactics or evaluations. Mention "
         "the two most important lessons and one practical improvement. If there are no "
-        "mistakes, describe one strategic strength. Keep the answer under 90 words. "
-        "Return plain text, no headings or markdown.\n\n"
+        "mistakes, describe one strategic strength. Evaluations are in pawns from White's point of view "
+        "(positive: White is better), while loss is what the side that moved gave up. "
+        "Keep the answer under 90 words. "
+        "Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps({"moves": move_codes, "mistakes": mistakes, "result": result},
                      separators=(",", ":"))
     )
 
 
-def _request_groq(prompt):
+def _fen_side(fen):
+    """The side to move in a FEN. (Its move counters aren't used: GameState.toFen() always writes "0 1".)"""
+    return "White" if fen.split()[1] == "w" else "Black"
+
+
+def _pov_pawns(value, who):
+    """A score already from the point of view of who ("the side that moved", "the player"): a number, or a word for a
+    forced mate."""
+    if abs(value) >= MATE_THRESHOLD:
+        return "forced mate for " + who if value > 0 else "forced mate against " + who
+    return round(value, 2)
+
+
+def _mover_pawns(score, white):
+    """A score from White's point of view, for the side that moved."""
+    return _pov_pawns(score if white else -score, "the side that moved")
+
+
+def _move_prompt(data, lang="en"):
+    side = _fen_side(data["fen"])
+    white = side == "White"
+    marks = {"??": "blunder", "?": "mistake", "?!": "inaccuracy"}
+    facts = {
+        "position_before_the_move": data["fen"],
+        "side_that_moved": side,
+        "previous_moves": data.get("history") or [],
+        "move_played": data["played"],
+        "engine_best_move": data.get("best"),
+        "engine_best_reply_to_the_move_played": data.get("reply"),
+        "evaluation_before": _mover_pawns(data["before"], white),
+        "evaluation_after": _mover_pawns(data["after"], white),
+        "analysis_mark": marks.get(data.get("mark")),
+        "pawns_lost": round(data["loss"], 2) if data.get("loss") is not None else None,
+    }
+    return (
+        "You are a concise chess coach. Explain one move of a completed game to a club player, using only the "
+        "supplied Stockfish analysis. Evaluations are in pawns from the point of view of the side that moved "
+        "(positive: that side is better). Do not invent tactics, variations or evaluations that are not in the data; "
+        "if the data doesn't show why, say what the move does in general terms. In two or three sentences, under 60 "
+        "words: say what the move does. If it is the engine's best move or loses little, say why it is good; "
+        "otherwise say what the best move does better and what the engine's reply to the move played takes "
+        "advantage of. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        + json.dumps(facts, separators=(",", ":")))
+
+
+def _mistake_prompt(data, lang="en"):
+    side = _fen_side(data["fen"])
+    facts = {
+        "position": data["fen"],
+        "player": side,
+        "opponents_last_move": data.get("opponent"),
+        "move_the_player_played": data["played"],
+        "engine_best_move": data["best"],
+        "engine_best_reply_to_the_move_played": data.get("reply"),
+        "evaluation_of_best_move": _pov_pawns(data["score"], "the player"),
+        "evaluation_after_move_played": _pov_pawns(data["after"], "the player"),
+        "pawns_lost": round(data["loss"], 2),
+    }
+    return (
+        "You are a concise chess coach. The player made a mistake in their own game. Using only the supplied "
+        "Stockfish analysis, explain what was wrong with the move they played and what the best move does better. "
+        "Evaluations are in pawns from the player's point of view (positive: the player is better). Do not invent "
+        "tactics, variations or evaluations that are not in the data; if the data doesn't show the reason, say so "
+        "and describe the difference in general terms. In two or three sentences, under 60 words, speaking to the "
+        "player (\"you\"). Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        + json.dumps(facts, separators=(",", ":")))
+
+
+def prompt_for(kind, data, lang="en"):
+    """The prompt for a checked request: data is the game's (moves, best, evals, marks, result) or the move's or the
+    mistake's fields."""
+    if kind == "move":
+        return _move_prompt(data, lang)
+    if kind == "mistake":
+        return _mistake_prompt(data, lang)
+    return _prompt(*data, lang=lang)
+
+
+def _request_groq(prompt, tokens=TOKENS["game"]):
     key = os.environ["GROQ_API_KEY"]
     model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
     url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
     body = json.dumps({
         "model": model,
         "temperature": 0.2,
-        "max_completion_tokens": 180,
+        "max_completion_tokens": tokens,
         "reasoning_effort": "low",
         "messages": [
             {"role": "system", "content": "You explain chess analysis accurately and briefly."},
@@ -113,8 +230,8 @@ def _request_groq(prompt):
     return text or None
 
 
-def _request(prompt):
-    return _request_groq(prompt)
+def _request(prompt, tokens=TOKENS["game"]):
+    return _request_groq(prompt, tokens)
 
 
 async def _request_browser(analysis):
@@ -147,15 +264,46 @@ async def _request_browser(analysis):
     return text.strip() or None
 
 
-async def explain_game(move_codes, best_san, evals, marks, result):
+def move_payload(lang, fen, played, history, best, reply, before, after, mark=None, loss=None):
+    """What the coach is asked about one move: the position before it (fen), the move (SAN) and the ones before it,
+    the analysis's best move for that position and best reply to the move played (SAN or None), and the evaluations
+    before and after it, from White's point of view; mark and loss when the analysis marked it."""
+    return {"kind": "move", "lang": lang, "fen": fen, "played": played, "history": list(history)[-HISTORY_PLIES:],
+            "best": best, "reply": reply, "before": round(before, 2), "after": round(after, 2), "mark": mark,
+            "loss": None if loss is None else round(loss, 2)}
+
+
+def mistake_payload(lang, fen, opponent, played, best, reply, score, after, loss):
+    """What the coach is asked about one of the player's mistakes: the position with the player to move (fen), the
+    opponent's move before it, the move played and the best one (SAN), the best reply to the move played (SAN or
+    None), and the scores of the best move and of the move played, for the player."""
+    return {"kind": "mistake", "lang": lang, "fen": fen, "opponent": opponent, "played": played, "best": best,
+            "reply": reply, "score": round(score, 2), "after": round(after, 2), "loss": round(loss, 2)}
+
+
+async def explain(payload):
+    """Return a short explanation of a move or a mistake (move_payload, mistake_payload), or None when coaching is
+    not configured."""
+    if not enabled():
+        return None
+    if WASM:
+        return await _request_browser(payload)
+    kind, lang = payload["kind"], payload["lang"]
+    prompt = prompt_for(kind, payload, lang)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _request, prompt, max_tokens(kind, lang))
+
+
+async def explain_game(move_codes, best_san, evals, marks, result, lang="en"):
     """Return a short explanation, or None when coaching is not configured."""
     if not enabled():
         return None
     if WASM:
         return await _request_browser({
+            "kind": "game", "lang": lang,
             "moves": list(move_codes), "best": list(best_san), "evals": [round(e, 2) for e in evals],
             "marks": [[ply, mark, round(loss, 2)] for ply, (mark, loss) in sorted(marks.items())],
             "result": result or ""})
-    prompt = _prompt(move_codes, best_san, evals, marks, result)
+    prompt = _prompt(move_codes, best_san, evals, marks, result, lang)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _request, prompt)
+    return await loop.run_in_executor(None, _request, prompt, max_tokens("game", lang))

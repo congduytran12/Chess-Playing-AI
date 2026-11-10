@@ -114,6 +114,11 @@ TURN_BAR_WIDTH = 5  # the accent bar on the strip of the player to move
 STATUS_HEIGHT = 46  # the status message slot above the lower player strip
 # share of a row's width, against 1 for other controls (the menu is an icon; Practice shares a row with four arrows)
 CONTROL_WEIGHTS = {'menu': 0.45, 'practice': 3}
+# weights of a particular row, over CONTROL_WEIGHTS (the keys are the row's names): Explain among the arrows is wider
+# than an arrow, and in Your mistakes the three buttons get what their labels need (Vietnamese ones are the longest:
+# Hiện nước đi, Giải thích, Câu tiếp theo, which fit the landscape panel at its smallest label size)
+ROW_WEIGHTS = {('first', 'prev', 'next', 'last', 'explain', 'practice'): {'explain': 1.5},
+               ('hint', 'explain', 'skip'): {'hint': 1.15, 'explain': 0.9, 'skip': 1.2}}
 INFO_HEIGHT = 54  # the review info box after the game
 
 # --- layouts: how the canvas is arranged. 'landscape' (desktop always, and a browser window wider than tall): the
@@ -538,6 +543,7 @@ def applyLanguage(code):
     i18n.setLanguage(code)
     UI_CACHE.clear()  # the texts drawn so far were in the other language
     FONT_CACHE.clear()  # and the buttons' font depends on the language
+    LABEL_FIT_CACHE.clear()  # so does the size at which a label fits its button
 
 
 def setBoardTheme(name):
@@ -678,8 +684,9 @@ async def pawnPromotionPopup(screen, color, row, col, flip=False):
 
 
 # names of the panel controls, row by row from the top; which controls exist depends on the mode
-# graph: after the game, once an analysis exists, its evaluation graph replaces the Analyze game button, and Practice
-# (the player's mistakes as puzzles) joins the moves' arrows
+# graph: after the game, once an analysis exists, its evaluation graph replaces the Analyze game button, Explain (the
+# coach on the shown move) takes the Hint button's place and Practice (the player's mistakes as puzzles) joins the
+# moves' arrows
 # guest: online in a room as the guest, who has no invite link to copy (only the host invites)
 # online in a room the hint shares the row of Copy link and Chat
 def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=False, guest=False):
@@ -688,7 +695,9 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
     elif modeIndex == 1:  # Local 2-Player
         rows = [['mode'], ['clock', 'hint']]
     elif modeIndex in PUZZLE_MODES:  # the puzzle's text, the hint, and skipping to the next one
-        rows = [['mode'], ['puzzleInfo'], ['hint', 'skip']]
+        # one of the player's own mistakes can also be explained (the coach, once it is set up)
+        rows = [['mode'], ['puzzleInfo'], ['hint', 'explain', 'skip'] if modeIndex == MISTAKES_MODE and llm.enabled()
+                else ['hint', 'skip']]
     elif not connected:  # Online, choosing a room
         rows = [['mode'], ['room', 'clock'], ['host', 'join']]
         if canRejoin:
@@ -702,7 +711,15 @@ def panelRows(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fals
         rows = [[name for name in row if name not in ('hint', 'invite')] for row in rows
                 if not set(row) & {'level', 'side', 'clock', 'roomInfo'}]
     if reviewing:  # after the game: analysis and stepping through the moves
-        rows += [['graph' if graph else 'analyze'], ['first', 'prev', 'next', 'last'] + (['practice'] if graph else [])]
+        arrows = ['first', 'prev', 'next', 'last']
+        if graph and llm.enabled():
+            # once analyzed, the coach explains the shown move: in the Hint button's place (it is off after the
+            # game), or among the arrows where there is no Hint (a phone's compact review, online without a room)
+            if any('hint' in row for row in rows):
+                rows = [['explain' if name == 'hint' else name for name in row] for row in rows]
+            else:
+                arrows.append('explain')
+        rows += [['graph' if graph else 'analyze'], arrows + (['practice'] if graph else [])]
     elif modeIndex in (0, 1) or (modeIndex == 2 and connected):  # online without a room: no game to resign yet
         rows.append(['resign', 'draw'])
     rows.append(['undo', 'restart', 'account', 'menu'])  # the menu holds the rarer actions (MENU_ITEMS)
@@ -718,11 +735,12 @@ def panelLayout(modeIndex, connected, canRejoin=False, reviewing=False, graph=Fa
     y = layout.controlsBottom - sum(heights) - (len(rows) - 1) * layout.rowGap
     gap = layout.controlGap
     for row, height in zip(rows, heights):
-        # controls share the row width, 10px apart (scaled); CONTROL_WEIGHTS makes some narrower
-        unit = (layout.controlsWidth - gap * (len(row) - 1)) / sum(CONTROL_WEIGHTS.get(name, 1) for name in row)
+        # controls share the row width, 10px apart (scaled); CONTROL_WEIGHTS makes some narrower, ROW_WEIGHTS some rows'
+        weights = {**CONTROL_WEIGHTS, **ROW_WEIGHTS.get(tuple(row), {})}
+        unit = (layout.controlsWidth - gap * (len(row) - 1)) / sum(weights.get(name, 1) for name in row)
         x = layout.controlsX
         for i, name in enumerate(row):
-            width = round(unit * CONTROL_WEIGHTS.get(name, 1))
+            width = round(unit * weights.get(name, 1))
             if i == len(row) - 1:
                 width = layout.controlsX + layout.controlsWidth - x  # last one absorbs rounding
             rects[name] = p.Rect(x, y, width, height)
@@ -1174,8 +1192,10 @@ async def main():
     reviewGs = None  # the position at reviewPly
     wasGameOver = False  # the game was over last frame (a game that just ended leaves any looking back)
     reviewScroll = False  # scroll the move log to the shown move on the next draw
-    analysis = None  # analysis plus optional {'coachTask', 'coach', 'coachOpen'} from llm.py
+    analysis = None  # analysis plus the coach's parts ('coachTask', 'coach', 'explainTask', ...) from llm.py
     coachRect = None  # where the coach's card was drawn this frame (None: not showing); a click on it closes it
+    coachClose = None  # what closes that card
+    mistakeNotes = {}  # (a mistake's key, language) -> the coach's explanation of it, kept while the game runs
     moveList = moveListLayout(0, STRIP_HEIGHT, STRIP_HEIGHT + 100)  # the move list as last drawn (moveListLayout)
     # pressing on the move list: {'pos', 'scroll' (at the press), 'active'}; it scrolls the list once the pointer
     # moved DRAG_THRESHOLD px with the button held, else the release selects the move under the press
@@ -1226,6 +1246,8 @@ async def main():
             analysis['task'].cancel()
         if analysis is not None and analysis.get('coachTask') is not None:
             analysis['coachTask'].cancel()
+        if analysis is not None and analysis.get('explainTask') is not None:
+            analysis['explainTask']['task'].cancel()
         reviewPly = None
         reviewGs = None
         analysis = None
@@ -1308,8 +1330,9 @@ async def main():
         clocks = {'w': 0, 'b': 0}
         clockHistory = [dict(clocks)]
         playerWhiteHuman, playerBlackHuman = data.color == 'w', data.color == 'b'
+        # why / whyOpen: the coach on this mistake (the asking task and its language), and its card
         puzzle = {'data': data, 'seen': 1, 'wait': None, 'failed': False, 'hinted': False, 'done': False,
-                  'revealed': False, 'change': 0, 'hint': None, 'judging': None}
+                  'revealed': False, 'change': 0, 'hint': None, 'judging': None, 'why': None, 'whyOpen': False}
         if isinstance(data, mistakes.Mistake):  # the move played in the game, and the best one, as the panel says them
             if mistakeSet is not None:
                 mistakeSet['seen'].add(data.key)
@@ -1384,6 +1407,61 @@ async def main():
         mistakeSet = {'source': 'game', 'items': list(gameMistakes()), 'seen': set(), 'loading': False,
                       'error': None, 'premium': account.isPremium, 'locked': 0, 'nextDue': None}
         switchMode(MISTAKES_MODE)
+
+    # Explain after the game: asks the coach about the shown move of the analyzed game (the answer is kept, per move
+    # and language) and opens its card; a move it has answered already just opens the card
+    def explainMove():
+        ply = shownPly()
+        if analysis is None or not analysis['done'] or ply < 1 or analysis.get('explainTask') is not None:
+            return
+        lang = i18n.language()
+        if (ply, lang) in analysis['explained']:
+            analysis['explainOpen'], analysis['coachOpen'] = ply, False
+            return
+        try:
+            payload = explainMovePayload(gs.moveLog, analysis, ply, lang)
+        except Exception as e:  # the analysis lists every position of the game, so this isn't expected
+            print("Main: the move couldn't be described to the coach:", e)
+            showStatus("Coach unavailable", 5000)
+            return
+        analysis['explainTask'] = {'ply': ply, 'lang': lang, 'task': asyncio.ensure_future(llm.explain(payload))}
+
+    # Explain in Your mistakes: why the move played in the game was a mistake and what the best one does better
+    def explainThisMistake():
+        data = puzzle['data'] if puzzle is not None else None
+        if not isinstance(data, mistakes.Mistake) or puzzle.get('why') is not None:
+            return
+        lang = i18n.language()
+        if (data.key, lang) in mistakeNotes:
+            puzzle['whyOpen'] = True
+            return
+        puzzle['why'] = {'lang': lang, 'task': asyncio.ensure_future(explainMistake(data, lang))}
+        showStatus("Coach is thinking...", 30000)
+
+    def askCoach():
+        if currentModeIndex in PUZZLE_MODES:
+            explainThisMistake()
+        else:
+            explainMove()
+
+    # the coach's card over the move list, when one shows: (its text, a note after its title, what closes it) or None.
+    # The explanation of a move shows while that move is on the board, else the summary of the game; in Your
+    # mistakes, the mistake's
+    def coachCard():
+        if gameOver and analysis is not None:
+            ply = analysis.get('explainOpen')
+            text = analysis['explained'].get((ply, i18n.language())) if ply is not None and ply == shownPly() else None
+            if text:
+                i = ply - 1
+                note = "%d.%s%s" % (i // 2 + 1, "" if i % 2 == 0 else "..", gs.moveLog[i].san or "")
+                return text, note, lambda: analysis.update(explainOpen=None)
+            if analysis.get('coachOpen') and analysis.get('coach'):
+                return analysis['coach'], None, lambda: analysis.update(coachOpen=False)
+        if puzzle is not None and puzzle.get('whyOpen'):
+            text = mistakeNotes.get((puzzle['data'].key, i18n.language()))
+            if text:
+                return text, None, lambda: puzzle.update(whyOpen=False)
+        return None
 
     # the next puzzle is the same one when the player starts it over; in mode Your mistakes with none on the board,
     # the account is asked again (missed mistakes come back soon)
@@ -1536,6 +1614,9 @@ async def main():
         clearAnnotations()
         if puzzle is not None and puzzle['judging'] is not None:
             puzzle['judging'].cancel()
+            showStatus("", 0)
+        if puzzle is not None and puzzle.get('why') is not None:
+            puzzle['why']['task'].cancel()
             showStatus("", 0)
         puzzle = None
         undoAsked = drawOffered = hintUsedOnline = False
@@ -1943,7 +2024,10 @@ async def main():
         inProgress = not gameOver
         online = currentModeIndex == 2
         if currentModeIndex in PUZZLE_MODES:
+            # explain: one of the player's mistakes, once it was tried (or given up): it tells the best move
             return {'hint': puzzle is not None and not puzzle['done'] and humanTurn, 'skip': puzzle is not None,
+                    'explain': (puzzle is not None and isinstance(puzzle['data'], mistakes.Mistake)
+                                and (puzzle['failed'] or puzzle['done']) and puzzle.get('why') is None),
                     'undo': False, 'save': False, 'load': False, 'analyze': False, 'first': shownPly() > 0,
                     'prev': shownPly() > 0, 'next': shownPly() < len(gs.moveLog), 'last': shownPly() < len(gs.moveLog)}
         return {
@@ -1958,6 +2042,8 @@ async def main():
             'chat': chatReady(p.time.get_ticks(), lastChatSent),
             'analyze': analysis is None and len(gs.moveLog) > 0,
             'practice': bool(gameMistakes()),
+            'explain': (analysis is not None and analysis['done'] and shownPly() > 0
+                        and analysis.get('explainTask') is None),
             'first': shownPly() > 0,
             'prev': shownPly() > 0,
             'next': shownPly() < len(gs.moveLog),
@@ -1975,7 +2061,12 @@ async def main():
                 return "No mistakes to practise" if currentModeIndex == MISTAKES_MODE else "No puzzles found"
             if name == 'hint':
                 return "The puzzle is solved" if puzzle is not None and puzzle['done'] else "Wait for your turn"
-        return disabledReason(name, gameOver=gameOver, online=currentModeIndex == 2, connected=networkConnected,
+            if name == 'explain':
+                if puzzle is None:
+                    return "No mistakes to practise"
+                return "The coach is thinking..." if puzzle.get('why') is not None else "Try the puzzle first"
+        coachBusy = analysis is not None and analysis.get('explainTask') is not None
+        return disabledReason(name, gameOver=gameOver, coachBusy=coachBusy, online=currentModeIndex == 2, connected=networkConnected,
                               humanTurn=humanTurn, hintsLeft=hintsLeft(), hintBusy=hintState is not None,
                               prompt=pendingPrompt is not None,
                               analysis=None if analysis is None else 'done' if analysis['done'] else 'running',
@@ -3055,7 +3146,7 @@ async def main():
                         continue
 
                 if coachRect is not None and coachRect.collidepoint(location):  # the coach's card: a click closes it
-                    analysis['coachOpen'] = False
+                    coachClose()
                     continue
 
                 clicked = None
@@ -3142,12 +3233,16 @@ async def main():
 
                 elif clicked == 'analyze':
                     # 'mistakes': the player's, as puzzles (gameMistakes), 'kept': sent to the account
+                    # coachTask / coach / coachOpen: the coach's summary of the game; explainTask (ply, language, task),
+                    # explained ((ply, language) -> text) and explainOpen (the ply whose card shows): the shown move
                     analysis = {'evals': [], 'best': [], 'bestSan': [], 'done': False, 'task': None,
                                 'mistakes': None, 'kept': False, 'coachTask': None, 'coach': None,
-                                'coachError': None}
+                                'coachError': None, 'explainTask': None, 'explained': {}, 'explainOpen': None}
                     analysis['task'] = asyncio.ensure_future(analyzeGame(analysis))
                 elif clicked == 'practice':
                     practiseGame()
+                elif clicked == 'explain':
+                    askCoach()
                 elif clicked == 'graph':  # shows the position at that point; dragging keeps following
                     graphHeld = e.button == 1
                     reviewTo(graphPly(layout['graph'], len(gs.moveLog), location[0]))
@@ -3281,10 +3376,18 @@ async def main():
                     continue
 
                 if e.key == p.K_ESCAPE and coachRect is not None:  # closes the coach's card
-                    analysis['coachOpen'] = False
+                    coachClose()
                     continue
                 if e.key in (p.K_h, p.K_F1):  # How to play (it closes an open dropdown, as a click would)
                     helpPage, openDropdown = 0, None
+                    continue
+                if e.key == p.K_e and 'explain' in sum(panelRows(currentModeIndex, networkConnected, canRejoin, gameOver,
+                                                                 analysis is not None, guest), []):
+                    # Explain, as the button does: or why it can't be asked
+                    if controlStates().get('explain'):
+                        askCoach()
+                    elif reasonDisabled('explain'):
+                        showStatus(reasonDisabled('explain'))
                     continue
                 if e.key == p.K_f:  # Flip board, as in the menu
                     menuAction('flip')
@@ -3436,7 +3539,10 @@ async def main():
         outcome = None if currentModeIndex in PUZZLE_MODES else getOutcome(gs, positionHistory, gameResult)
         gameOver = outcome is not None
         if GAME_VIEW is not None:
+            shownCard = coachCard()  # the coach's card: (text, note) or None
             GAME_VIEW.update(moves=[move.getCode() for move in gs.moveLog], whiteToMove=gs.whiteToMove,
+                             coach=shownCard[:2] if shownCard else None,
+                             shownPly=shownPly(),
                              humanTurn=humanTurn, over=gameOver, result=outcome, online=bool(
                                  multiplayerMode and networkConnected), room=roomCode, game=onlineGame,
                              version=onlineVersion, color=ourColor() if multiplayerMode and networkConnected else None,
@@ -3490,7 +3596,7 @@ async def main():
             marksForCoach = moveMarks(analysis, gs.moveLog)
             analysis['coachTask'] = asyncio.ensure_future(llm.explain_game(
                 [move.getCode() for move in gs.moveLog], analysis['bestSan'], analysis['evals'],
-                marksForCoach, outcome[0] if outcome else ""))
+                marksForCoach, outcome[0] if outcome else "", i18n.language()))
         if (analysis is not None and analysis.get('coachTask') is not None
                 and analysis['coachTask'].done() and analysis.get('coach') is None
                 and analysis.get('coachError') is None):
@@ -3500,9 +3606,45 @@ async def main():
                     analysis['coachOpen'] = True  # shown as a card over the move list until it's closed
             except llm.LLMError as error:
                 analysis['coachError'] = str(error)
-                # the service's own words can be long (a JSON body): the status keeps the start of them
-                detail = " ".join(str(error).split())
-                showStatus("Coach unavailable: " + (detail if len(detail) <= 70 else detail[:67] + "..."), 5000)
+                showStatus(coachErrorText(error), 5000)
+        # the coach's answer about the shown move: kept for the move and the language, and its card opens when the
+        # player is still looking at that move
+        if analysis is not None and analysis.get('explainTask') is not None and analysis['explainTask']['task'].done():
+            asked, analysis['explainTask'] = analysis['explainTask'], None
+            try:
+                text = asked['task'].result()
+                if text:
+                    analysis['explained'][(asked['ply'], asked['lang'])] = text
+                    if shownPly() == asked['ply']:
+                        analysis['explainOpen'], analysis['coachOpen'] = asked['ply'], False
+                else:
+                    showStatus("Coach unavailable: no answer", 5000)
+            except llm.LLMError as error:
+                showStatus(coachErrorText(error), 5000)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print("Main: the coach failed:", e)
+                showStatus("Coach unavailable", 5000)
+        # and about one of the player's mistakes
+        if puzzle is not None and puzzle.get('why') is not None and puzzle['why']['task'].done():
+            asked, puzzle['why'] = puzzle['why'], None
+            if statusText == "Coach is thinking...":  # not a newer message
+                showStatus("", 0)
+            try:
+                text = asked['task'].result()
+                if text:
+                    mistakeNotes[(puzzle['data'].key, asked['lang'])] = text
+                    puzzle['whyOpen'] = True
+                else:
+                    showStatus("Coach unavailable: no answer", 5000)
+            except llm.LLMError as error:
+                showStatus(coachErrorText(error), 5000)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print("Main: the coach failed:", e)
+                showStatus("Coach unavailable", 5000)
         if (gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog
                 and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True
@@ -3580,12 +3722,14 @@ async def main():
                 drawEvalGraph(screen, layout['graph'], analysis['evals'], len(gs.moveLog), marks, shownPly(),
                               analysis['done'])
         # the coach's explanation is too long for the status slot: a card over the move list, until it's closed
-        coachRect = None
-        if gameOver and analysis is not None and analysis.get('coachOpen') and analysis.get('coach'):
+        coachRect = coachClose = None
+        card = coachCard()
+        if card is not None:
             listTop, listBottom = areas['list']
             coachRect = p.Rect(LAYOUT.panel.x + scaled(10), listTop + scaled(4), LAYOUT.panel.width - scaled(20),
                                max(listBottom - listTop - scaled(8), scaled(40)))
-            drawCoachCard(screen, coachRect, analysis['coach'])
+            drawCoachCard(screen, coachRect, card[0], card[1])
+            coachClose = card[2]
         taken = capturedPieces(shownGs)
         balance = materialBalance(shownGs.board)
         # during the game the clocks keep running while looking back; after it they show the reviewed move's times
@@ -3632,6 +3776,7 @@ async def main():
         }
         labels['analyze'] = "Analyze game"  # once the analysis starts its graph takes the button's place
         labels['practice'] = practiceLabel(len(gameMistakes()))
+        labels['explain'] = "Explain"
         if currentModeIndex in PUZZLE_MODES:
             labels['hint'] = ("Show move" if puzzle is not None and puzzle['hint'] is not None
                               and puzzle['hint'][0] == len(gs.moveLog) and hintMove is None else "Hint")
@@ -5217,6 +5362,68 @@ async def judgeAlternative(mistake, codes):
     return alternativeSolves(mistake.score, -score)
 
 
+# --- the coach on one move or one mistake (llm.py): what it is told, and how a failure reads
+
+# what the coach is asked about the move that led to the shown position (ply moves in, at least one) of an analyzed
+# game: the position before it, the move and the ones before it in algebraic notation, and what the analysis says
+def explainMovePayload(moveLog, analysis, ply, lang):
+    index = ply - 1
+    board = GameState()
+    first = max(0, index - llm.HISTORY_PLIES)  # the moves the coach is told
+    fen, texts = None, []
+    for i, move in enumerate(moveLog[:ply]):
+        if i == index:
+            fen = board.toFen()
+        if i >= first:
+            suffix = move.san[-1] if move.san and move.san[-1] in '+#' else ''
+            texts.append(board.getSan(move, board.getValidMoves()) + suffix)
+        board.makeMove(move)
+    mark, loss = moveMarks(analysis, moveLog).get(index, (None, None))
+    best, evals = analysis['bestSan'], analysis['evals']
+    return llm.move_payload(lang, fen, texts[-1], texts[:-1], best[index], best[index + 1] if index + 1 < len(best)
+                            else None, evals[index], evals[index + 1], mark, loss)
+
+
+# what the coach is asked about one of the player's mistakes: the position (the player to move), the opponent's move
+# before it, the move played and the best one, and, searched now on a board of its own as the analysis did, the best
+# reply to the move played and how it scores for the player. Without a search (it fails) the reply is left out and the
+# score is the best move's less what the move lost
+async def mistakeFacts(mistake, lang):
+    board = GameState.fromFen(mistake.fen)
+    history = [board.getPositionKey()]
+    moves = board.getValidMoves()
+    opponent = board.findMoveByCode(mistake.moves[0], moves)
+    moves = board.makeMoveWithSan(opponent, moves)
+    history.append(board.getPositionKey())
+    fen = board.toFen()
+    bestSan = board.getSan(board.findMoveByCode(mistake.moves[1], moves), moves)
+    played = board.findMoveByCode(mistake.played, moves)
+    moves = board.makeMoveWithSan(played, moves)
+    history.append(board.getPositionKey())
+    reply, after = None, mistake.score - mistake.loss
+    if moves:
+        try:
+            score, best, _ = await stockfish.analyzePosition(board, moves, ANALYSIS_SECONDS, history=history)
+            reply, after = board.getSan(best, moves), -score  # the opponent's score, for the player
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print("Main: the reply to a mistake wasn't searched:", e)
+    elif not board.inCheck:  # stalemate
+        after = chessAi.STALEMATE
+    return llm.mistake_payload(lang, fen, opponent.san, played.san, bestSan, reply, mistake.score, after, mistake.loss)
+
+
+async def explainMistake(mistake, lang):
+    return await llm.explain(await mistakeFacts(mistake, lang))
+
+
+# the status line for a coach that failed: the service's own words can be long (a JSON body), so it keeps the start
+def coachErrorText(error):
+    detail = " ".join(str(error).split())
+    return "Coach unavailable: " + (detail if len(detail) <= 70 else detail[:67] + "...")
+
+
 def drawPuzzleInfo(screen, rect, lines):
     first = get_fitting_text(lines[0], rect.width, scaled(20), UI['text'], True)
     screen.blit(first, (rect.centerx - first.get_width() / 2, rect.y))
@@ -5483,7 +5690,9 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
         screen.blit(part, (x, rect.y + scaled(5) + (lineHeight - part.get_height()) // 2))
         x += part.get_width()
 
-    if ply > 0 and ply - 1 in marks:
+    if analysis and analysis.get('explainTask') is not None and analysis['explainTask']['ply'] == ply:
+        second = "Coach is thinking..."  # the answer about this move is on its way
+    elif ply > 0 and ply - 1 in marks:
         mark, loss = marks[ply - 1]
         kind = {"??": "Blunder", "?": "Mistake", "?!": "Inaccuracy"}[mark]
         second = "%s: loses %.1f. Best was %s" % (kind, loss, analysis['bestSan'][ply - 1])
@@ -5502,12 +5711,15 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
 
 # the coach's explanation in a box (title, text and "Close"); the text shrinks to fit and ends in "..." if it still
 # doesn't
-def drawCoachCard(screen, rect, text):
+def drawCoachCard(screen, rect, text, note=None):
     p.draw.rect(screen, p.Color(UI['infoBox']), rect, border_radius=BUTTON_RADIUS)
     p.draw.rect(screen, p.Color(UI['infoBoxBorder']), rect, 1, border_radius=BUTTON_RADIUS)
     inset = scaled(8)
     title = get_text_surface("Coach", scaled(17), UI['text'], True)
     screen.blit(title, (rect.x + inset, rect.y + scaled(5)))
+    if note:  # the move the card is about, after the title
+        noteText = get_text_surface(note, scaled(15), UI['textDim'], False)
+        screen.blit(noteText, (rect.x + inset + title.get_width() + scaled(8), rect.y + scaled(7)))
     close = get_text_surface("Close", scaled(13), UI['textDim'], False)
     screen.blit(close, (rect.right - inset - close.get_width(), rect.y + scaled(7)))
     top = rect.y + scaled(5) + title.get_height() + scaled(3)
@@ -5809,6 +6021,7 @@ TOOLTIPS = {
     'draw': "Offer your opponent a draw",
     'analyze': "Let the computer mark the mistakes",
     'practice': "Turn your mistakes in this game into puzzles",
+    'explain': "Ask the coach to explain the move on the board (E)",
     'graph': "White is ahead above the line. Click or drag to see a move",
     'first': "First move", 'prev': "Previous move (Left)", 'next': "Next move (Right)", 'last': "Last move",
     'undo': "Undo (Z)",
@@ -5825,6 +6038,8 @@ TOOLTIPS = {
 def tooltipText(name, connected=False, signedIn=False, puzzle=False):
     if puzzle and name == 'restart':
         return "Try this puzzle again (R)"
+    if puzzle and name == 'explain':
+        return "Ask the coach why your move was a mistake (E)"
     if connected and name == 'undo':
         return "Ask your opponent to undo (Z)"
     if connected and name == 'restart':
@@ -5848,7 +6063,7 @@ def hintsLeft():
 # shown as its tooltip, and in the status slot when it's clicked anyway (touch screens have no hover)
 def disabledReason(name, gameOver=False, online=False, connected=False, humanTurn=True, hintsLeft=1,
                    hintBusy=False, prompt=False, analysis=None, moves=0, atStart=False, atEnd=False, roomCode="",
-                   chatWait=False):
+                   chatWait=False, coachBusy=False):
     if name == 'hint':
         if gameOver:
             return "The game is over"
@@ -5888,6 +6103,13 @@ def disabledReason(name, gameOver=False, online=False, connected=False, humanTur
         return "The game is already analyzed" if analysis == 'done' else "The analysis is running"
     elif name == 'practice':
         return "The analysis is running" if analysis == 'running' else "No mistakes (? or ??) to practise"
+    elif name == 'explain':
+        if analysis != 'done':
+            return "The analysis is running"
+        if atStart:
+            return "Pick a move first"
+        if coachBusy:
+            return "The coach is thinking..."
     elif name in ('first', 'prev') and atStart:
         return "This is the start of the game"
     elif name in ('next', 'last') and atEnd:

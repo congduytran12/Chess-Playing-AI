@@ -5033,6 +5033,210 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['later'][2], ("Done for now", "The next mistake comes back in 3 hours."))
 
 
+    # --- the coach on one move, and on one of the player's mistakes
+
+    def fakeCoach(self):
+        """llm answering without a network ("Answer 1", "Answer 2"...): returns (the payloads asked, restore)."""
+        import llm
+        asked = []
+        saved = llm.enabled, llm.explain, llm.explain_game
+
+        async def explain(payload):
+            asked.append(payload)
+            await asyncio.sleep(0.05)
+            return "Answer %d" % len(asked)
+
+        async def explain_game(*args, **kwargs):
+            return "Summary"
+        llm.enabled, llm.explain, llm.explain_game = lambda: True, explain, explain_game
+
+        def restore():
+            llm.enabled, llm.explain, llm.explain_game = saved
+        return asked, restore
+
+    def proxyAccepts(self, payload):
+        """Whether the server (api/llm.py) takes a payload the game built."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'api_llm_for_ui', os.path.join(os.path.dirname(support.GAME), 'api', 'llm.py'))
+        proxy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(proxy)
+        return proxy.checkedRequest(payload) is not None
+
+    def test_the_coach_explains_the_shown_move(self):
+        main = self.main
+        seen = {}
+        main.GAME_VIEW = view = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.foolsMateAnalyzed()
+            await asyncio.sleep(0.5)
+            explain = main.panelLayout(1, False, False, True, True)['explain']
+            seen['summary'] = view['coach']  # the game's own summary opens by itself
+            await self.click(explain.center, 0.6)  # the last move, Qh4#
+            seen['last'] = view['coach']
+            await self.key(p.K_ESCAPE)
+            seen['closed'] = view['coach']
+            await self.click(explain.center, 0.3)  # answered already: the card opens again, nothing is asked
+            seen['again'] = (view['coach'], len(asked))
+            await self.key(p.K_LEFT, wait=0.3)  # another move: the card stays behind
+            seen['moved'] = (view['coach'], view['shownPly'])
+            await self.key(p.K_e, 'e', 0.6)  # the key does what the button does
+            seen['g4'] = view['coach']
+            await self.key(p.K_HOME, wait=0.3)
+            await self.click(explain.center, 0.3)  # no move on the board: nothing to explain
+            seen['start'] = (view['status'], len(asked))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        asked, restoreCoach = self.fakeCoach()
+        judged, restoreAnalysis = self.fakeFoolsMateAnalysis()
+        try:
+            self.runGame(script)
+        finally:
+            restoreAnalysis()
+            restoreCoach()
+            main.GAME_VIEW = None
+        self.assertEqual(seen['summary'], ("Summary", None))
+        self.assertEqual(seen['last'], ("Answer 1", "2...Qh4#"))
+        self.assertIsNone(seen['closed'], "closing the move's card doesn't bring the summary back")
+        self.assertEqual(seen['again'], (("Answer 1", "2...Qh4#"), 1))
+        self.assertEqual(seen['moved'], (None, 3))
+        self.assertEqual(seen['g4'], ("Answer 2", "2.g4"))
+        self.assertEqual(seen['start'], ("Pick a move first", 2))
+        last, blunder = asked
+        self.assertEqual((last['kind'], last['lang'], last['played'], last['best'], last['history']),
+                         ('move', 'en', 'Qh4#', 'Qh4', ['f3', 'e5', 'g4']))
+        self.assertEqual((last['before'], last['after'], last['mark']), (-999.0, -1000.0, None))
+        self.assertTrue(last['fen'].startswith('rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq'), last['fen'])
+        self.assertEqual((blunder['played'], blunder['best'], blunder['reply'], blunder['mark']),
+                         ('g4', 'e4', 'Qh4', '??'))
+        self.assertEqual((blunder['before'], blunder['after'], blunder['loss'], blunder['history']),
+                         (-0.1, -999.0, 9.9, ['f3', 'e5']))
+        for payload in asked:
+            self.assertTrue(self.proxyAccepts(payload), payload)
+
+    def test_the_coach_explains_one_of_the_players_mistakes(self):
+        main = self.main
+        seen = {}
+        main.GAME_VIEW = view = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            await self.foolsMateAnalyzed()
+            await self.click(main.panelLayout(1, False, False, True, True)['practice'].center, 1.0)
+            panel = main.panelLayout(main.MISTAKES_MODE, False)
+            await self.click(panel['explain'].center, 0.3)  # not tried yet: the answer would be given away
+            seen['early'] = (view['status'], len(asked))
+            await self.playCode('g2g4', 0.4)  # the move of the game: wrong
+            await asyncio.sleep(1.2)
+            await self.click(panel['explain'].center, 0.6)
+            seen['card'] = view['coach']
+            await self.key(p.K_ESCAPE)
+            seen['closed'] = view['coach']
+            await self.key(p.K_e, 'e', 0.3)
+            seen['again'] = (view['coach'], len(asked))
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        asked, restoreCoach = self.fakeCoach()
+        judged, restoreAnalysis = self.fakeFoolsMateAnalysis()
+        try:
+            self.runGame(script)
+        finally:
+            restoreAnalysis()
+            restoreCoach()
+            main.GAME_VIEW = None
+        self.assertEqual(seen['early'], ("Try the puzzle first", 0))
+        self.assertEqual(seen['card'], ("Answer 1", None))
+        self.assertIsNone(seen['closed'])
+        self.assertEqual(seen['again'], (("Answer 1", None), 1), "kept: the second time nothing is asked")
+        mistake = asked[0]
+        self.assertEqual((mistake['kind'], mistake['played'], mistake['best'], mistake['opponent']),
+                         ('mistake', 'g4', 'e4', 'e5'))
+        self.assertEqual((mistake['score'], mistake['loss']), (-0.1, 9.9))
+        self.assertEqual(mistake['after'], -0.3, "the searched reply's score, for the player")
+        self.assertIsInstance(mistake['reply'], str)
+        self.assertEqual(mistake['fen'].split()[1], 'w')
+        self.assertTrue(self.proxyAccepts(mistake), mistake)
+
+    def test_the_coach_answers_in_the_language_of_the_game(self):
+        main = self.main
+        seen = {}
+        main.GAME_VIEW = view = {}
+
+        async def script():
+            await asyncio.sleep(1.0)
+            main.applyLanguage('vi')
+            await self.foolsMateAnalyzed()
+            await asyncio.sleep(0.5)
+            explain = main.panelLayout(1, False, False, True, True)['explain']
+            await self.click(explain.center, 0.6)
+            seen['vi'] = view['coach']
+            main.applyLanguage('en')  # the Vietnamese answer isn't shown to an English game: the card goes
+            await asyncio.sleep(0.3)
+            seen['switched'] = view['coach']
+            await self.click(explain.center, 0.6)
+            seen['en'] = view['coach']
+            main.applyLanguage('vi')  # and comes back with its language
+            await asyncio.sleep(0.3)
+            seen['back'] = view['coach']
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        asked, restoreCoach = self.fakeCoach()
+        games = []
+        import llm
+        realGame = llm.explain_game
+
+        async def explainGame(*args, **kwargs):
+            games.append(args)
+            return "Summary"
+        llm.explain_game = explainGame
+        judged, restoreAnalysis = self.fakeFoolsMateAnalysis()
+        try:
+            self.runGame(script)
+        finally:
+            restoreAnalysis()
+            restoreCoach()
+            llm.explain_game = realGame
+            main.applyLanguage('en')
+            main.GAME_VIEW = None
+        self.assertEqual(games[0][-1], 'vi', "the game's summary is asked for in Vietnamese")
+        self.assertEqual([payload['lang'] for payload in asked], ['vi', 'en'])
+        self.assertEqual(seen['vi'][0], "Answer 1")
+        self.assertIsNone(seen['switched'])
+        self.assertEqual(seen['en'][0], "Answer 2")
+        self.assertEqual(seen['back'][0], "Answer 1")
+
+    def test_the_coach_buttons_and_texts(self):
+        main = self.main
+        import llm
+        saved = llm.enabled
+        try:
+            llm.enabled = lambda: False
+            self.assertNotIn('explain', sum(main.panelRows(0, False, False, True, True), []), "no coach: no button")
+            self.assertNotIn('explain', sum(main.panelRows(main.MISTAKES_MODE, False), []))
+            llm.enabled = lambda: True
+            rows = main.panelRows(0, False, False, True, True)
+            self.assertEqual(rows[3], ['graph'])
+            self.assertIn('explain', rows[2], "once analyzed the coach takes the Hint button's place")
+            self.assertNotIn('hint', sum(rows, []))
+            self.assertIn('hint', main.panelRows(0, False, False, True, False)[2], "not before the analysis")
+            self.assertEqual(main.panelRows(main.MISTAKES_MODE, False)[2], ['hint', 'explain', 'skip'])
+            self.assertIn('hint', main.panelRows(0, False)[2], "during the game the Hint is back")
+        finally:
+            llm.enabled = saved
+        self.assertEqual(main.disabledReason('explain', analysis='running'), "The analysis is running")
+        self.assertEqual(main.disabledReason('explain', analysis='done', atStart=True), "Pick a move first")
+        self.assertEqual(main.disabledReason('explain', analysis='done', coachBusy=True), "The coach is thinking...")
+        self.assertIsNone(main.disabledReason('explain', analysis='done'))
+        self.assertIn("coach", main.tooltipText('explain').lower())
+        self.assertIn("mistake", main.tooltipText('explain', puzzle=True))
+        self.assertEqual(main.coachErrorText(RuntimeError("x" * 100)), "Coach unavailable: " + "x" * 67 + "...")
+
+
 AFTER_F3 = 'rnbqkbnr/pppppppp/8/8/8/5P2/PPPPP1PP/RNBQKBNR b KQkq - 0 1'
 AFTER_E4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1'
 
