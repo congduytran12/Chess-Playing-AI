@@ -199,6 +199,15 @@ class ProxyTests(unittest.TestCase):
                          ("a forced mate against this side", "roughly equal"))
         self.assertEqual(self.upstream.sent['max_completion_tokens'], 220)
 
+    def test_the_facts_are_in_vietnamese_for_a_vietnamese_answer(self):
+        facts = self.facts(dict(self.MISTAKE, lang='vi'))
+        self.assertEqual((facts['assessment_of_best_move'], facts['assessment_after_move_played']),
+                         ("gần cân bằng", "phe này bị chiếu hết bắt buộc"))
+        self.assertEqual(facts['evaluation_after_move_played'], "bạn bị chiếu hết bắt buộc")
+        self.assertEqual(facts['pawns_lost'], "không tính: sau đó bị chiếu hết bắt buộc")
+        facts = self.facts(dict(self.MOVE, lang='vi', mark='?', loss=1.6, after=-1.8))
+        self.assertEqual((facts['assessment_after'], facts['pawns_lost']), ("có lợi rõ rệt", 1.6))
+
     def test_scores_come_with_words_for_who_is_better(self):
         facts = self.facts(dict(self.MOVE, before=0.5, after=-1.8, mark='?', loss=2.3))  # Black moved
         self.assertEqual((facts['assessment_before'], facts['assessment_after']),

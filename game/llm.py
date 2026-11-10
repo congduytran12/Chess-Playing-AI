@@ -153,6 +153,29 @@ def _lost(loss, *after):
     return round(loss, 2)
 
 
+# the words of the facts in Vietnamese: a model told to write Vietnamese copies English phrases of the data otherwise
+VIETNAMESE_FACTS = {
+    "roughly equal": "gần cân bằng",
+    "slightly better": "hơi có lợi", "clearly better": "có lợi rõ rệt", "decisively better": "có lợi áp đảo",
+    "slightly worse": "hơi bất lợi", "clearly worse": "bất lợi rõ rệt", "decisively worse": "bất lợi áp đảo",
+    "a forced mate for this side": "phe này có nước chiếu hết bắt buộc",
+    "a forced mate against this side": "phe này bị chiếu hết bắt buộc",
+    "forced mate for the side that moved": "bên vừa đi có nước chiếu hết bắt buộc",
+    "forced mate against the side that moved": "bên vừa đi bị chiếu hết bắt buộc",
+    "forced mate for the player": "bạn có nước chiếu hết bắt buộc",
+    "forced mate against the player": "bạn bị chiếu hết bắt buộc",
+    "not counted: a forced mate follows": "không tính: sau đó bị chiếu hết bắt buộc",
+}
+
+
+def _in_language(facts, lang):
+    """The facts with their English phrases in the answer's language."""
+    if lang != "vi":
+        return facts
+    return {key: VIETNAMESE_FACTS.get(value, value) if isinstance(value, str) else value
+            for key, value in facts.items()}
+
+
 def _mover_pawns(score, white):
     """A score from White's point of view, for the side that moved."""
     return _pov_pawns(score if white else -score, "the side that moved")
@@ -185,7 +208,7 @@ def _move_prompt(data, lang="en"):
         "otherwise say what the best move does better and what the engine's reply to the move played takes "
         "advantage of. Say who is better only in the words of the assessment fields, and give pawns_lost only when "
         "it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
-        + json.dumps(facts, separators=(",", ":")))
+        + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
 def _mistake_prompt(data, lang="en"):
@@ -211,7 +234,7 @@ def _mistake_prompt(data, lang="en"):
         "and describe the difference in general terms. In two or three sentences, under 60 words, speaking to the "
         "player (\"you\"). Say who is better only in the words of the assessment fields, and give pawns_lost only "
         "when it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
-        + json.dumps(facts, separators=(",", ":")))
+        + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
 def prompt_for(kind, data, lang="en"):
