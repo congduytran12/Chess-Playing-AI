@@ -260,6 +260,8 @@ EXACT = {
     "Drag a piece, or tap it and then a square. The menu has How to play.":
         "Kéo một quân, hoặc chạm vào quân rồi chạm vào một ô. Trong menu có phần Hướng dẫn chơi.",
     "No mistakes found": "Không thấy nước sai nào", "no mistakes": "không sai nước nào", "Start position": "Thế cờ ban đầu",
+    "blunder": "sai lầm nặng", "blunders": "sai lầm nặng", "mistake": "sai lầm", "mistakes": "sai lầm",
+    "inaccuracy": "nước kém chính xác", "inaccuracies": "nước kém chính xác", "none": "không có",
     "the start position": "thế cờ ban đầu", "Blunder": "Sai lầm nặng", "Mistake": "Sai lầm", "Inaccuracy": "Thiếu chính xác",
     "Analyzing the game...": "Đang phân tích ván...", "Step through the moves with the arrow keys": "Duyệt các nước đi bằng phím mũi tên",
     "Checkmate": "Chiếu hết", "   Checkmate": "   Chiếu hết",

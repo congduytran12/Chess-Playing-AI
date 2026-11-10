@@ -1287,7 +1287,7 @@ async def main():
                 if moves:
                     score, best, _ = await stockfish.analyzePosition(board, moves, ANALYSIS_SECONDS, history=history)
                     result['best'].append(best.getCode())
-                    result['bestSan'].append(board.getSan(best, moves))
+                    result['bestSan'].append(sanWithCheck(board, best, moves))
                 else:
                     score = -chessAi.CHECKMATE if board.inCheck else chessAi.STALEMATE
                     result['best'].append(None)
@@ -5364,6 +5364,20 @@ async def judgeAlternative(mistake, codes):
 
 # --- the coach on one move or one mistake (llm.py): what it is told, and how a failure reads
 
+# a move in algebraic notation with its + or # (getSan leaves it off), worked out on the board and put back
+def sanWithCheck(board, move, moves):
+    text = board.getSan(move, moves)
+    board.makeMove(move)
+    try:
+        replies = board.getValidMoves()
+        if board.inCheck:
+            text += '+' if replies else '#'
+    finally:
+        board.undoMove()
+    board.getValidMoves()
+    return text
+
+
 # what the coach is asked about the move that led to the shown position (ply moves in, at least one) of an analyzed
 # game: the position before it, the move and the ones before it in algebraic notation, and what the analysis says
 def explainMovePayload(moveLog, analysis, ply, lang):
@@ -5396,7 +5410,7 @@ async def mistakeFacts(mistake, lang):
     moves = board.makeMoveWithSan(opponent, moves)
     history.append(board.getPositionKey())
     fen = board.toFen()
-    bestSan = board.getSan(board.findMoveByCode(mistake.moves[1], moves), moves)
+    bestSan = sanWithCheck(board, board.findMoveByCode(mistake.moves[1], moves), moves)
     played = board.findMoveByCode(mistake.played, moves)
     moves = board.makeMoveWithSan(played, moves)
     history.append(board.getPositionKey())
@@ -5404,7 +5418,7 @@ async def mistakeFacts(mistake, lang):
     if moves:
         try:
             score, best, _ = await stockfish.analyzePosition(board, moves, ANALYSIS_SECONDS, history=history)
-            reply, after = board.getSan(best, moves), -score  # the opponent's score, for the player
+            reply, after = sanWithCheck(board, best, moves), -score  # the opponent's score, for the player
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -5648,19 +5662,20 @@ def analysisSummary(marks, compact=False):
     if not marks:
         return "No mistakes found"
     words = (("??", "blunder", "blunders"), ("?", "mistake", "mistakes"), ("?!", "inaccuracy", "inaccuracies"))
+    tr = i18n.tr
     parts = []
-    for color, name in ((0, "White"), (1, "Black")):
+    for color, name in ((0, tr("White")), (1, tr("Black"))):
         counts = {mark: 0 for mark in MARK_KINDS}
         for ply, (mark, _) in marks.items():
             if ply % 2 == color:
                 counts[mark] += 1
         if compact:
             found = ["%d%s" % (counts[mark], mark) for mark, _, _ in words if counts[mark]]
-            parts.append("%s %s" % (name, ", ".join(found) if found else "none"))
+            parts.append("%s %s" % (name, ", ".join(found) if found else tr("none")))
         else:
-            found = ["%d %s" % (counts[mark], one if counts[mark] == 1 else many)
+            found = ["%d %s" % (counts[mark], tr(one if counts[mark] == 1 else many))
                      for mark, one, many in words if counts[mark]]
-            parts.append("%s: %s" % (name, ", ".join(found) if found else "no mistakes"))
+            parts.append("%s: %s" % (name, ", ".join(found) if found else tr("no mistakes")))
     return " · ".join(parts)
 
 

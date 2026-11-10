@@ -46,6 +46,9 @@ class LanguageTest(unittest.TestCase):
         self.assertEqual(tr("Looking back: after 3.Nf3 e5  -  tap the board to return"),
                          "Đang xem lại: sau 3.Nf3 e5  -  chạm vào bàn cờ để quay lại", "a template in a template")
         self.assertEqual(tr("Nf3"), "Nf3", "no translation: as it is")
+        self.assertEqual(main.analysisSummary({0: ("??", 3.2), 3: ("?!", 0.9)}),
+                         "Trắng: 1 sai lầm nặng · Đen: 1 nước kém chính xác")
+        self.assertEqual(main.analysisSummary({1: ("?", 2.0)}, compact=True), "Trắng không có · Đen 1?")
         self.assertEqual(tr(tr("Rematch")), tr("Rematch"), "a translation isn't translated again")
         self.assertEqual(tr("04:59"), "04:59")
 

@@ -79,7 +79,9 @@ def max_tokens(kind, lang="en"):
 def _language_note(lang):
     if lang == "vi":
         return (" Write the answer in Vietnamese. Keep every move exactly as given in algebraic notation (Nf3, O-O, "
-                "exd5) and call the pieces: king vua, queen hậu, rook xe, bishop tượng, knight mã, pawn tốt.")
+                "exd5) and call the pieces: king vua, queen hậu, rook xe, bishop tượng, knight mã, pawn tốt. "
+                "Write the sides as Trắng and Đen with a capital letter. Say a side is losing or winning only as the "
+                "evaluation says (a negative score is good for Black), and never call a worse position balanced.")
     return ""
 
 

@@ -2163,6 +2163,17 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(main.analysisSummary({1: ("?", 2.0)}, compact=True), "White none · Black 1?")
 
 
+    def test_san_with_check(self):
+        main = self.main
+        board = main.GameState()
+        for code in ("f2f3", "e7e5", "g2g4"):
+            board.makeMove(board.findMoveByCode(code, board.getValidMoves()))
+        moves = board.getValidMoves()
+        mate = board.findMoveByCode("d8h4", moves)
+        self.assertEqual(main.sanWithCheck(board, mate, moves), "Qh4#")
+        self.assertEqual(len(board.moveLog), 3, "the board is put back")
+        self.assertEqual(main.sanWithCheck(board, board.findMoveByCode("a7a6", moves), moves), "a6")
+
     # --- step 7: text fields, paste, the account window, forgot password
 
     def recordAccountWindow(self):
@@ -5107,11 +5118,11 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['start'], ("Pick a move first", 2))
         last, blunder = asked
         self.assertEqual((last['kind'], last['lang'], last['played'], last['best'], last['history']),
-                         ('move', 'en', 'Qh4#', 'Qh4', ['f3', 'e5', 'g4']))
+                         ('move', 'en', 'Qh4#', 'Qh4#', ['f3', 'e5', 'g4']))
         self.assertEqual((last['before'], last['after'], last['mark']), (-999.0, -1000.0, None))
         self.assertTrue(last['fen'].startswith('rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq'), last['fen'])
         self.assertEqual((blunder['played'], blunder['best'], blunder['reply'], blunder['mark']),
-                         ('g4', 'e4', 'Qh4', '??'))
+                         ('g4', 'e4', 'Qh4#', '??'))
         self.assertEqual((blunder['before'], blunder['after'], blunder['loss'], blunder['history']),
                          (-0.1, -999.0, 9.9, ['f3', 'e5']))
         for payload in asked:
