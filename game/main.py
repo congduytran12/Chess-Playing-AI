@@ -290,7 +290,8 @@ PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'p': 1, 'K': 0}
 # message is noticed and the side that is behind catches up; ntfy.sh allows about one message per 5s
 HEARTBEAT_MS = 15000
 HEARTBEAT_BACKOFFS = 2  # a heartbeat nobody answers makes the next come later: 15 s, 30 s, then 60 s
-SYNC_REPLY_MS = 2000  # at most one state reply to a player who is behind per this many ms
+SYNC_REPLY_MS = 6000  # at most one state reply to a player who is behind per this many ms (ntfy.sh: ~1 msg/5s)
+SEND_MIN_MS = 1000  # never send two messages within this window (guards against bursts that cause 429)
 PRESENCE_MS = 60000  # a player who has sent nothing for this long sends a 'ping', to show they're still there
 OPPONENT_GONE_SECONDS = 150  # no message from the opponent for this long (server clock): they may have left
 ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
@@ -1817,7 +1818,15 @@ async def main():
 
     def sendOnline(message):
         nonlocal lastMessageSent
-        lastMessageSent = p.time.get_ticks()
+        now = p.time.get_ticks()
+        # ntfy.sh free tier rate-limits to roughly 1 message per 5 s; moves and game-changing events are
+        # always sent, but low-priority messages (heartbeat, ping, sync replies) are dropped when we sent
+        # something very recently, to avoid a burst of requests that triggers a 429 response
+        mtype = message.get('type', '')
+        is_low_priority = mtype in ('heartbeat', 'ping', 'sync')
+        if is_low_priority and now - lastMessageSent < SEND_MIN_MS:
+            return  # too soon; the next heartbeat interval will retry
+        lastMessageSent = now
         message.update({'game': onlineGame, 'version': onlineVersion, 'role': multiplayerRole, 'sender': myPlayerId})
         if account.signedIn:  # lets the opponent show our name and report the result for ratings
             message['player'] = {'uid': account.profile['id'], 'name': account.username,

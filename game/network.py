@@ -27,13 +27,29 @@ except:
 if WASM:
     js.eval('''
         // no Python callbacks here: a proxy per send would never be freed
+        window._ntfy_blocked_until = 0;
+
         window.js_send_msg = function(url, raw) {
+            var now = Date.now();
+            if (now < window._ntfy_blocked_until) {
+                var wait = ((window._ntfy_blocked_until - now) / 1000).toFixed(0);
+                console.warn("Network: Send suppressed (rate-limited, " + wait + "s remaining).");
+                return;
+            }
             fetch(url, {
                 method: "POST",
                 body: raw,
-                mode: "no-cors"
-            }).then(r => console.log("Network: Move Transmitted SUCCESS (Direct WASM)."))
-              .catch(e => console.warn("Network: Send error (Direct WASM):", String(e)));
+            }).then(function(r) {
+                if (r.status === 429) {
+                    r.headers.get("Retry-After");
+                    var backoff = 10;
+                    try { backoff = Math.max(5, parseFloat(r.headers.get("Retry-After") || "10") || 10); } catch(e) {}
+                    window._ntfy_blocked_until = Date.now() + backoff * 1000;
+                    console.warn("Network: 429 Too Many Requests — backing off " + backoff + "s.");
+                } else {
+                    console.log("Network: Move Transmitted SUCCESS (Direct WASM).");
+                }
+            }).catch(function(e) { console.warn("Network: Send error (Direct WASM):", String(e)); });
         }
 
         window.start_ntfy_sse = function(topic, since, cb, eb) {
@@ -62,6 +78,7 @@ if WASM:
 SESSION_FILE = os.path.join(os.path.expanduser("~"), ".chess-playing-ai-session.json")  # desktop only
 SESSION_MAX_AGE = 12 * 3600  # seconds; ntfy.sh keeps messages about this long
 SEEN_IDS_KEPT = 200  # newest ntfy message ids remembered for deduplication
+SEND_RATE_LIMIT_S = 5.0  # ntfy.sh free tier: ~1 message per 5 s; back off after a 429
 
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
 print("Network: v13.0 Loaded (Proxy-Unified)")
@@ -94,6 +111,7 @@ class NetworkManager:
         self.base_interval = 3.0 # Guerilla Polling Base (v12)
         self.current_interval = self.base_interval
         self.last_status = "IDLE"
+        self._send_blocked_until = 0  # epoch seconds: a 429 response backs off until this time
 
 
 
@@ -156,9 +174,17 @@ class NetworkManager:
 
         """
         Sends move data via the tunnel (WASM) or direct (Native).
+        Respects a 429 backoff: if ntfy returned Too Many Requests, messages are
+        silently dropped until the Retry-After window has passed.
         """
         if not self.topic: return
-        
+
+        # honour the 429 backoff (native only; WASM fire-and-forget)
+        if not WASM and time.time() < self._send_blocked_until:
+            remaining = self._send_blocked_until - time.time()
+            print(f"Network: Send suppressed (rate-limited, {remaining:.0f}s remaining).")
+            return
+
         ntfy_url = f"{self.base_url}/{self.topic}"
         raw = json.dumps(data)
         
@@ -168,8 +194,20 @@ class NetworkManager:
             def _send():
                 try:
                     req = urllib.request.Request(ntfy_url, data=raw.encode('utf-8'), method='POST')
-                    urllib.request.urlopen(req, timeout=5)
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        _ = resp.read()
                     print("Network: Transmission SUCCESS (Direct).")
+                except urllib.error.HTTPError as e:
+                    if e.code == 429:
+                        retry_after = SEND_RATE_LIMIT_S
+                        try:
+                            retry_after = max(retry_after, float(e.headers.get('Retry-After', SEND_RATE_LIMIT_S)))
+                        except (TypeError, ValueError):
+                            pass
+                        self._send_blocked_until = time.time() + retry_after
+                        print(f"Network: 429 Too Many Requests — backing off {retry_after:.0f}s.")
+                    else:
+                        print("Network: Send error:", e)
                 except Exception as e:
                     print("Network: Send error:", e)
             threading.Thread(target=_send, daemon=True).start()
