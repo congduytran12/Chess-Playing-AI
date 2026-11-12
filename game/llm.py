@@ -63,12 +63,12 @@ def enabled():
 #            mark, loss
 #   mistake  fen (the player to move), opponent (the move before it), played, best, reply, score (the best move's,
 #            for the player), after (the move played, for the player), loss
-KINDS = ("game", "move", "mistake")
+KINDS = ("game", "move", "mistake", "hint")
 LANGUAGES = {"en": "English", "vi": "Vietnamese"}
 HISTORY_PLIES = 10  # the moves before the explained one that the coach is told
 CHECKMATE = 1000  # chessAi.CHECKMATE and MATE_THRESHOLD: this file stands alone (the server loads it by itself)
 MATE_THRESHOLD = 800
-TOKENS = {"game": 180, "move": 220, "mistake": 220}  # the answer's limit; Vietnamese needs about twice as many
+TOKENS = {"game": 180, "move": 220, "mistake": 220, "hint": 140}  # the answer's limit; Vietnamese needs about twice as many
 
 
 def max_tokens(kind, lang="en"):
@@ -245,13 +245,34 @@ def _mistake_prompt(data, lang="en"):
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
+def _hint_prompt(data, lang="en"):
+    side = _fen_side(data["fen"])
+    facts = {
+        "position": data["fen"],
+        "player_to_move": side,
+        "previous_moves": data.get("history") or [],
+        "suggested_move": data["best"],
+        "evaluation": _pov_pawns(data["score"], "the player"),
+        "assessment": _assess(data["score"]),
+    }
+    return (
+        "You are an encouraging and insightful chess coach. The player asked for a strategic hint on their turn. "
+        "Stockfish has found the suggested move. In one or two concise sentences (under 45 words), explain the "
+        "strategic idea, purpose, or tactical plan behind playing this suggested move (e.g., controlling a key square, "
+        "developing a piece, opening a file, creating an attack, or neutralizing an opponent threat). Speak directly "
+        "to the player (\"you\"). Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        + json.dumps(_in_language(facts, lang), separators=(",", ":")))
+
+
 def prompt_for(kind, data, lang="en"):
-    """The prompt for a checked request: data is the game's (moves, best, evals, marks, result) or the move's or the
-    mistake's fields."""
+    """The prompt for a checked request: data is the game's (moves, best, evals, marks, result) or the move's,
+    mistake's, or hint's fields."""
     if kind == "move":
         return _move_prompt(data, lang)
     if kind == "mistake":
         return _mistake_prompt(data, lang)
+    if kind == "hint":
+        return _hint_prompt(data, lang)
     return _prompt(*data, lang=lang)
 
 
@@ -341,9 +362,16 @@ def mistake_payload(lang, fen, opponent, played, best, reply, score, after, loss
             "reply": reply, "score": round(score, 2), "after": round(after, 2), "loss": round(loss, 2)}
 
 
+def hint_payload(lang, fen, best, history, score=0.0):
+    """What the coach is asked for a strategic hint: the position (fen), the suggested move (best), recent history,
+    and the evaluation."""
+    return {"kind": "hint", "lang": lang, "fen": fen, "best": best,
+            "history": list(history)[-HISTORY_PLIES:], "score": round(score, 2)}
+
+
 async def explain(payload):
-    """Return a short explanation of a move or a mistake (move_payload, mistake_payload), or None when coaching is
-    not configured."""
+    """Return a short explanation of a move, mistake, or strategic hint (move_payload, mistake_payload, hint_payload),
+    or None when coaching is not configured."""
     if not enabled():
         return None
     if WASM:

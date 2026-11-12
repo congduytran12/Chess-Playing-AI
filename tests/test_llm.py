@@ -154,6 +154,17 @@ class ProxyTests(unittest.TestCase):
     MISTAKE = {'kind': 'mistake', 'lang': 'en', 'fen': 'rnbqkbnr/pppp1ppp/8/4p3/8/5P2/PPPPP1PP/RNBQKBNR w KQkq - 0 2',
                'opponent': 'e5', 'played': 'g4', 'best': 'e4', 'reply': 'Qh4#', 'score': -0.1, 'after': -999.0,
                'loss': 9.9}
+    HINT = {'kind': 'hint', 'lang': 'en', 'fen': 'rnbqkbnr/pppppppp/8/8/8/5P2/PPPPP1PP/RNBQKBNR b KQkq - 0 1',
+            'best': 'e5', 'history': ['f3'], 'score': 0.3}
+
+    def test_explains_one_hint(self):
+        response = self.post(self.HINT)
+        self.assertEqual((response.status_code, response.json), (200, {'text': 'Nice game.'}))
+        prompt = self.upstream.sent['messages'][1]['content']
+        facts = json.loads(prompt[prompt.index('{'):])
+        self.assertEqual((facts['player_to_move'], facts['suggested_move']), ('Black', 'e5'))
+        self.assertEqual(facts['evaluation'], 0.3)
+        self.assertEqual(self.upstream.sent['max_completion_tokens'], 140)
 
     def test_explains_one_move_from_the_mover_s_side(self):
         response = self.post(self.MOVE)
@@ -268,6 +279,9 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(self.post(dict(move, history=['f3'] * 10)).status_code, 200, move)
         mistake = llm.mistake_payload('en', self.MISTAKE['fen'], 'e5', 'g4', 'e4', 'Qh4#', -0.1234, -999.0, 9.876)
         self.assertEqual(self.post(mistake).status_code, 200, mistake)
+        hint = llm.hint_payload('vi', self.HINT['fen'], 'e5', ['f3'] * 15, 0.30001)
+        self.assertEqual((len(hint['history']), hint['score']), (llm.HISTORY_PLIES, 0.3))
+        self.assertEqual(self.post(hint).status_code, 200, hint)
 
     def test_limits_how_often_a_visitor_can_ask(self):
         codes = [self.post(ANALYSIS, headers={'X-Forwarded-For': '1.2.3.4, 10.0.0.1'}).status_code

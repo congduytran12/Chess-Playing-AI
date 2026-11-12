@@ -127,6 +127,19 @@ def checkedMistake(payload):
             "after": after, "loss": loss}
 
 
+def checkedHint(payload):
+    """The fields of a request for a strategic hint, or None."""
+    fen, best, history = payload.get("fen"), payload.get("best"), payload.get("history", [])
+    score = payload.get("score", 0.0)
+    if not (_fen(fen) and _san(best)):
+        return None
+    if not (isinstance(history, list) and len(history) <= MAX_HISTORY and all(_san(m) for m in history)):
+        return None
+    if not _number(score):
+        return None
+    return {"fen": fen, "best": best, "history": history, "score": score}
+
+
 def checkedRequest(payload):
     """(kind, language, data) of a request that is chess data, or None. A request without a kind is a game's, in
     English: what an older page sends."""
@@ -139,6 +152,8 @@ def checkedRequest(payload):
         data = checkedMove(payload)
     elif kind == "mistake":
         data = checkedMistake(payload)
+    elif kind == "hint":
+        data = checkedHint(payload)
     else:
         return None
     return None if data is None else (kind, lang, data)

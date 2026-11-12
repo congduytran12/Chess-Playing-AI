@@ -1183,6 +1183,8 @@ async def main():
     hintState = None  # 'requested' -> 'searching' -> 'running' (hintTask) -> None
     hintTask = None  # the hint's search, running in the background
     hintPly = 0  # the number of moves in the position the hint is for
+    hintIdea = None  # {'text': str, 'san': str, 'open': bool} strategic hint from the coach
+    hintIdeaTask = None  # background task fetching the coach's strategic explanation
     puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
@@ -1448,6 +1450,8 @@ async def main():
     # The explanation of a move shows while that move is on the board, else the summary of the game; in Your
     # mistakes, the mistake's
     def coachCard():
+        if not gameOver and hintIdea is not None and hintIdea.get('open'):
+            return hintIdea['text'], hintIdea.get('san'), lambda: hintIdea.update(open=False)
         if gameOver and analysis is not None:
             ply = analysis.get('explainOpen')
             text = analysis['explained'].get((ply, i18n.language())) if ply is not None and ply == shownPly() else None
@@ -1609,9 +1613,13 @@ async def main():
         nonlocal positionHistory, gameResult, hintMove, hintState, pendingPrompt, moveLogScroll, resultCardHidden
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
-        nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered, hintUsedOnline
+        nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered, hintUsedOnline, hintIdea, hintIdeaTask
         clearReview()
         clearAnnotations()
+        if hintIdeaTask is not None:
+            hintIdeaTask.cancel()
+            hintIdeaTask = None
+        hintIdea = None
         if puzzle is not None and puzzle['judging'] is not None:
             puzzle['judging'].cancel()
             showStatus("", 0)
@@ -1724,10 +1732,14 @@ async def main():
     # a piece the player is dragging stays in hand (picked up for a premove, it can be dropped as a move once the
     # opponent has moved); the frame's canDrag check lets go of it if it was captured
     def playMove(move, sound=True):
-        nonlocal validMoves, hintMove, moveLogScroll, kingFlash
+        nonlocal validMoves, hintMove, moveLogScroll, kingFlash, hintIdea, hintIdeaTask
         lookedBack = reviewPly is not None
         clearReview()  # also returns from looking back
         clearAnnotations()
+        if hintIdeaTask is not None:
+            hintIdeaTask.cancel()
+            hintIdeaTask = None
+        hintIdea = None
         kingFlash = None
         chargeClock()
         mover = move.pieceMoved[0]
@@ -1753,9 +1765,13 @@ async def main():
     def takeBack(plies):
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
         nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved, resultCardHidden, drag, kingFlash
-        nonlocal premove
+        nonlocal premove, hintIdea, hintIdeaTask
         clearReview()
         clearAnnotations()
+        if hintIdeaTask is not None:
+            hintIdeaTask.cancel()
+            hintIdeaTask = None
+        hintIdea = None
         drag = None
         kingFlash = None
         premove = None  # it was chosen for a position that's gone
@@ -3502,8 +3518,9 @@ async def main():
                 hintState = None
         elif hintTask is not None and hintTask.done():
             task, hintTask, hintState = hintTask, None, None
+            evalScore = 0.0
             try:
-                _, suggestion, _ = task.result()
+                evalScore, suggestion, _ = task.result()
             except Exception as error:
                 print("Main: hint search failed: %s" % error)
                 suggestion = None
@@ -3523,6 +3540,13 @@ async def main():
                     hints.use()
                     showStatus("Hint: %s (%d left today)" % (san, hints.remaining())
                                + (" - this game won't be rated" if unrated else ""), 4000)
+                if llm.enabled():
+                    if hintIdeaTask is not None:
+                        hintIdeaTask.cancel()
+                    historySans = [m.san for m in gs.moveLog if m.san]
+                    lang = i18n.language()
+                    payload = llm.hint_payload(lang, gs.toFen(), san, historySans, evalScore)
+                    hintIdeaTask = asyncio.ensure_future(llm.explain(payload))
 
         # genetare new set of valid move if valid move is made
         if moveMade:
@@ -3645,6 +3669,15 @@ async def main():
             except Exception as e:
                 print("Main: the coach failed:", e)
                 showStatus("Coach unavailable", 5000)
+        # strategic hint explanation from the coach
+        if hintIdeaTask is not None and hintIdeaTask.done():
+            task, hintIdeaTask = hintIdeaTask, None
+            try:
+                text = task.result()
+                if text and hintMove is not None and not gameOver and reviewPly is None:
+                    hintIdea = {'text': text, 'san': gs.getSan(hintMove, validMoves) if validMoves else "", 'open': True}
+            except (asyncio.CancelledError, Exception) as e:
+                pass
         if (gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog
                 and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True
