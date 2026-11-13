@@ -14,6 +14,7 @@ Switch modes with the **Mode** dropdown:
 - **Local 2-Player:** two players take turns on the same screen.
 - **Online Multiplayer:** host a game to get a room code, and your opponent joins with it. The host plays White and sets the time control. When a game is over, **Rematch** starts the next one with the colors swapped; **New game** keeps them.
 - **Puzzles:** find the best moves of a position, one after the other; the opponent answers each right move. A wrong move comes back (the first one of a puzzle lowers your puzzle rating), **Hint** first rings the piece to move, and pressed again shows the move (solving with a hint leaves the rating alone) and **Skip** counts as a miss and plays the solution out on the board, and **Next puzzle** goes on. The puzzle's themes (Fork, Pin, Mate in 2...) show once it's over. Puzzles get harder as your puzzle rating rises, and your rating and streak are kept on your device. There are 600 puzzles from 500 to 2400 rating.
+- **Your mistakes:** after the analysis of a game, **Practice** turns your own `??` and `?` moves into puzzles: find the move you should have played. The best move, a mate, or another move that loses little all solve it. Signed in, your mistakes are kept in your account and come back for practice; Premium accounts get them spaced out over time, others get the mistakes of the last game analyzed.
 
 ### The AI
 
@@ -43,6 +44,15 @@ When a game ends, you can go back through it:
 - **Step through the moves** with the ◀ ▶ buttons, the arrow keys (and Home/End), or by clicking a move in the log.
 - **Analyze game** has the AI check every position in the background. It marks moves in the log as `??` (blunder), `?` (mistake), or `?!` (inaccuracy), and shows the score and the better move for each flagged move.
 
+### The coach and opening names
+
+- **Opening names:** the game names the opening you are playing as the moves go.
+- **LLM coach (optional):** the hint button and the review can explain a move or a mistake in plain words (English or Vietnamese), such as the plan behind a hint. The explanation is written from facts Stockfish already found; the LLM never chooses or checks moves. It needs a Groq key (see [Installation](#installation--how-to-play)); without one, hints and analysis work as before.
+
+### Settings
+
+**Menu > Settings** has two tabs. Board: board and piece sets, light or dark panel, coordinates, move markers, last-move highlight, animation speed, notation with piece icons. Game: sound and volume, premoves, language. Right-click and drag on the board to draw arrows and marks, and drag a piece to move it.
+
 ### Saving and loading games
 
 - **Save PGN** saves the game in PGN, the standard chess game format that most chess sites and apps can open. On the desktop you choose where to save the file; in the browser it downloads.
@@ -62,6 +72,7 @@ Click **Sign in** (bottom right of the panel) to create an account with a userna
 
 - **Your games are saved.** Every game you finish while signed in is saved to your account. Open **My games** to load one back for review or analysis, on any device.
 - **Stats:** see your wins, losses, and draws against each AI level and online.
+- **Premium:** unlimited hints and spaced practice of your mistakes. There are no payments yet; Premium is granted by hand.
 - **Names online:** your opponent sees your username and rating instead of "Opponent".
 - **Rating and leaderboard:** online games between two signed-in players change both ratings (Elo, starting at 1200), and the leaderboard shows the top 10. A result counts once both players report the same result, or when the losing side reports it, for example by resigning. If the loser just closes the game, the result isn't rated.
 
