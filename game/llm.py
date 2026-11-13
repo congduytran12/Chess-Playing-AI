@@ -20,6 +20,7 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -54,13 +55,15 @@ class LLMError(Exception):
 
 # characters models like to type that the game's fonts may draw as a box: the plain ones instead
 GLYPHS = {"‑": "-", "‐": "-", " ": " ", " ": " ", " ": " ", "​": "",
-          "’": "'", "‘": "'", "“": '"', "”": '"', "…": "..."}
+          "’": "'", "‘": "'", "“": '"', "”": '"', "…": "...", "≈": "about ", "−": "-"}
 
 
 def clean_text(text):
+    """The answer as plain text: the game draws no markdown, and its fonts may lack some characters."""
     for old, new in GLYPHS.items():
         text = text.replace(old, new)
-    return text.strip()
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return re.sub(r"[ 	]{2,}", " ", text).strip()
 
 
 def _content_text(content):
@@ -161,7 +164,7 @@ LANGUAGES = {"en": "English", "vi": "Vietnamese"}
 HISTORY_PLIES = 10  # the moves before the explained one that the coach is told
 CHECKMATE = 1000  # chessAi.CHECKMATE and MATE_THRESHOLD: this file stands alone (the server loads it by itself)
 MATE_THRESHOLD = 800
-TOKENS = {"game": 180, "move": 220, "mistake": 220, "hint": 140}  # the answer's limit; Vietnamese needs about twice as many
+TOKENS = {"game": 300, "move": 220, "mistake": 220, "hint": 140}  # the answer's limit; Vietnamese needs about twice as many
 
 
 def max_tokens(kind, lang="en"):
@@ -353,6 +356,44 @@ def _mistake_prompt(data, lang="en"):
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
+PIECE_NAMES = {"k": "king", "q": "queen", "r": "rooks", "b": "bishops", "n": "knights", "p": "pawns"}
+
+
+def _board_facts(fen):
+    """What a FEN shows, spelled out (the pieces of each side by square, the files nothing or only one side's pawns
+    block): a model that reads the string itself misplaces pieces and squares."""
+    rows = fen.split()[0].split("/")
+    sides = {"White": {}, "Black": {}}
+    pawn_files = {"White": set(), "Black": set()}
+    for index, row in enumerate(rows):
+        rank, file = 8 - index, 0
+        for char in row:
+            if char.isdigit():
+                file += int(char)
+                continue
+            side = "White" if char.isupper() else "Black"
+            square = "abcdefgh"[file % 8] + str(rank)
+            sides[side].setdefault(PIECE_NAMES[char.lower()], []).append(square)
+            if char.lower() == "p":
+                pawn_files[side].add(square[0])
+            file += 1
+    facts = {"pieces_" + side.lower(): {name: ", ".join(squares) for name, squares in found.items()}
+             for side, found in sides.items()}
+    facts["open_files_no_pawns"] = [f for f in "abcdefgh" if f not in pawn_files["White"] | pawn_files["Black"]]
+    for side, other in (("White", "Black"), ("Black", "White")):
+        facts["files_only_%s_has_pawns_on" % other.lower()] = [
+            f for f in "abcdefgh" if f in pawn_files[other] and f not in pawn_files[side]]
+    return facts
+
+
+def _mover(san, side_pieces):
+    """What the suggested move moves: the piece, and where the side's pieces of that kind stand now."""
+    if san.startswith("O-O"):
+        return "castling " + ("queenside" if san.startswith("O-O-O") else "kingside"), None
+    kind = {"K": "king", "Q": "queen", "R": "rooks", "B": "bishops", "N": "knights"}.get(san[0], "pawns")
+    return kind.rstrip("s") if kind != "pawns" else "pawn", side_pieces.get(kind)
+
+
 def _hint_prompt(data, lang="en"):
     side = _fen_side(data["fen"])
     facts = {
@@ -363,13 +404,18 @@ def _hint_prompt(data, lang="en"):
         "evaluation": _pov_pawns(data["score"], "the player"),
         "assessment": _assess(data["score"]),
     }
+    facts.update(_board_facts(data["fen"]))
+    piece, where = _mover(data["best"], facts["pieces_" + side.lower()])
+    facts["piece_the_suggested_move_moves"] = piece
+    facts["where_the_player_has_pieces_of_that_kind"] = where
     return (
         "You are an encouraging and insightful chess coach. The player asked for a strategic hint on their turn. "
         "Stockfish has found the suggested move. In one or two concise sentences (under 45 words), explain the "
         "strategic idea, purpose, or tactical plan behind playing this suggested move (e.g., controlling a key square, "
         "developing a piece, opening a file, creating an attack, or neutralizing an opponent threat). Speak directly "
-        "to the player (\"you\"), and name the suggested move. Read the position (a FEN) carefully: mention only "
-        "pieces and squares it really shows, and never say a square is free or a pawn can go there unless it is. "
+        "to the player (\"you\"), and name the suggested move. The piece lists, open files and files with only one "
+        "side's pawns are exact: mention only pieces and squares they show, never say a square is free, a file open "
+        "or rooks connected unless they show it, and do not claim a threat the data does not name. "
         "Return plain text, no headings or markdown." + _language_note(lang)
         + (" Call the player \"bạn\" throughout, never by the color of their side." if lang == "vi" else "")
         + "\n\n"

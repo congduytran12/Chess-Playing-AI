@@ -84,7 +84,7 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('"moves":["e2e4","e7e5","f2f3"]', prompt)
         self.assertIn('"engine_best_move":"Nf3"', prompt)
         self.assertIn('Black wins by resignation', prompt)
-        self.assertEqual(self.upstream.sent['max_tokens'], 180)
+        self.assertEqual(self.upstream.sent['max_tokens'], 300)
 
     def test_free_text_is_not_accepted(self):
         # the endpoint is not a chatbot: a prompt of the caller's own is refused, with or without chess data
@@ -186,6 +186,25 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(facts['evaluation'], 0.3)
         self.assertEqual(self.upstream.sent['max_tokens'], 140)
 
+    def test_the_hint_is_told_where_the_pieces_stand(self):
+        hint = dict(self.HINT, fen='r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 w - - 0 7', best='Re1')
+        self.assertEqual(self.post(hint).status_code, 200)
+        prompt = self.upstream.sent['messages'][1]['content']
+        facts = json.loads(prompt[prompt.index('{'):])
+        self.assertEqual(facts['pieces_white']['rooks'], 'a1, f1')
+        self.assertEqual(facts['pieces_black']['knights'], 'c6, f6')
+        self.assertEqual(facts['open_files_no_pawns'], [])
+        self.assertEqual(facts['files_only_white_has_pawns_on'], [])
+        self.assertEqual(facts['piece_the_suggested_move_moves'], 'rook')
+        self.assertEqual(facts['where_the_player_has_pieces_of_that_kind'], 'a1, f1')
+
+    def test_a_pawn_or_castling_move_is_named_for_the_hint(self):
+        self.assertEqual(llm._mover('e4', {'pawns': 'e2'}), ('pawn', 'e2'))
+        self.assertEqual(llm._mover('O-O-O', {}), ('castling queenside', None))
+
+    def test_answers_are_plain_text(self):
+        self.assertEqual(llm.clean_text('**Lesson:**  keep  f7 ≈ safe'), 'Lesson: keep f7 about safe')
+
     def test_explains_one_move_from_the_mover_s_side(self):
         response = self.post(self.MOVE)
         self.assertEqual((response.status_code, response.json), (200, {'text': 'Nice game.'}))
@@ -258,7 +277,7 @@ class ProxyTests(unittest.TestCase):
                          ("decisively better", "decisively worse"))
 
     def test_the_answer_comes_in_the_chosen_language(self):
-        for payload, tokens in ((dict(ANALYSIS, lang='vi'), 360), (dict(self.MOVE, lang='vi'), 440),
+        for payload, tokens in ((dict(ANALYSIS, lang='vi'), 600), (dict(self.MOVE, lang='vi'), 440),
                                 (dict(self.MISTAKE, lang='vi'), 440)):
             self.assertEqual(self.post(payload).status_code, 200)
             self.assertIn('Write the answer in Vietnamese', self.upstream.sent['messages'][1]['content'])
@@ -268,7 +287,7 @@ class ProxyTests(unittest.TestCase):
             self.assertNotIn('Vietnamese', self.upstream.sent['messages'][1]['content'])
         self.assertEqual(self.upstream.sent['max_tokens'], 220)
         self.post(ANALYSIS)
-        self.assertEqual(self.upstream.sent['max_tokens'], 180, "an English game summary is as it was")
+        self.assertEqual(self.upstream.sent['max_tokens'], 300, "an English game summary")
 
     def test_a_request_about_a_move_or_mistake_is_checked_too(self):
         move, mistake = self.MOVE, self.MISTAKE
