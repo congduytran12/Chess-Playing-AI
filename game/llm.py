@@ -52,10 +52,21 @@ class LLMError(Exception):
     """A user-actionable error returned by the optional coaching service."""
 
 
+# characters models like to type that the game's fonts may draw as a box: the plain ones instead
+GLYPHS = {"‑": "-", "‐": "-", " ": " ", " ": " ", " ": " ", "​": "",
+          "’": "'", "‘": "'", "“": '"', "”": '"', "…": "..."}
+
+
+def clean_text(text):
+    for old, new in GLYPHS.items():
+        text = text.replace(old, new)
+    return text.strip()
+
+
 def _content_text(content):
     if isinstance(content, list):
-        return "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
-    return (content or "").strip() if isinstance(content, str) else ""
+        return clean_text("".join(part.get("text", "") for part in content if isinstance(part, dict)))
+    return clean_text(content) if isinstance(content, str) else ""
 
 
 def providers():
@@ -167,7 +178,8 @@ def _language_note(lang):
                 "followed by \"điểm\" (pawn units), not \"tốt\", which means the piece. Use no English words: say "
                 "\"sai lầm nặng\" for a blunder, \"sai lầm\" for a mistake, \"nước kém chính xác\" for an inaccuracy and "
                 "\"nước tốt nhất\" for the best move. Put the data's phrases in your own words, not in quotation marks, "
-                "and spell \"chiếu hết\" (checkmate) with its accents. Name a bad move as a move, for example "
+                "and spell \"chiếu hết\" (checkmate) with its accents. Say \"cột\" for a file and \"hàng\" for a rank, never "
+                "the English words (file, rank, check, fork, pin). Name a bad move as a move, for example "
                 "\"nước g4 là một sai lầm nặng\", never \"chơi sai lầm nặng g4\", and do not write evaluation numbers.")
     return ""
 
@@ -179,27 +191,37 @@ def _pawns(score):
     return round(score, 2)
 
 
+def _from_to(code):
+    """A move in coordinates (g8f6, e7e8q) as 'g8-f6' (and '=Q'), which a model reads without taking it for a name."""
+    text = "%s-%s" % (code[:2], code[2:4])
+    return text + "=" + code[4].upper() if len(code) > 4 else text
+
+
 def _prompt(move_codes, best_san, evals, marks, result, lang="en"):
     mistakes = []
     for ply, (mark, loss) in sorted(marks.items()):
         best = best_san[ply] if ply < len(best_san) else None
         mistakes.append({
-            "ply": ply + 1,
+            "move_number": ply // 2 + 1,
+            "side_that_moved": "White" if ply % 2 == 0 else "Black",
             "mark": mark,
-            "loss": round(loss, 2),
-            "played": move_codes[ply] if ply < len(move_codes) else None,
-            "best": best,
+            "pawns_lost": _lost(loss, *[evals[i] for i in (ply + 1,) if i < len(evals)]),
+            "played_from_to": _from_to(move_codes[ply]) if ply < len(move_codes) else None,
+            "engine_best_move": best,
             # evals[i] is the position before move i: the one after the move is the next
             "evaluation_before": _pawns(evals[ply]) if ply < len(evals) else None,
             "evaluation_after": _pawns(evals[ply + 1]) if ply + 1 < len(evals) else None,
         })
+    mistakes = [_in_language(m, lang) for m in mistakes]
     return (
         "You are a concise chess coach. Explain the following completed game using only "
         "the supplied Stockfish analysis. Do not invent tactics or evaluations. Mention "
         "the two most important lessons and one practical improvement. If there are no "
         "mistakes, describe one strategic strength. Evaluations are in pawns from White's point of view "
-        "(positive: White is better), while loss is what the side that moved gave up. "
-        "Keep the answer under 90 words. "
+        "(positive: White is better), while pawns_lost is what the side that moved gave up; give it only when it "
+        "is a number. Refer to a move by its move_number and side (\"Black's 3rd move\") and write played_from_to "
+        "as the squares it joins; name the engine_best_move whenever there is one, and give lessons that follow "
+        "from the listed mistakes, not general advice. Keep the answer under 90 words. "
         "Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps({"moves": move_codes, "mistakes": mistakes, "result": result},
                      separators=(",", ":"))
@@ -296,7 +318,9 @@ def _move_prompt(data, lang="en"):
         "if the data doesn't show why, say what the move does in general terms. In two or three sentences, under 60 "
         "words: say what the move does. If it is the engine's best move or loses little, say why it is good; "
         "otherwise say what the best move does better and what the engine's reply to the move played takes "
-        "advantage of. Say who is better only in the words of the assessment fields, and give pawns_lost only when "
+        "advantage of. Say who is better only in the words of the assessment fields (they are for the side that "
+        "moved: the opponent is better exactly when they say worse, and never both sides at once), and give "
+        "pawns_lost only when "
         "it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
@@ -323,7 +347,9 @@ def _mistake_prompt(data, lang="en"):
         "tactics, variations or evaluations that are not in the data; if the data doesn't show the reason, say so "
         "and describe the difference in general terms. In two or three sentences, under 60 words, speaking to the "
         "player (\"you\"). Say who is better only in the words of the assessment fields, and give pawns_lost only "
-        "when it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        "when it is a number. Return plain text, no headings or markdown." + _language_note(lang)
+        + (" Call the player \"bạn\" throughout, never by the color of their side." if lang == "vi" else "")
+        + "\n\n"
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
@@ -342,7 +368,11 @@ def _hint_prompt(data, lang="en"):
         "Stockfish has found the suggested move. In one or two concise sentences (under 45 words), explain the "
         "strategic idea, purpose, or tactical plan behind playing this suggested move (e.g., controlling a key square, "
         "developing a piece, opening a file, creating an attack, or neutralizing an opponent threat). Speak directly "
-        "to the player (\"you\"). Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        "to the player (\"you\"), and name the suggested move. Read the position (a FEN) carefully: mention only "
+        "pieces and squares it really shows, and never say a square is free or a pawn can go there unless it is. "
+        "Return plain text, no headings or markdown." + _language_note(lang)
+        + (" Call the player \"bạn\" throughout, never by the color of their side." if lang == "vi" else "")
+        + "\n\n"
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 

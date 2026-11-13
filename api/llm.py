@@ -19,12 +19,16 @@ from flask import Flask, jsonify, request
 app = Flask(__name__)
 
 MAX_PLIES = 1000  # more than any game worth explaining (an analysis lists one more position than moves)
-MOVE_CODE = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$")
+MOVE_CODE = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?\Z")
 # a move in algebraic notation (Nf3, exd5, Qh4xe1+, e8=Q#, O-O-O): no other text gets through as a "move"
-SAN = re.compile(r"^(?:O-O(?:-O)?|(?:[a-h]x)?[a-h][1-8](?:=[QRBN])?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8])[+#]?$")
+SAN = re.compile(r"^(?:O-O(?:-O)?|(?:[a-h]x)?[a-h][1-8](?:=[QRBN])?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8])[+#]?\Z")
 # a position: pieces, side to move, castling rights, en passant square, move counters
-FEN = re.compile(r"^[pnbrqkPNBRQK1-8/]{15,71} [wb] (?:-|[KQkq]{1,4}) (?:-|[a-h][36]) \d{1,3} \d{1,4}$")
-RESULT = re.compile(r"^[A-Za-z0-9 ,.()'/\-]{0,60}$")
+FEN = re.compile(r"^[pnbrqkPNBRQK1-8/]{15,71} [wb] (?:-|[KQkq]{1,4}) (?:-|[a-h][36]) \d{1,3} \d{1,4}\Z")
+# the results the game reports (game/main.py), nothing else gets into the prompt
+RESULTS = frozenset((
+    "", "White wins by checkmate", "Black wins by checkmate", "White wins by resignation",
+    "Black wins by resignation", "White wins on time", "Black wins on time", "Draw by agreement",
+    "Draw by threefold repetition", "Draw by 50-move rule", "Draw by insufficient material", "Stalemate"))
 MARKS = ("??", "?", "?!")
 LANGUAGES = ("en", "vi")  # the languages the coach answers in (game/llm.py LANGUAGES)
 MAX_HISTORY = 12  # moves before the explained one
@@ -54,8 +58,10 @@ coach_module = loadCoach()
 
 def _content_text(content):
     if isinstance(content, list):
-        return "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
-    return (content or "").strip() if isinstance(content, str) else ""
+        text = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    else:
+        text = content if isinstance(content, str) else ""
+    return coach_module.clean_text(text) if coach_module is not None else text.strip()
 
 
 def askProvider(provider, prompt, tokens):
@@ -93,7 +99,7 @@ def checkedAnalysis(payload):
         return None
     if not _list(evals, _number):
         return None
-    if not isinstance(result, str) or not RESULT.match(result):
+    if not isinstance(result, str) or result not in RESULTS:
         return None
     if not isinstance(marks, list) or len(marks) > MAX_PLIES:
         return None
@@ -197,7 +203,8 @@ def visitorOf(req):
 @app.route("/api/llm", methods=["POST", "OPTIONS"])
 def coach():
     if request.method == "OPTIONS":
-        return "", 204
+        return "", 204, {"Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type",
+                         "Access-Control-Max-Age": "86400"}
     payload = request.get_json(silent=True)
     checked = checkedRequest(payload) if isinstance(payload, dict) else None
     if checked is None:
