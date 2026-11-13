@@ -198,6 +198,16 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(facts['piece_the_suggested_move_moves'], 'rook')
         self.assertEqual(facts['where_the_player_has_pieces_of_that_kind'], 'a1, f1')
 
+    def test_the_hint_is_told_who_stands_on_the_file_it_goes_to(self):
+        hint = dict(self.HINT, fen='r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 w - - 0 7', best='Re1')
+        self.post(hint)
+        prompt = self.upstream.sent['messages'][1]['content']
+        facts = json.loads(prompt[prompt.index('{'):])
+        self.assertEqual(facts['square_the_suggested_move_goes_to'], 'e1')
+        self.assertEqual(facts['everything_on_that_file'], {'White': ['pawn e4'], 'Black': ['pawn e5']})
+        self.assertEqual((llm._destination('Nbd7+'), llm._destination('exd8=Q#'), llm._destination('O-O')),
+                         ('d7', 'd8', None))
+
     def test_a_pawn_or_castling_move_is_named_for_the_hint(self):
         self.assertEqual(llm._mover('e4', {'pawns': 'e2'}), ('pawn', 'e2'))
         self.assertEqual(llm._mover('O-O-O', {}), ('castling queenside', None))

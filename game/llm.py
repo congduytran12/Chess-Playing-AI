@@ -386,6 +386,29 @@ def _board_facts(fen):
     return facts
 
 
+def _destination(san):
+    """The square a move in algebraic notation goes to (None for castling)."""
+    if san.startswith("O-O"):
+        return None
+    return san.rstrip("+#").split("=")[0][-2:]
+
+
+def _file_contents(fen, file):
+    """The pieces standing on one file, by side (as 'pawn e4'), so a model can't invent who is on it."""
+    found = {"White": [], "Black": []}
+    for index, row in enumerate(fen.split()[0].split("/")):
+        column = 0
+        for char in row:
+            if char.isdigit():
+                column += int(char)
+                continue
+            if "abcdefgh"[column % 8] == file:
+                found["White" if char.isupper() else "Black"].append(
+                    "%s %s%d" % (PIECE_NAMES[char.lower()].rstrip("s"), file, 8 - index))
+            column += 1
+    return found
+
+
 def _mover(san, side_pieces):
     """What the suggested move moves: the piece, and where the side's pieces of that kind stand now."""
     if san.startswith("O-O"):
@@ -408,6 +431,10 @@ def _hint_prompt(data, lang="en"):
     piece, where = _mover(data["best"], facts["pieces_" + side.lower()])
     facts["piece_the_suggested_move_moves"] = piece
     facts["where_the_player_has_pieces_of_that_kind"] = where
+    square = _destination(data["best"])
+    if square:
+        facts["square_the_suggested_move_goes_to"] = square
+        facts["everything_on_that_file"] = _file_contents(data["fen"], square[0])
     return (
         "You are an encouraging and insightful chess coach. The player asked for a strategic hint on their turn. "
         "Stockfish has found the suggested move. In one or two concise sentences (under 45 words), explain the "
@@ -415,7 +442,8 @@ def _hint_prompt(data, lang="en"):
         "developing a piece, opening a file, creating an attack, or neutralizing an opponent threat). Speak directly "
         "to the player (\"you\"), and name the suggested move. The piece lists, open files and files with only one "
         "side's pawns are exact: mention only pieces and squares they show, never say a square is free, a file open "
-        "or rooks connected unless they show it, and do not claim a threat the data does not name. "
+        "or rooks connected unless they show it, say who stands on a file only as everything_on_that_file does, and "
+        "do not claim a threat the data does not name. "
         "Return plain text, no headings or markdown." + _language_note(lang)
         + (" Call the player \"bạn\" throughout, never by the color of their side." if lang == "vi" else "")
         + "\n\n"
