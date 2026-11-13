@@ -130,7 +130,13 @@ In chess, pawn promotion occurs when a pawn reaches the eighth rank. The pawn ca
 
 3. Optional, for Stockfish: download Stockfish from [stockfishchess.org](https://stockfishchess.org/download/) and either put the program in the repository's `engines/` folder, install it so `stockfish` is on your `PATH`, or set the `STOCKFISH_PATH` environment variable to it. Without it, the desktop game uses its built-in AI.
 
-4. Optional, for the Groq LLM coach: create a Groq API key in [Groq Console](https://console.groq.com/keys). For desktop, set `GROQ_API_KEY`. For browser coaching, set the Vercel environment variable `GROQ_API_KEY` and redeploy. The default model is `openai/gpt-oss-120b`; Groq quotas apply. The browser uses `/api/llm`, so the key is never exposed in the game bundle. The LLM never selects or validates moves.
+4. Optional, for the LLM coach: it asks every provider that has a key at the same time and uses the first valid answer, so a slow or failing provider doesn't matter. Set any of these (desktop: environment variables; browser coaching: Vercel environment variables, then redeploy):
+   - Groq: `GROQ_API_KEY` ([console](https://console.groq.com/keys)), model `GROQ_MODEL` (default `openai/gpt-oss-120b`)
+   - OpenRouter: `OPENROUTER_API_KEY`, model `OPENROUTER_MODEL` (default `nvidia/nemotron-3-ultra`)
+   - Google Gemini: `GEMINI_API_KEY`, model `GEMINI_MODEL` (default `gemini-3.8-flash`)
+   - Cloudflare Workers AI: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, model `CLOUDFLARE_MODEL` (default `@cf/openai/gpt-oss-120b`)
+
+   Each also accepts `<NAME>_API_URL` to override the endpoint. Check the default model IDs against each provider's catalogue. The browser uses `/api/llm`, so the keys are never exposed in the game bundle. The LLM never selects or validates moves.
 
 5. Start the game from the repository root:
    ```bash

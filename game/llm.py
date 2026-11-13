@@ -1,16 +1,23 @@
 """Optional LLM coaching built on top of the game's Stockfish analysis.
 
 The LLM is never used to choose or validate a chess move.  It only explains
-analysis that Stockfish has already produced. Configure Groq with:
+analysis that Stockfish has already produced. Every provider with a key is asked
+at the same time and the first valid answer is used (a provider that fails or
+times out is skipped):
 
-    GROQ_API_KEY
-    GROQ_MODEL          (optional, defaults to openai/gpt-oss-120b)
+    GROQ_API_KEY                      GROQ_MODEL (openai/gpt-oss-120b)
+    OPENROUTER_API_KEY                OPENROUTER_MODEL (nvidia/nemotron-3-ultra)
+    GEMINI_API_KEY                    GEMINI_MODEL (gemini-3.8-flash)
+    CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+                                      CLOUDFLARE_MODEL (@cf/openai/gpt-oss-120b)
 
-The browser uses the site's /api/llm proxy so the API key is never shipped to
-the client. Set GROQ_API_KEY on the Vercel project.
+Each also has an optional <NAME>_API_URL override. The browser uses the site's
+/api/llm proxy so the API keys are never shipped to the client. Set the keys on
+the Vercel project.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import sys
@@ -51,8 +58,83 @@ def _content_text(content):
     return (content or "").strip() if isinstance(content, str) else ""
 
 
+def providers():
+    """The configured providers, each {name, url, key, model, extra, headroom}. All of them speak the OpenAI chat
+    format. headroom is added to the answer's token limit for models that count their reasoning against it."""
+    env = os.environ.get
+    found = []
+    if env("GROQ_API_KEY"):
+        found.append({
+            "name": "groq", "key": env("GROQ_API_KEY"), "model": env("GROQ_MODEL", "openai/gpt-oss-120b"),
+            "url": env("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"),
+            "extra": {"reasoning_effort": "low"}, "headroom": 0})
+    if env("OPENROUTER_API_KEY"):
+        found.append({
+            "name": "openrouter", "key": env("OPENROUTER_API_KEY"),
+            "model": env("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra"),
+            "url": env("OPENROUTER_API_URL", "https://openrouter.ai/api/v1/chat/completions"),
+            "extra": {"reasoning": {"effort": "low"}}, "headroom": 512})
+    if env("GEMINI_API_KEY"):
+        found.append({
+            "name": "gemini", "key": env("GEMINI_API_KEY"), "model": env("GEMINI_MODEL", "gemini-3.8-flash"),
+            "url": env("GEMINI_API_URL", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+            "extra": {"reasoning_effort": "low"}, "headroom": 512})
+    if env("CLOUDFLARE_API_TOKEN") and (env("CLOUDFLARE_ACCOUNT_ID") or env("CLOUDFLARE_API_URL")):
+        found.append({
+            "name": "cloudflare", "key": env("CLOUDFLARE_API_TOKEN"),
+            "model": env("CLOUDFLARE_MODEL", "@cf/openai/gpt-oss-120b"),
+            "url": env("CLOUDFLARE_API_URL", "https://api.cloudflare.com/client/v4/accounts/%s/ai/v1/chat/completions"
+                       % env("CLOUDFLARE_ACCOUNT_ID")),
+            "extra": {"reasoning_effort": "low"}, "headroom": 256})
+    return found
+
+
+def chat_body(provider, prompt, tokens):
+    """The request body for one provider."""
+    body = {
+        "model": provider["model"],
+        "temperature": 0.2,
+        "max_tokens": tokens + provider["headroom"],
+        "messages": [
+            {"role": "system", "content": "You explain chess analysis accurately and briefly."},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    body.update(provider["extra"])
+    return body
+
+
+def first_answer(calls, timeout=20):
+    """Run the calls (zero-argument functions returning text, raising when they fail) at the same time and return the
+    first non-empty text. Raises LLMError when none gives one. Late answers are dropped (their threads finish alone)."""
+    if not calls:
+        raise LLMError("No coaching provider is configured")
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(calls))
+    try:
+        pending = {pool.submit(call) for call in calls}
+        errors = []
+        deadline = None if timeout is None else timeout
+        while pending:
+            done, pending = concurrent.futures.wait(
+                pending, timeout=deadline, return_when=concurrent.futures.FIRST_COMPLETED)
+            if not done:
+                break
+            for future in done:
+                try:
+                    text = future.result()
+                except Exception as error:  # a provider that fails is skipped, whatever the reason
+                    errors.append(str(error))
+                    continue
+                if text:
+                    return text
+        raise LLMError("No coaching provider answered (%s)" % "; ".join(errors[:4]) if errors
+                       else "No coaching provider answered")
+    finally:
+        pool.shutdown(wait=False)  # every provider was started; the slower ones just finish unused
+
+
 def enabled():
-    return WASM or bool(os.environ.get("GROQ_API_KEY"))
+    return WASM or bool(providers())
 
 
 # What the coach is asked, as the browser sends it to /api/llm (and the desktop turns into a prompt itself). There are
@@ -276,43 +358,33 @@ def prompt_for(kind, data, lang="en"):
     return _prompt(*data, lang=lang)
 
 
-def _request_groq(prompt, tokens=TOKENS["game"]):
-    key = os.environ["GROQ_API_KEY"]
-    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-    url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
-    body = json.dumps({
-        "model": model,
-        "temperature": 0.2,
-        "max_completion_tokens": tokens,
-        "reasoning_effort": "low",
-        "messages": [
-            {"role": "system", "content": "You explain chess analysis accurately and briefly."},
-            {"role": "user", "content": prompt},
-        ],
-    }).encode("utf-8")
+def _request_provider(provider, prompt, tokens=TOKENS["game"]):
+    name = provider["name"]
+    body = json.dumps(chat_body(provider, prompt, tokens)).encode("utf-8")
     request = urllib.request.Request(
-        url,
+        provider["url"],
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + provider["key"]},
     )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", "replace")[:200]
-        raise LLMError("Groq request failed (%d): %s" % (error.code, detail)) from error
+        raise LLMError("%s request failed (%d): %s" % (name, error.code, detail)) from error
     except (urllib.error.URLError, TimeoutError, ValueError) as error:
-        raise LLMError("Groq request failed: %s" % error) from error
+        raise LLMError("%s request failed: %s" % (name, error)) from error
     try:
         text = _content_text(data["choices"][0]["message"].get("content"))
     except (KeyError, IndexError, TypeError, AttributeError) as error:
-        raise LLMError("Groq returned an invalid response") from error
+        raise LLMError("%s returned an invalid response" % name) from error
     return text or None
 
 
 def _request(prompt, tokens=TOKENS["game"]):
-    return _request_groq(prompt, tokens)
+    """Ask every configured provider at once and take the first answer."""
+    return first_answer([(lambda p=p: _request_provider(p, prompt, tokens)) for p in providers()])
 
 
 async def _request_browser(analysis):

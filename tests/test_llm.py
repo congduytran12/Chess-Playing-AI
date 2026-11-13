@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -64,7 +65,8 @@ class ProxyTests(unittest.TestCase):
         self.client = self.proxy.app.test_client()
         self.upstream = FakeUpstream(200, reply('  Nice game.  '))
         self.patches = [mock.patch.object(self.proxy.requests, 'post', self.upstream.post),
-                        mock.patch.dict(os.environ, {'GROQ_API_KEY': 'key'})]
+                        mock.patch.dict(os.environ, {'GROQ_API_KEY': 'key', 'OPENROUTER_API_KEY': '',
+                                                     'GEMINI_API_KEY': '', 'CLOUDFLARE_API_TOKEN': ''})]
         for patch in self.patches:
             patch.start()
 
@@ -82,7 +84,7 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('"moves":["e2e4","e7e5","f2f3"]', prompt)
         self.assertIn('"best":"Nf3"', prompt)
         self.assertIn('Black wins by resignation', prompt)
-        self.assertEqual(self.upstream.sent['max_completion_tokens'], 180)
+        self.assertEqual(self.upstream.sent['max_tokens'], 180)
 
     def test_free_text_is_not_accepted(self):
         # the endpoint is not a chatbot: a prompt of the caller's own is refused, with or without chess data
@@ -164,7 +166,7 @@ class ProxyTests(unittest.TestCase):
         facts = json.loads(prompt[prompt.index('{'):])
         self.assertEqual((facts['player_to_move'], facts['suggested_move']), ('Black', 'e5'))
         self.assertEqual(facts['evaluation'], 0.3)
-        self.assertEqual(self.upstream.sent['max_completion_tokens'], 140)
+        self.assertEqual(self.upstream.sent['max_tokens'], 140)
 
     def test_explains_one_move_from_the_mover_s_side(self):
         response = self.post(self.MOVE)
@@ -178,7 +180,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((facts['previous_moves'], facts['engine_best_reply_to_the_move_played']), (['f3'], 'g4'))
         self.assertIsNone(facts['analysis_mark'])
         self.assertNotIn('Vietnamese', prompt)
-        self.assertEqual(self.upstream.sent['max_completion_tokens'], 220)
+        self.assertEqual(self.upstream.sent['max_tokens'], 220)
 
     def test_a_move_the_analysis_marked_says_so(self):
         facts = self.facts(dict(self.MOVE, mark='??', loss=3.456, after=-3.0))
@@ -208,7 +210,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(facts['pawns_lost'], "not counted: a forced mate follows", "a mate's loss is only a cap")
         self.assertEqual((facts['assessment_after_move_played'], facts['assessment_of_best_move']),
                          ("a forced mate against this side", "roughly equal"))
-        self.assertEqual(self.upstream.sent['max_completion_tokens'], 220)
+        self.assertEqual(self.upstream.sent['max_tokens'], 220)
 
     def test_the_facts_are_in_vietnamese_for_a_vietnamese_answer(self):
         facts = self.facts(dict(self.MISTAKE, lang='vi'))
@@ -242,13 +244,13 @@ class ProxyTests(unittest.TestCase):
                                 (dict(self.MISTAKE, lang='vi'), 440)):
             self.assertEqual(self.post(payload).status_code, 200)
             self.assertIn('Write the answer in Vietnamese', self.upstream.sent['messages'][1]['content'])
-            self.assertEqual(self.upstream.sent['max_completion_tokens'], tokens)
+            self.assertEqual(self.upstream.sent['max_tokens'], tokens)
         for payload in (ANALYSIS, dict(ANALYSIS, lang='en'), self.MOVE):
             self.post(payload)
             self.assertNotIn('Vietnamese', self.upstream.sent['messages'][1]['content'])
-        self.assertEqual(self.upstream.sent['max_completion_tokens'], 220)
+        self.assertEqual(self.upstream.sent['max_tokens'], 220)
         self.post(ANALYSIS)
-        self.assertEqual(self.upstream.sent['max_completion_tokens'], 180, "an English game summary is as it was")
+        self.assertEqual(self.upstream.sent['max_tokens'], 180, "an English game summary is as it was")
 
     def test_a_request_about_a_move_or_mistake_is_checked_too(self):
         move, mistake = self.MOVE, self.MISTAKE
@@ -294,6 +296,37 @@ class ProxyTests(unittest.TestCase):
         for _ in range(self.proxy.LIMIT_REQUESTS + 5):
             self.post({'prompt': 'x'})
         self.assertEqual(self.post(ANALYSIS).status_code, 200)
+
+    def test_every_configured_provider_is_asked_and_the_first_valid_answer_wins(self):
+        calls = []
+
+        def post(url, headers=None, json=None, timeout=None):
+            calls.append((url, json['model']))
+            if 'openrouter' in url:  # one provider failing doesn't matter
+                raise self.proxy.requests.RequestException('down')
+            fake = FakeUpstream(200, reply('From ' + json['model']))
+            return fake
+
+        env = {'OPENROUTER_API_KEY': 'k', 'GEMINI_API_KEY': 'k', 'CLOUDFLARE_API_TOKEN': 'k',
+               'CLOUDFLARE_ACCOUNT_ID': 'acct'}
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, env):
+            response = self.post(ANALYSIS)
+            for _ in range(100):  # the slower providers are still being asked when the first answer comes back
+                if len(calls) == 4:
+                    break
+                time.sleep(0.02)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json['text'].startswith('From '))
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(sorted(model for _, model in calls),
+                         sorted(['openai/gpt-oss-120b', 'nvidia/nemotron-3-ultra', 'gemini-3.8-flash',
+                                 '@cf/openai/gpt-oss-120b']))
+        self.assertTrue(any('/accounts/acct/ai/' in url for url, _ in calls))
+
+    def test_all_providers_failing_is_a_plain_error(self):
+        with mock.patch.dict(os.environ, {'GEMINI_API_KEY': 'k'}):
+            self.upstream.status_code = 500
+            self.assertEqual(self.post(ANALYSIS).status_code, 502)
 
     def test_service_problems_are_answered_plainly(self):
         self.upstream.status_code = 500

@@ -1,4 +1,5 @@
-"""Server-side proxy for the browser's optional Groq chess coach.
+"""Server-side proxy for the browser's optional LLM chess coach (Groq, OpenRouter, Gemini and Cloudflare Workers AI,
+all asked at once, see game/llm.py).
 
 The browser sends the game's analysis (moves, best moves, evaluations, marks, result), never a prompt: the prompt is
 built here, by game/llm.py's own _prompt, from data checked to be chess data. So the endpoint can't be used as a
@@ -55,6 +56,21 @@ def _content_text(content):
     if isinstance(content, list):
         return "".join(part.get("text", "") for part in content if isinstance(part, dict)).strip()
     return (content or "").strip() if isinstance(content, str) else ""
+
+
+def askProvider(provider, prompt, tokens):
+    """The text one provider answers with; raises when it can't be reached, errs or answers with nothing."""
+    response = requests.post(provider["url"], headers={"Authorization": "Bearer " + provider["key"]},
+                             json=coach_module.chat_body(provider, prompt, tokens), timeout=20)
+    if response.status_code != 200:
+        raise ValueError("%s returned status %s" % (provider["name"], response.status_code))
+    try:
+        text = _content_text(response.json()["choices"][0]["message"].get("content"))
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        raise ValueError("%s returned an invalid response" % provider["name"])
+    if not text:
+        raise ValueError("%s returned an empty response" % provider["name"])
+    return text
 
 
 def _number(value):
@@ -187,34 +203,17 @@ def coach():
     if checked is None:
         return jsonify(error="Invalid coaching request"), 400
     kind, lang, data = checked
-    key = os.environ.get("GROQ_API_KEY")
-    if not key or coach_module is None:
+    chosen = coach_module.providers() if coach_module is not None else []
+    if not chosen:
         return jsonify(error="Browser coaching is not configured"), 503
     if tooMany(visitorOf(request), time.time()):
         return jsonify(error="Too many coaching requests, try again later"), 429
     prompt = coach_module.prompt_for(kind, data, lang)
-    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-    url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+    tokens = coach_module.max_tokens(kind, lang)
     try:
-        response = requests.post(url, headers={"Authorization": "Bearer " + key}, json={
-            "model": model,
-            "temperature": 0.2,
-            "max_completion_tokens": coach_module.max_tokens(kind, lang),
-            "reasoning_effort": "low",
-            "messages": [
-                {"role": "system", "content": "You explain chess analysis accurately and briefly."},
-                {"role": "user", "content": prompt},
-            ],
-        }, timeout=20)
-    except requests.RequestException:
-        return jsonify(error="The coaching service could not be reached"), 502
-    if response.status_code != 200:
+        # every configured provider is asked at once; the first valid answer wins
+        text = coach_module.first_answer([(lambda p=p: askProvider(p, prompt, tokens)) for p in chosen], timeout=20)
+    except coach_module.LLMError as e:
+        print("[llm] %s" % e)
         return jsonify(error="The coaching service returned an error"), 502
-    try:
-        data = response.json()
-        text = _content_text(data["choices"][0]["message"].get("content"))
-        if not text:
-            raise ValueError("empty response")
-    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-        return jsonify(error="The coaching service returned an invalid response"), 502
     return jsonify(text=text)
