@@ -208,6 +208,18 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((llm._destination('Nbd7+'), llm._destination('exd8=Q#'), llm._destination('O-O')),
                          ('d7', 'd8', None))
 
+    def test_the_vietnamese_hint_has_no_english_piece_names(self):
+        hint = dict(self.HINT, lang='vi', fen='r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 w - - 0 7',
+                    best='Re1')
+        self.post(hint)
+        prompt = self.upstream.sent['messages'][1]['content']
+        facts = json.loads(prompt[prompt.index('{'):])
+        self.assertEqual(facts['everything_on_that_file'], {'White': ['tốt e4'], 'Black': ['tốt e5']})
+        self.assertEqual(facts['piece_the_suggested_move_moves'], 'xe')
+        self.assertEqual(facts['pieces_black']['mã'], 'c6, f6')
+        for word in ('pawn', 'rook', 'knight', 'king', 'queen', 'bishop'):
+            self.assertNotIn(word, json.dumps(facts['pieces_white']) + json.dumps(facts['everything_on_that_file']))
+
     def test_a_pawn_or_castling_move_is_named_for_the_hint(self):
         self.assertEqual(llm._mover('e4', {'pawns': 'e2'}), ('pawn', 'e2'))
         self.assertEqual(llm._mover('O-O-O', {}), ('castling queenside', None))

@@ -386,6 +386,25 @@ def _board_facts(fen):
     return facts
 
 
+VIETNAMESE_PIECES = {"king": "vua", "queen": "hậu", "rook": "xe", "rooks": "xe", "bishop": "tượng", "bishops": "tượng",
+                     "knight": "mã", "knights": "mã", "pawn": "tốt", "pawns": "tốt",
+                     "castling kingside": "nhập thành cánh vua", "castling queenside": "nhập thành cánh hậu"}
+
+
+def _vi_pieces(value):
+    """The piece names inside board facts in Vietnamese (keys and texts like 'pawn e4'), so none stays English."""
+    if isinstance(value, dict):
+        return {VIETNAMESE_PIECES.get(k, k): _vi_pieces(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_vi_pieces(v) for v in value]
+    if isinstance(value, str):
+        if value in VIETNAMESE_PIECES:
+            return VIETNAMESE_PIECES[value]
+        head, _, rest = value.partition(" ")
+        return VIETNAMESE_PIECES[head] + " " + rest if head in VIETNAMESE_PIECES and rest else value
+    return value
+
+
 def _destination(san):
     """The square a move in algebraic notation goes to (None for castling)."""
     if san.startswith("O-O"):
@@ -435,6 +454,9 @@ def _hint_prompt(data, lang="en"):
     if square:
         facts["square_the_suggested_move_goes_to"] = square
         facts["everything_on_that_file"] = _file_contents(data["fen"], square[0])
+    if lang == "vi":
+        for key in [k for k in facts if k.startswith(("pieces_", "everything_", "piece_the", "where_"))]:
+            facts[key] = _vi_pieces(facts[key])
     return (
         "You are an encouraging and insightful chess coach. The player asked for a strategic hint on their turn. "
         "Stockfish has found the suggested move. In one or two concise sentences (under 45 words), explain the "
