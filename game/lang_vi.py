@@ -255,6 +255,15 @@ EXACT = {
         "Bạn chơi quân Trắng. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
     "You play White. Send the link or the room code, then drag a piece, or tap it and then a square.":
         "Bạn chơi quân Trắng. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
+    "You play White": "Bạn chơi quân Trắng",
+    "You move first. Drag a piece, or click it and then a square.":
+        "Bạn đi trước. Kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
+    "You move first. Drag a piece, or tap it and then a square.":
+        "Bạn đi trước. Kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
+    "You play Black. Send the link or the room code, then drag a piece, or click it and then a square.":
+        "Bạn chơi quân Đen. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
+    "You play Black. Send the link or the room code, then drag a piece, or tap it and then a square.":
+        "Bạn chơi quân Đen. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
     "Drag a piece, or click it and then a square. Press H for How to play.":
         "Kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô. Nhấn H để xem Hướng dẫn chơi.",
     "Drag a piece, or tap it and then a square. The menu has How to play.":

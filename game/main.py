@@ -1109,6 +1109,7 @@ async def main():
     onlineVersion = 0  # bumped by every change to the game: move, undo, resignation, draw
     hostWhite = True  # the host plays White in this game; a rematch swaps the colors (the state's 'hw')
     adoptedOnce = False  # a state of the room's game was adopted since we joined (until then we take the game as it is)
+    joinAdopted = None  # (game, version) of the last state adopted while joining: nothing of ours has changed since
     undoAsked = False  # we asked the opponent to take moves back, and they haven't answered: their undo may come
     drawOffered = False  # we offered a draw, and they haven't answered: their acceptance may come
     onlineGameId = ""  # random id of the current game, shared by both players (rating reports are matched by it)
@@ -1900,9 +1901,11 @@ async def main():
     def connectOnline(role):
         nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, onlineGameId, savedSession, lastStateHeard
         nonlocal opponentInfo, opponentSeen, caughtUp, chatOpen, joinId, joinedAt, connectedAt, hostWhite, adoptedOnce
+        nonlocal joinAdopted
         multiplayerRole = role
         hostWhite = True
         adoptedOnce = False
+        joinAdopted = None
         opponentInfo = None
         opponentSeen = None
         caughtUp = False
@@ -1930,7 +1933,7 @@ async def main():
     def adoptState(state, joining=False):
         nonlocal onlineGame, onlineVersion, onlineGameId, timeControl, clocks, gameResult, moveMade, animate
         nonlocal lastClockTick, pendingPrompt, squareSelected, playerClicks, caughtUp, hostWhite, validMoves
-        nonlocal adoptedOnce, undoAsked, drawOffered
+        nonlocal adoptedOnce, undoAsked, drawOffered, joinAdopted
         codes = str(state.get('moves') or "").split()
         newGame = state['game'] != onlineGame
         trusted = newGame or joining or (not codes and not gs.moveLog)
@@ -1970,6 +1973,8 @@ async def main():
         if timeControl is not None and isinstance(stateClocks, dict):
             if trusted:
                 clocks = {'w': int(stateClocks.get('w', 0)), 'b': int(stateClocks.get('b', 0))}
+                if joining:  # a rejoin: the game went on since the state was sent, at the side to move's cost
+                    clocks = clocksAfterWait(clocks, codes, state.get('_time'), net.server_time, state.get('result'))
             else:  # our own clock is ours, and the opponent's can't have grown by more than their increment
                 opponent = 'b' if ourColor() == 'w' else 'w'
                 cap = clocks[opponent] + timeControl[1] * 1000 + CLOCK_SLACK_MS
@@ -1984,6 +1989,11 @@ async def main():
         onlineVersion = state['version']
         if trusted:
             onlineGameId = str(state.get('gid') or "")[:32]
+        if joining:
+            joinAdopted = (onlineGame, onlineVersion)
+        # a request raised about an earlier position is over once the game has moved on
+        if pendingPrompt is not None and pendingPrompt.get('at') not in (None, (onlineGame, onlineVersion)):
+            pendingPrompt = None
 
         moveMade = True
         animate = added == 1 and undone == 0 and not newGame  # the usual case: the opponent's move
@@ -2800,10 +2810,14 @@ async def main():
             # game states: a replay after joining can deliver many, so only the newest one is used. The room is
             # public: a state counts only when it comes from the opponent's side and judgeState finds it a step the
             # opponent can really have taken
-            joining = not adoptedOnce and not gs.moveLog and onlineVersion == 0
+            # (the room's history can arrive over several frames: a state from it still counts as joining while
+            # nothing of ours has changed since the last one, or an early one would shut out the later ones)
+            nothingTaken = not adoptedOnce and not gs.moveLog and onlineVersion == 0
+            unchanged = joinAdopted == (onlineGame, onlineVersion)
             view = {'game': onlineGame, 'moves': [move.getCode() for move in gs.moveLog], 'result': gameResult,
-                    'color': ourColor(), 'joining': joining, 'undoAsked': undoAsked, 'drawOffered': drawOffered,
+                    'color': ourColor(), 'joining': nothingTaken, 'undoAsked': undoAsked, 'drawOffered': drawOffered,
                     'clocks': clocks}
+            joining = nothingTaken
             newest = None
             candidates = sorted((msg for msg in messages
                                  if msg.get('type') == 'state' and msg.get('role') == opponentRole
@@ -2813,10 +2827,13 @@ async def main():
             for msg in candidates:
                 if (msg['game'], msg['version']) < (onlineGame, onlineVersion):
                     newest = msg  # older than ours: they are behind
+                    joining = False
                     break
+                view['joining'] = joiningState(nothingTaken, unchanged, joinedAt, msg.get('_time'))
                 problem = judgeState(msg, view)
                 if problem is None:
                     newest = msg
+                    joining = view['joining']
                     break
                 print("Main: Ignoring a state that %s" % problem)
             if newest is not None:
@@ -2861,16 +2878,18 @@ async def main():
                     continue
                 current = (msg.get('role') == opponentRole and msg.get('game') == onlineGame
                            and msg.get('version') == onlineVersion)
-                if not current:
-                    continue
+                if not current or not sentAfterJoin(joinedAt, msg.get('_time')):
+                    continue  # (a request from the room's history is stale: the game has gone on since)
                 if mtype == 'undo_request':
-                    pendingPrompt = {'kind': 'undo', 'text': "Opponent requested an undo"}
+                    pendingPrompt = {'kind': 'undo', 'text': "Opponent requested an undo",
+                                     'at': (onlineGame, onlineVersion)}
                 elif mtype == 'undo_declined':
                     undoAsked = False
                     showStatus("Opponent declined the undo")
                 elif mtype == 'draw_offer':
                     if gameResult is None:
-                        pendingPrompt = {'kind': 'draw', 'text': "Opponent offers a draw"}
+                        pendingPrompt = {'kind': 'draw', 'text': "Opponent offers a draw",
+                                         'at': (onlineGame, onlineVersion)}
                 elif mtype == 'draw_declined':
                     drawOffered = False
                     showStatus("Opponent declined the draw")
@@ -3754,7 +3773,9 @@ async def main():
         drawMoveList(screen, moveList, gs.moveLog, highlighted, marks, thumbGrab is not None, figurines)
         if not gs.moveLog and not gameOver:  # nothing to list yet: say how to begin (or why no mistake is shown)
             note = (mistakesNote(mistakeSet, account.signedIn) if currentModeIndex == MISTAKES_MODE
-                    else emptyListNote(currentModeIndex, networkConnected, guest, browser.touchScreen()))
+                    else emptyListNote(currentModeIndex, networkConnected, guest, browser.touchScreen(),
+                                       ourColor() if multiplayerMode and networkConnected else None,
+                                       opponentSeen is not None))
             drawEmptyListNote(screen, areas['list'], note)
         reviewScroll = False
         if gameOver:  # the shown position, its evaluation and the analysis, and the evaluation graph
@@ -5490,15 +5511,18 @@ def drawPuzzleInfo(screen, rect, lines):
 
 # what the move list says before the first move, as (heading, text): how to move, and what to do online
 # touch: a phone or tablet (tap, and no keyboard for the How to play key)
-def emptyListNote(modeIndex, connected, guest=False, touch=False):
+def emptyListNote(modeIndex, connected, guest=False, touch=False, color=None, opponentHere=False):
     moving = "Drag a piece, or %s it and then a square." % ("tap" if touch else "click")
     if modeIndex == 2 and not connected:
         return ("Play online",
                 "Host a game to get a room code, or type the code your friend sent and press Join.")
     if modeIndex == 2:
-        if guest:
-            return ("You play Black", "White moves first. " + moving)
-        return ("Waiting for your friend", "You play White. Send the link or the room code, then " + moving[0].lower()
+        # color: ours (a rematch swaps it); the host's default is White and the guest's Black
+        color = color or ('b' if guest else 'w')
+        side = "You play White" if color == 'w' else "You play Black"
+        if guest or opponentHere:  # the opponent is here: say what to do
+            return (side, ("You move first. " if color == 'w' else "White moves first. ") + moving)
+        return ("Waiting for your friend", side + ". Send the link or the room code, then " + moving[0].lower()
                 + moving[1:])
     if modeIndex == 1:
         return ("White moves first", moving)
@@ -6415,6 +6439,37 @@ def timeoutLoser(result):
     if result and result[0] == "Black wins on time":
         return 'w'
     return None
+
+
+def isNumber(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+# whether a state is taken as it is (judgeState's 'joining'): when nothing of the game has been taken yet, and also
+# for the rest of the room's history, until our own sync_request comes back (joinedAt; sent: the state's server time),
+# as long as nothing of ours has changed since the last state adopted. The history can arrive over several frames,
+# and an early state of it adopted first must not shut out the later ones that hold our own moves.
+def joiningState(nothingTaken, unchanged, joinedAt, sent):
+    if nothingTaken:
+        return True
+    return bool(unchanged and isNumber(sent) and (joinedAt is None or sent <= joinedAt))
+
+
+# whether a message was sent after we joined the room (our sync_request came back at joinedAt): a request or an
+# offer from before it belongs to the room's history, and the game has gone on since
+def sentAfterJoin(joinedAt, sent):
+    return isNumber(joinedAt) and isNumber(sent) and sent > joinedAt
+
+
+# clocks (ms) of a state sent at server time `sent`, at server time `now` (seconds): the side to move has been
+# paying since. A game that hasn't begun or has ended has no running clock.
+def clocksAfterWait(clocks, codes, sent, now, result):
+    if not codes or result or not isNumber(sent) or not isNumber(now) or now <= sent:
+        return clocks
+    side = 'w' if len(codes) % 2 == 0 else 'b'
+    waited = clocks.copy()
+    waited[side] = max(0, waited[side] - int((now - sent) * 1000))
+    return waited
 
 
 # Why a state from the opponent can't be taken as the next step of the game, or None when it can. Anyone who has the

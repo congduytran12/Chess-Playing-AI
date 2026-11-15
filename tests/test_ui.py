@@ -2664,6 +2664,47 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(browser.siteUrl(), browser.SITE_URL, "on desktop the link points at the public site")
         self.assertEqual(browser.paramFromUrl(main.inviteUrl(site, "AB12CD"), 'room'), "AB12CD")
 
+    def test_rejoin_helpers(self):
+        main = self.main
+        # history replayed over several frames still counts as joining while nothing of ours has changed
+        self.assertTrue(main.joiningState(True, False, None, None), "nothing taken yet")
+        self.assertTrue(main.joiningState(False, True, None, 900), "echo not back yet")
+        self.assertTrue(main.joiningState(False, True, 1000, 999), "history before the echo")
+        self.assertTrue(main.joiningState(False, True, 1000, 1000))
+        self.assertFalse(main.joiningState(False, True, 1000, 1001), "live after the echo")
+        self.assertFalse(main.joiningState(False, True, 1000, None))
+        self.assertFalse(main.joiningState(False, True, None, None), "no server time: can't tell it is history")
+        self.assertFalse(main.joiningState(False, False, None, 900), "we changed the game since")
+        # requests and offers from the history are stale
+        self.assertTrue(main.sentAfterJoin(1000, 1001))
+        self.assertFalse(main.sentAfterJoin(1000, 1000))
+        self.assertFalse(main.sentAfterJoin(1000, 990))
+        self.assertFalse(main.sentAfterJoin(None, 1001), "history still arriving")
+        self.assertFalse(main.sentAfterJoin(1000, None))
+        self.assertFalse(main.sentAfterJoin(1000, True))
+        # a rejoin pays the time away at the side to move's cost
+        clocks = {'w': 300000, 'b': 300000}
+        self.assertEqual(main.clocksAfterWait(clocks, ['e2e4'], 1000, 1100, None), {'w': 300000, 'b': 200000})
+        self.assertEqual(main.clocksAfterWait(clocks, ['e2e4', 'e7e5'], 1000, 1100, None), {'w': 200000, 'b': 300000})
+        self.assertEqual(clocks, {'w': 300000, 'b': 300000}, "the state's own clocks are left alone")
+        self.assertEqual(main.clocksAfterWait(clocks, ['e2e4'], 1000, 9999, None)['b'], 0, "never below zero")
+        self.assertEqual(main.clocksAfterWait(clocks, [], 1000, 1100, None), clocks, "no move yet: no clock")
+        self.assertEqual(main.clocksAfterWait(clocks, ['e2e4'], 1000, 1100, ['x', 'y']), clocks, "game over")
+        self.assertEqual(main.clocksAfterWait(clocks, ['e2e4'], None, 1100, None), clocks)
+        self.assertEqual(main.clocksAfterWait(clocks, ['e2e4'], 1100, 1000, None), clocks, "not in the past")
+
+    def test_online_note_follows_the_color_and_the_opponent(self):
+        main = self.main
+        note = main.emptyListNote
+        self.assertEqual(note(2, True, False, color='b', opponentHere=True)[0], "You play Black", "host after a rematch")
+        self.assertEqual(note(2, True, True, color='w')[0], "You play White", "guest after a rematch")
+        self.assertIn("You move first", note(2, True, True, color='w')[1])
+        self.assertIn("White moves first", note(2, True, False, color='b', opponentHere=True)[1])
+        self.assertEqual(note(2, True, False, color='b')[0], "Waiting for your friend")
+        self.assertIn("You play Black", note(2, True, False, color='b')[1])
+        self.assertEqual(note(2, True, False, color='w', opponentHere=True)[0], "You play White",
+                         "no 'waiting' once the opponent is here")
+
     def test_incoming_chat_filter(self):
         main = self.main
         chat = main.incomingChat
@@ -3114,6 +3155,71 @@ class GameLoopTest(unittest.TestCase):
             if os.path.exists(network.SESSION_FILE):
                 os.remove(network.SESSION_FILE)
         self.assertIn("e2e4 e7e5", seen['moves'], "still Black: the colors didn't change in the middle of the game")
+
+    def test_a_rejoin_catches_up_with_history_that_arrives_in_pieces(self):
+        main = self.main
+        import network
+        net = network.net
+        seen = {}
+        realSetTopic, realSend = net.set_topic, net.send
+        sentStates = []
+
+        def fakeSetTopic(topic):
+            net.topic = "chess_app_multiplayer_" + str(topic)
+            net.running = True
+            net.last_status = "SYNC HEALTHY"
+
+        async def fakeSend(data):
+            sentStates.append(data)
+
+        def hostState(version, moves, time, **more):
+            return dict({'type': 'state', 'game': 0, 'version': version, 'role': 'host', 'sender': 'host-of-test',
+                         'gid': "game0", 'moves': moves, 'tc': None, 'clocks': None, 'result': None, '_time': time},
+                        **more)
+
+        async def script():
+            await asyncio.sleep(1.0)
+            modeRect = main.panelLayout(0, False)['mode']
+            await self.click(modeRect.center)
+            await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
+            await self.click(main.panelLayout(2, False)['room'].center)
+            for letter in "ab12":
+                await self.key(getattr(p, 'K_' + letter), letter, 0.05)
+            await self.click(main.panelLayout(2, False)['join'].center, 0.3)
+            # the room's history: an early state first, a frame later the game as it stands, with our own move (e7e5)
+            net.incoming_messages.append(hostState(1, "e2e4", 100))
+            await asyncio.sleep(0.4)
+            net.incoming_messages.append(hostState(3, "e2e4 e7e5 g1f3", 101))
+            net.incoming_messages.append({'type': 'undo_request', 'game': 0, 'version': 3, 'role': 'host',
+                                          'sender': 'host-of-test', '_time': 102})  # long answered
+            await asyncio.sleep(0.4)
+            request = [s for s in sentStates if s.get('type') == 'sync_request'][-1]
+            # our own sync_request coming back marks the end of the history
+            net.incoming_messages.append(dict(request, _time=105))
+            await asyncio.sleep(0.6)
+            seen['moves'] = list(view['moves'])
+            seen['prompt'] = view['prompt']
+            # a request after it is live
+            net.incoming_messages.append({'type': 'undo_request', 'game': 0, 'version': 3, 'role': 'host',
+                                          'sender': 'host-of-test', '_time': 106})
+            await asyncio.sleep(0.6)
+            seen['livePrompt'] = view['prompt']
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.5)
+
+        net.set_topic, net.send = fakeSetTopic, fakeSend
+        main.GAME_VIEW = view = {}
+        try:
+            self.runGame(script)
+        finally:
+            main.GAME_VIEW = None
+            net.set_topic, net.send = realSetTopic, realSend
+            net.running = False
+            if os.path.exists(network.SESSION_FILE):
+                os.remove(network.SESSION_FILE)
+        self.assertEqual(seen['moves'], ['e2e4', 'e7e5', 'g1f3'], "the guest has the whole game, its own move too")
+        self.assertIsNone(seen['prompt'], "an undo request from the history is stale")
+        self.assertIsNotNone(seen['livePrompt'], "one sent after we joined counts")
 
     def test_the_opponents_flag_waits_for_their_move(self):
         main = self.main
