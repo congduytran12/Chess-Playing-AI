@@ -165,6 +165,27 @@ def checkedHint(payload):
     return {"fen": fen, "best": best, "history": history, "score": score}
 
 
+MAX_OPTIONS = 4  # the alternatives Stockfish offers for the coach to choose from
+
+
+def checkedPick(payload):
+    """The fields of a request to pick one of Stockfish's alternatives, or None."""
+    fen, best, history = payload.get("fen"), payload.get("best"), payload.get("history", [])
+    score, options = payload.get("score", 0.0), payload.get("options")
+    if not (_fen(fen) and _san(best) and _number(score)):
+        return None
+    if not (isinstance(history, list) and len(history) <= MAX_HISTORY and all(_san(m) for m in history)):
+        return None
+    if not (isinstance(options, list) and 1 <= len(options) <= MAX_OPTIONS):
+        return None
+    checked = []
+    for option in options:
+        if not (isinstance(option, dict) and _san(option.get("san")) and _number(option.get("score"))):
+            return None
+        checked.append({"san": option["san"], "score": option["score"]})
+    return {"fen": fen, "best": best, "history": history, "score": score, "options": checked}
+
+
 def checkedRequest(payload):
     """(kind, language, data) of a request that is chess data, or None. A request without a kind is a game's, in
     English: what an older page sends."""
@@ -179,6 +200,8 @@ def checkedRequest(payload):
         data = checkedMistake(payload)
     elif kind == "hint":
         data = checkedHint(payload)
+    elif kind == "pick":
+        data = checkedPick(payload)
     else:
         return None
     return None if data is None else (kind, lang, data)

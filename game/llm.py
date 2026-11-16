@@ -1,7 +1,9 @@
 """Optional LLM coaching built on top of the game's Stockfish analysis.
 
-The LLM is never used to choose or validate a chess move.  It only explains
-analysis that Stockfish has already produced. The providers with a key are asked
+The LLM is never used to choose a move freely or to validate one.  It explains
+analysis that Stockfish has already produced; the one exception is a drawish
+hint, where it picks a winning try from a short list of moves Stockfish rates
+safe (kind "pick": it answers with a number from that list, never a move). The providers with a key are asked
 in this order, one at a time: the next one is asked at once when one fails or
 answers 429 (too many requests; that provider then rests for its Retry-After
 time, or a minute, and is tried last), and also when one is slower than
@@ -220,12 +222,12 @@ def enabled():
 #            mark, loss
 #   mistake  fen (the player to move), opponent (the move before it), played, best, reply, score (the best move's,
 #            for the player), after (the move played, for the player), loss
-KINDS = ("game", "move", "mistake", "hint")
+KINDS = ("game", "move", "mistake", "hint", "pick")
 LANGUAGES = {"en": "English", "vi": "Vietnamese"}
 HISTORY_PLIES = 10  # the moves before the explained one that the coach is told
 CHECKMATE = 1000  # chessAi.CHECKMATE and MATE_THRESHOLD: this file stands alone (the server loads it by itself)
 MATE_THRESHOLD = 800
-TOKENS = {"game": 300, "move": 220, "mistake": 220, "hint": 140}  # the answer's limit; Vietnamese needs about twice as many
+TOKENS = {"game": 300, "move": 220, "mistake": 220, "hint": 140, "pick": 120}  # the answer's limit; Vietnamese needs about twice as many
 
 
 def max_tokens(kind, lang="en"):
@@ -533,9 +535,68 @@ def _hint_prompt(data, lang="en"):
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
+def _pick_prompt(data, lang="en"):
+    """The coach picks one of Stockfish's own alternatives for a drawish position: it never names a move itself, only
+    a number from the list, so the move is always legal and one Stockfish rates close to its best."""
+    side = _fen_side(data["fen"])
+    options = [{"number": i + 1, "move": o["san"], "evaluation": _pov_pawns(o["score"], "the player")}
+               for i, o in enumerate(data["options"])]
+    facts = {
+        "position": data["fen"],
+        "player_to_move": side,
+        "previous_moves": data.get("history") or [],
+        "stockfish_best_move": data["best"],
+        "evaluation": _pov_pawns(data["score"], "the player"),
+        "assessment": _assess(data["score"]),
+        "alternatives": options,
+    }
+    facts.update(_board_facts(data["fen"]))
+    if lang == "vi":
+        for key in [k for k in facts if k.startswith("pieces_")]:
+            facts[key] = _vi_pieces(facts[key])
+    return (
+        "You are a chess coach. The position is roughly equal and the player wants to avoid a draw. Stockfish's best "
+        "move is given; the alternatives are other moves Stockfish also rates safe. Choose the ONE alternative that "
+        "keeps the most winning chances: it keeps pieces on, makes threats, creates an imbalance or asks the opponent "
+        "harder questions, and does not simplify toward a draw. Answer in exactly this form: the alternative's number, "
+        "a colon, then one short sentence (under 30 words) saying why it gives more winning chances than "
+        "the best move, speaking to the player (\"you\") and naming the move. Mention only pieces and squares the "
+        "facts show, and no threat the facts do not name. If no alternative is better for winning, answer exactly "
+        "0: none. Plain text, no markdown." + _language_note(lang)
+        + (" Call the player \"bạn\" throughout, never by the color of their side." if lang == "vi" else "")
+        + "\n\n"
+        + json.dumps(_in_language(facts, lang), separators=(",", ":")))
+
+
+PICK_ANSWER = re.compile(r"^\s*(\d)\s*[:.\-)]\s*(.+)\Z", re.DOTALL)
+
+
+def parse_pick(text, count):
+    """(index in the options, reason) from the coach's answer to a pick request ('2: reason'), or None when it chose
+    nothing or answered in another form: the answer is never trusted beyond a number in range."""
+    found = PICK_ANSWER.match(text or "")
+    if not found:
+        return None
+    number = int(found.group(1))
+    reason = found.group(2).strip()
+    if not 1 <= number <= count or not reason:
+        return None
+    return number - 1, reason
+
+
+def pick_payload(lang, fen, best, options, history, score=0.0):
+    """What the coach is asked to pick from: the position (fen), Stockfish's best move (SAN), the alternatives
+    [(SAN, score in pawns for the player)] and the position's score."""
+    return {"kind": "pick", "lang": lang, "fen": fen, "best": best,
+            "options": [{"san": san, "score": round(score_, 2)} for san, score_ in options],
+            "history": list(history)[-HISTORY_PLIES:], "score": round(score, 2)}
+
+
 def prompt_for(kind, data, lang="en"):
     """The prompt for a checked request: data is the game's (moves, best, evals, marks, result) or the move's,
-    mistake's, or hint's fields."""
+    mistake's, hint's or pick's fields."""
+    if kind == "pick":
+        return _pick_prompt(data, lang)
     if kind == "move":
         return _move_prompt(data, lang)
     if kind == "mistake":

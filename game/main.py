@@ -420,6 +420,7 @@ SELECTED_ALPHA = 175
 HINT_COLOR = (64, 160, 220)
 COORD_SIZE = 17  # the board's rank and file letters (scaled up in portrait, where the board shows smaller)
 ARROW_COLOR = HINT_COLOR + (190,)  # hint arrows, and the better move in the analysis
+ALT_ARROW_COLOR = (214, 118, 0, 200)  # the coach's winning try, next to the hint's arrow
 ARROW_LAYER = None  # see-through board-sized surface the arrows are drawn on, made on first use
 MOVE_MARKER_COLOR = (0, 0, 0, 62)  # dots and rings showing where the selected piece can go (dark: any board)
 MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
@@ -1187,6 +1188,8 @@ async def main():
     hintPly = 0  # the number of moves in the position the hint is for
     hintIdea = None  # {'text': str, 'san': str, 'open': bool} strategic hint from the coach
     hintIdeaTask = None  # background task fetching the coach's strategic explanation
+    hintAlt = None  # {'move': Move, 'san': str, 'score': float, 'text': str}: the coach's winning try, drawish positions
+    hintAltTask = None  # background task: Stockfish's safe alternatives, and the coach's pick among them
     puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
@@ -1452,8 +1455,18 @@ async def main():
     # The explanation of a move shows while that move is on the board, else the summary of the game; in Your
     # mistakes, the mistake's
     def coachCard():
-        if not gameOver and hintIdea is not None and hintIdea.get('open'):
-            return hintIdea['text'], hintIdea.get('san'), lambda: hintIdea.update(open=False)
+        ideaOpen = hintIdea is not None and hintIdea.get('open')
+        altOpen = hintAlt is not None and hintAlt.get('open')
+        if not gameOver and (ideaOpen or altOpen):
+            parts = [hintIdea['text']] if ideaOpen else []
+            if altOpen:  # a drawish position: the coach's winning try, after the idea of the hint
+                parts.append(i18n.tr("To play for a win, try %s:" % hintAlt['san']) + " " + hintAlt['text'])
+
+            def closeHintCard():
+                for shown in (hintIdea, hintAlt):
+                    if shown is not None:
+                        shown['open'] = False
+            return "\n\n".join(parts), (hintIdea['san'] if ideaOpen else hintAlt['hint']), closeHintCard
         if gameOver and analysis is not None:
             ply = analysis.get('explainOpen')
             text = analysis['explained'].get((ply, i18n.language())) if ply is not None and ply == shownPly() else None
@@ -1616,12 +1629,16 @@ async def main():
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
         nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered, hintUsedOnline, hintIdea, hintIdeaTask
+        nonlocal hintAlt, hintAltTask
         clearReview()
         clearAnnotations()
         if hintIdeaTask is not None:
             hintIdeaTask.cancel()
             hintIdeaTask = None
-        hintIdea = None
+        if hintAltTask is not None:
+            hintAltTask.cancel()
+            hintAltTask = None
+        hintIdea = hintAlt = None
         if puzzle is not None and puzzle['judging'] is not None:
             puzzle['judging'].cancel()
             showStatus("", 0)
@@ -1734,14 +1751,17 @@ async def main():
     # a piece the player is dragging stays in hand (picked up for a premove, it can be dropped as a move once the
     # opponent has moved); the frame's canDrag check lets go of it if it was captured
     def playMove(move, sound=True):
-        nonlocal validMoves, hintMove, moveLogScroll, kingFlash, hintIdea, hintIdeaTask
+        nonlocal validMoves, hintMove, moveLogScroll, kingFlash, hintIdea, hintIdeaTask, hintAlt, hintAltTask
         lookedBack = reviewPly is not None
         clearReview()  # also returns from looking back
         clearAnnotations()
         if hintIdeaTask is not None:
             hintIdeaTask.cancel()
             hintIdeaTask = None
-        hintIdea = None
+        if hintAltTask is not None:
+            hintAltTask.cancel()
+            hintAltTask = None
+        hintIdea = hintAlt = None
         kingFlash = None
         chargeClock()
         mover = move.pieceMoved[0]
@@ -1767,13 +1787,16 @@ async def main():
     def takeBack(plies):
         nonlocal moveMade, animate, gameOver, moveUndone, squareSelected, playerClicks
         nonlocal gameResult, hintMove, hintState, clocks, lastClockTick, gameSaved, resultCardHidden, drag, kingFlash
-        nonlocal premove, hintIdea, hintIdeaTask
+        nonlocal premove, hintIdea, hintIdeaTask, hintAlt, hintAltTask
         clearReview()
         clearAnnotations()
         if hintIdeaTask is not None:
             hintIdeaTask.cancel()
             hintIdeaTask = None
-        hintIdea = None
+        if hintAltTask is not None:
+            hintAltTask.cancel()
+            hintAltTask = None
+        hintIdea = hintAlt = None
         drag = None
         kingFlash = None
         premove = None  # it was chosen for a position that's gone
@@ -3575,6 +3598,13 @@ async def main():
                     lang = i18n.language()
                     payload = llm.hint_payload(lang, gs.toFen(), san, historySans, evalScore)
                     hintIdeaTask = asyncio.ensure_future(llm.explain(payload))
+                    # a drawish position: the coach also picks a winning try from the moves Stockfish rates safe
+                    if hintAltTask is not None:
+                        hintAltTask.cancel()
+                    hintAltTask = hintAlt = None
+                    if stockfish.isDrawish(evalScore):
+                        hintAltTask = asyncio.ensure_future(hintAlternative(
+                            copyGame(gs), list(positionHistory), suggestion, san, evalScore, historySans, lang))
 
         # genetare new set of valid move if valid move is made
         if moveMade:
@@ -3602,6 +3632,7 @@ async def main():
                              status=statusText if p.time.get_ticks() < statusUntil else "", frames=p.time.get_ticks(),
                              puzzle=puzzleLines(),
                              hintMove=hintMove.getCode() if hintMove is not None else None,
+                             hintAlt=hintAlt['move'].getCode() if hintAlt is not None else None,
                              hintPiece=puzzle['hint'][1] if puzzle is not None and puzzle['hint'] else None)
         if gameOver and pendingPrompt and pendingPrompt['kind'] in ('draw', 'localDraw', 'resign'):
             pendingPrompt = None  # offers and resigning end with the game; an undo or leaving the room still can
@@ -3706,6 +3737,15 @@ async def main():
                     hintIdea = {'text': text, 'san': gs.getSan(hintMove, validMoves) if validMoves else "", 'open': True}
             except (asyncio.CancelledError, Exception) as e:
                 pass
+        # and, in a drawish position, the coach's pick among the moves Stockfish rates safe
+        if hintAltTask is not None and hintAltTask.done():
+            task, hintAltTask = hintAltTask, None
+            try:
+                found = task.result()
+                if found and hintMove is not None and not gameOver and reviewPly is None:
+                    hintAlt = found
+            except (asyncio.CancelledError, Exception) as e:
+                pass
         if (gameOver and not gameSaved and not gameLoaded and account.signedIn and gs.moveLog
                 and (currentModeIndex != 2 or liveGameId == onlineGameId)):
             gameSaved = True
@@ -3722,6 +3762,9 @@ async def main():
         # a hint is for the game in progress (it may end by resigning), in the live position
         if hintMove is not None and not gameOver and reviewPly is None:
             arrows.append(((hintMove.startRow, hintMove.startCol), (hintMove.endRow, hintMove.endCol)))
+            if hintAlt is not None:  # the coach's winning try, in another color
+                alt = hintAlt['move']
+                arrows.append(((alt.startRow, alt.startCol), (alt.endRow, alt.endCol), ALT_ARROW_COLOR))
         if gameOver and shownPly() - 1 in marks and analysis['best'][shownPly() - 1]:
             arrows.append(codeSquares(analysis['best'][shownPly() - 1]))
         # and the player's own (right button), in their colors
@@ -5493,6 +5536,27 @@ async def mistakeFacts(mistake, lang):
 
 async def explainMistake(mistake, lang):
     return await llm.explain(await mistakeFacts(mistake, lang))
+
+
+# a drawish position: the coach's winning try beside the hint. Stockfish lists the moves it rates nearly as well as
+# its best (stockfish.searchAlternatives); the coach only picks a number from that list (llm.parse_pick), so the move
+# is always legal and safe. board is a copy of the game; hintMove the move already suggested, hintSan its notation.
+# Returns {'move', 'san', 'score', 'text', 'hint', 'open'}, or None when there is no safe alternative or the coach
+# chose none
+async def hintAlternative(board, history, hintMove, hintSan, score, historySans, lang):
+    moves = board.getValidMoves()
+    options = await stockfish.searchAlternatives(board, moves, HINT_SECONDS, history=history, best=hintMove)
+    if not options:
+        return None
+    sans = [board.getSan(move, moves) for move, _ in options]
+    answer = await llm.explain(llm.pick_payload(
+        lang, board.toFen(), hintSan, [(san, value) for san, (_, value) in zip(sans, options)], historySans, score))
+    picked = llm.parse_pick(answer, len(options))
+    if picked is None:
+        return None
+    index, reason = picked
+    return {'move': options[index][0], 'san': sans[index], 'score': options[index][1], 'text': reason,
+            'hint': hintSan, 'open': True}
 
 
 # the status line for a coach that failed: the service's own words can be long (a JSON body), so it keeps the start

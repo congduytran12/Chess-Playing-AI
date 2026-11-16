@@ -5180,6 +5180,67 @@ class GameLoopTest(unittest.TestCase):
         spec.loader.exec_module(proxy)
         return proxy.checkedRequest(payload) is not None
 
+    def test_a_drawish_hint_also_shows_the_coachs_winning_try(self):
+        import llm
+        import stockfish
+        main = self.main
+        for score, expectTry in ((0.1, True), (1.8, False)):
+            seen = {}
+            main.GAME_VIEW = view = {}
+            searched, asked = [], []
+            realHint, realAlternatives = stockfish.searchHintPosition, stockfish.searchAlternatives
+            realEnabled, realExplain = llm.enabled, llm.explain
+
+            async def hint(board, moves, seconds, history=()):
+                return score, board.findMoveByCode('e2e4', moves), 0
+
+            async def alternatives(board, moves, seconds, history=(), best=None):
+                searched.append(best.getCode())
+                return [(board.findMoveByCode('d2d4', moves), 0.0), (board.findMoveByCode('g1f3', moves), -0.1)]
+
+            async def explain(payload):
+                asked.append(payload)
+                await asyncio.sleep(0.05)
+                return "2: Nf3 develops and keeps the winning chances." if payload['kind'] == 'pick' else "Idea."
+
+            async def script():
+                await asyncio.sleep(1.0)
+                await self.click(main.panelLayout(0, False)['hint'].center, 1.5)
+                seen['hint'] = (view['hintMove'], view['hintAlt'], view['coach'])
+                await self.key(p.K_ESCAPE)
+                seen['closed'] = view['coach']
+                await self.move((6, 4), (4, 4), 0.4)  # the player moves on: nothing of the hint stays
+                seen['moved'] = (view['hintMove'], view['hintAlt'])
+                p.event.post(p.event.Event(p.QUIT))
+                await asyncio.sleep(0.5)
+
+            stockfish.searchHintPosition, stockfish.searchAlternatives = hint, alternatives
+            llm.enabled, llm.explain = lambda: True, explain
+            try:
+                self.runGame(script)
+            finally:
+                stockfish.searchHintPosition, stockfish.searchAlternatives = realHint, realAlternatives
+                llm.enabled, llm.explain = realEnabled, realExplain
+                main.GAME_VIEW = None
+            self.assertEqual(seen['hint'][0], 'e2e4')
+            self.assertEqual(seen['moved'], (None, None))
+            if expectTry:
+                self.assertEqual(seen['hint'][1], 'g1f3', "the coach's pick, not Stockfish's own second choice")
+                self.assertEqual(seen['hint'][2], ("Idea.\n\nTo play for a win, try Nf3: Nf3 develops and keeps the "
+                                                   "winning chances.", "e4"))
+                self.assertEqual(searched, ['e2e4'], "the alternatives leave out the suggested move")
+                kinds = sorted(payload['kind'] for payload in asked)
+                self.assertEqual(kinds, ['hint', 'pick'])
+                pick = next(payload for payload in asked if payload['kind'] == 'pick')
+                self.assertEqual((pick['best'], [o['san'] for o in pick['options']]), ('e4', ['d4', 'Nf3']))
+                self.assertTrue(self.proxyAccepts(pick), pick)
+            else:
+                self.assertIsNone(seen['hint'][1])
+                self.assertEqual(seen['hint'][2], ("Idea.", "e4"))
+                self.assertEqual((searched, [payload['kind'] for payload in asked]), ([], ['hint']),
+                                 "a position that isn't drawish asks for no winning try")
+            self.assertIsNone(seen['closed'], "one close for the whole card")
+
     def test_the_coach_explains_the_shown_move(self):
         main = self.main
         seen = {}

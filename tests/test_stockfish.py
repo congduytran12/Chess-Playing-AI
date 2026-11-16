@@ -26,6 +26,7 @@ FAKE_ENGINE = textwrap.dedent('''
     HOLDING_ON = HOLDING_ON_MOVES
     log = open(sys.argv[1], 'a')
     moves = []
+    multipv = 1
     def say(line):
         sys.stdout.write(line + '\\n')
         sys.stdout.flush()
@@ -38,6 +39,8 @@ FAKE_ENGINE = textwrap.dedent('''
             say('uciok')
         elif line == 'isready':
             say('readyok')
+        elif line.startswith('setoption name MultiPV value'):
+            multipv = int(line.split()[-1])
         elif line.startswith('position startpos'):
             moves = line.split()[3:]
         elif line == 'go movetime 9999':
@@ -51,6 +54,11 @@ FAKE_ENGINE = textwrap.dedent('''
             elif moves == ['f2f3', 'e7e5', 'g2g4']:
                 say('info depth 3 score mate 1 pv d8h4')
                 say('bestmove d8h4')
+            elif multipv > 1:  # the best line and three more, the last one clearly worse
+                say('info depth 5 multipv 1 score cp 10 upperbound pv e2e4')
+                for rank, (cp, move) in enumerate([(10, 'e2e4'), (5, 'd2d4'), (-30, 'a2a3'), (-200, 'h2h3')], 1):
+                    say('info depth 6 multipv %d score cp %d pv %s' % (rank, cp, move))
+                say('bestmove e2e4')
             else:
                 say('info depth 5 score cp 10 upperbound pv a2a3')
                 say('info depth 6 score cp 42 pv e2e4')
@@ -111,6 +119,55 @@ class StockfishTest(unittest.TestCase):
         candidates = stockfish.hintMoves(gs, valid, [repeated, repeated])
         self.assertNotIn(move, candidates)
         self.assertEqual(stockfish.nonRepetitionMoves(gs, valid, [repeated, repeated]), candidates)
+
+    def test_lines_of_a_multi_line_search(self):
+        self.assertEqual(stockfish.parseLine('info depth 6 multipv 2 score cp -30 pv a2a3 e7e5'),
+                         (2, ('a2a3', ('cp', -30))))
+        self.assertIsNone(stockfish.parseLine('info depth 6 multipv 2 score cp -30 lowerbound pv a2a3'), "a bound")
+        self.assertIsNone(stockfish.parseLine('info depth 6 score cp -30 pv a2a3'), "no rank")
+        self.assertIsNone(stockfish.parseLine('info string NNUE enabled'))
+        self.assertTrue(stockfish.isDrawish(0.0) and stockfish.isDrawish(-0.3) and stockfish.isDrawish(0.3))
+        self.assertFalse(stockfish.isDrawish(0.31) or stockfish.isDrawish(-1.5) or stockfish.isDrawish(None))
+
+    def test_safe_alternatives_for_a_drawish_position(self):
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.engine  # the stand-in answers for the hint engine too
+
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            gs = GameState()
+            moves = gs.getValidMoves()
+            best = gs.findMoveByCode('e2e4', moves)
+            found = await stockfish.searchAlternatives(gs, moves, 0.05, best=best)
+            single = await stockfish.engine.go([], 0.05)
+            return found, single
+
+        try:
+            found, single = asyncio.run(run())
+        finally:
+            stockfish.hintEngine = saved
+        self.assertEqual([(move.getCode(), score) for move, score in found], [('d2d4', 0.05), ('a2a3', -0.3)],
+                         "not the suggested move, and not the one 2 pawns worse")
+        sent = self.commands()
+        self.assertIn('setoption name MultiPV value %d' % stockfish.ALTERNATIVE_LINES, sent)
+        self.assertEqual(sent.count('setoption name MultiPV value 4'), 1)
+        self.assertEqual(len(single), 2, "a normal search still returns (move, score) only")
+        self.assertEqual(sent[sent.index('setoption name MultiPV value 4'):].count('setoption name MultiPV value 1'), 1,
+                         "the next normal search goes back to the single best line")
+
+    def test_no_alternatives_without_the_hint_engine_or_with_one_move(self):
+        async def run():
+            gs = GameState()
+            moves = gs.getValidMoves()
+            return (await stockfish.searchAlternatives(gs, moves, 0.05),
+                    await stockfish.searchAlternatives(gs, moves[:1], 0.05))
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.Engine([sys.executable, '-c', 'import time; time.sleep(30)'], channel='hint')
+        try:
+            self.assertEqual(asyncio.run(run()), ([], []))
+        finally:
+            stockfish.hintEngine.close()
+            stockfish.hintEngine = saved
 
     def test_moves_hints_and_levels(self):
         async def run():

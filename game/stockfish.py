@@ -230,6 +230,21 @@ def parseScore(line):
         return None
 
 
+# (rank, (first move of the line, score)) of a UCI 'info' line of a multi-line search, or None for a line without a
+# score, a move or a rank, or a bound from an unfinished search
+def parseLine(line):
+    parts = line.split()
+    if 'score' not in parts or 'multipv' not in parts or 'pv' not in parts or 'lowerbound' in parts \
+            or 'upperbound' in parts:
+        return None
+    try:
+        rank = int(parts[parts.index('multipv') + 1])
+        i = parts.index('score')
+        return rank, (parts[parts.index('pv') + 1], (parts[i + 1], int(parts[i + 2])))
+    except (IndexError, ValueError):
+        return None
+
+
 # a UCI score in pawns for the side to move, on chessAi's scale (a forced mate is near +-chessAi.CHECKMATE)
 def scoreInPawns(score):
     kind, value = score
@@ -259,6 +274,7 @@ class Engine:
         self._lines = queue.Queue()  # desktop: lines read by the reader thread
         self._lock = None  # one search at a time
         self._elo = 'unset'  # the strength limit set last
+        self._multipv = 'unset'  # the number of lines it was told to search last
         self._searching = False  # a 'go' whose bestmove hasn't been read yet (its search was cancelled)
 
     @property
@@ -282,17 +298,18 @@ class Engine:
             await asyncio.sleep(POLL_SECONDS)
         return self.state == 'ready'
 
-    async def go(self, moves, seconds, elo=None, search_moves=None, start=None):
+    async def go(self, moves, seconds, elo=None, search_moves=None, start=None, multipv=None):
         """Searches the position after moves (Move.getCode codes from the start position, or from the FEN start)
         for seconds, at most elo strong (None: full strength). Returns (best move code or None, score in pawns for
-        the side to move, or None), or None when the engine isn't ready or fails."""
+        the side to move, or None), or None when the engine isn't ready or fails. With multipv lines (2 or more) the
+        result has a third item: [(move code, score in pawns)] for the best lines, best first."""
         if self.state != 'ready':
             return None
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
             try:
-                return await self._search(moves, seconds, elo, search_moves, start)
+                return await self._search(moves, seconds, elo, search_moves, start, multipv)
             except asyncio.CancelledError:
                 if self._searching:
                     self._send('stop')  # the next search first reads this one's bestmove (see _search)
@@ -307,7 +324,7 @@ class Engine:
                 self.close()
                 return None
 
-    async def _search(self, moves, seconds, elo, search_moves=None, start=None):
+    async def _search(self, moves, seconds, elo, search_moves=None, start=None, multipv=None):
         # a search cancelled earlier may still be answering: its bestmove comes first (an engine answers isready
         # even while it searches, so readyok alone doesn't mean it is done)
         if self._searching:
@@ -323,6 +340,10 @@ class Engine:
                 self._send('setoption name UCI_LimitStrength value true')
                 self._send('setoption name UCI_Elo value %d' % elo)
             self._elo = elo
+        lines = max(1, multipv or 1)
+        if lines != self._multipv:  # (every other search is the single best line)
+            self._send('setoption name MultiPV value %d' % lines)
+            self._multipv = lines
         self._send(('position fen ' + start if start else 'position startpos')
                    + (' moves ' + ' '.join(moves) if moves else ''))
         go = 'go movetime %d' % max(1, round(seconds * 1000))
@@ -331,16 +352,24 @@ class Engine:
         self._send(go)
         self._searching = True
         score = None
+        ranked = {}  # multipv: rank -> (first move of its line, score), the latest depth's
         deadline = time.time() + seconds + ANSWER_GRACE
         while True:
             for line in self._take():
                 if line.startswith('info'):
                     score = parseScore(line) or score
+                    if lines > 1:
+                        found = parseLine(line)
+                        if found:
+                            ranked[found[0]] = found[1]
                 elif line.startswith('bestmove'):
                     self._searching = False
                     parts = line.split()
                     best = parts[1] if len(parts) > 1 and parts[1] != '(none)' else None
-                    return best, (scoreInPawns(score) if score else None)
+                    result = best, (scoreInPawns(score) if score else None)
+                    if lines > 1:
+                        return result + ([(move, scoreInPawns(value)) for _, (move, value) in sorted(ranked.items())],)
+                    return result
             if time.time() > deadline:
                 raise EngineError("no answer to 'go'")
             await asyncio.sleep(POLL_SECONDS)
@@ -355,6 +384,7 @@ class Engine:
         self.threadedFailed = True
         self.close()
         self.threads, self._searching, self._elo = 1, False, 'unset'  # a new worker: nothing from the old one
+        self._multipv = 'unset'
         if self.saved and saveState():
             try:
                 js.eval("window.chessSfSaveState = ''")
@@ -576,6 +606,37 @@ async def searchHintPosition(gs, validMoves, seconds, history=()):
                 return 0.0, repeating[0], 0  # the draw is better than any move that plays on
             return found[1], move, 0
     return await searchPosition(gs, validMoves, seconds, history=history)
+
+
+DRAWISH_MARGIN = 0.3  # a position this close to equal (in pawns) is drawish: the hint offers a winning try as well
+ALTERNATIVE_MARGIN = 0.5  # an alternative may score this much less than the best move (in pawns) and still be safe
+ALTERNATIVE_LINES = 4  # the best move and up to three alternatives
+
+
+def isDrawish(score):
+    return score is not None and abs(score) <= DRAWISH_MARGIN
+
+
+async def searchAlternatives(gs, validMoves, seconds, history=(), best=None):
+    """The moves Stockfish rates nearly as well as its best, for the coach to pick a winning try from in a drawish
+    position: [(Move, score in pawns for the side to move)], best first, without best (the move already suggested).
+    Only the hint engine's full build searches; empty when it isn't ready, fails, or has no safe alternative."""
+    if len(validMoves) < 2 or not await hintEngine.ready(0):
+        return []
+    candidates = nonRepetitionMoves(gs, validMoves, history)
+    found = await hintEngine.go(moveCodes(gs), seconds, start=gs.startFen, multipv=ALTERNATIVE_LINES,
+                                search_moves=[move.getCode() for move in candidates])
+    if not found or len(found) < 3 or not found[2]:
+        return []
+    top = found[2][0][1]
+    alternatives = []
+    for code, score in found[2]:
+        move = gs.findMoveByCode(code, validMoves)
+        if move is None or (best is not None and move.getCode() == best.getCode()):
+            continue
+        if score >= top - ALTERNATIVE_MARGIN and abs(score) < chessAi.MATE_THRESHOLD:  # no forced mate, either way
+            alternatives.append((move, score))
+    return alternatives
 
 
 async def analyzePosition(gs, validMoves, seconds, history=()):
