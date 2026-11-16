@@ -294,10 +294,10 @@ SYNC_REPLY_MS = 6000  # at most one state reply to a player who is behind per th
 SEND_MIN_MS = 1000  # never send two messages within this window (guards against bursts that cause 429)
 PRESENCE_MS = 60000  # a player who has sent nothing for this long sends a 'ping', to show they're still there
 OPPONENT_GONE_SECONDS = 150  # no message from the opponent for this long (server clock): they may have left
-ROOM_CODE_CHARACTERS = string.ascii_letters + string.digits + "-_"
-ROOM_CODE_LENGTH = 12  # the most a room code can have (a code typed or pasted)
-ROOM_CODE_HOST_LENGTH = 10  # a room the host makes: the topic is public, so the code is what keeps others out
-ROOM_CODE_HOST_CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no I, O, 0 or 1: read aloud or typed, they look alike
+ROOM_CODE_CHARACTERS = string.digits  # a room code is 6 digits: easy to read aloud and type, also on a phone
+ROOM_CODE_LENGTH = 6  # the most a room code can have (a code typed or pasted)
+ROOM_CODE_HOST_LENGTH = 6  # a room the host makes
+ROOM_CODE_HOST_CHARACTERS = string.digits
 # quick chat in an online room: canned messages sent by their index, so nothing typed ever goes out
 QUICK_CHAT = ["Hello!", "Good luck!", "Good game!", "Thanks!", "Well played!", "Oops", "One moment, please"]
 CHAT_INTERVAL_MS = 3000  # at most one chat message per this many ms (Chat is disabled in between)

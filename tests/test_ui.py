@@ -2217,19 +2217,20 @@ class GameLoopTest(unittest.TestCase):
 
     def test_room_code_from_pasted_text(self):
         main = self.main
-        self.assertEqual(main.roomCodeFromText("https://chess-playing-ai.vercel.app/?room=AB12CD"), "AB12CD")
-        self.assertEqual(main.roomCodeFromText("Join me! https://x.app/?lang=en&room=qx7rt2#top"), "QX7RT2")
-        self.assertEqual(main.roomCodeFromText("  ab-12 cd\n"), "AB-12CD")
+        self.assertEqual(main.roomCodeFromText("https://chess-playing-ai.vercel.app/?room=482915"), "482915")
+        self.assertEqual(main.roomCodeFromText("Join me! https://x.app/?lang=en&room=730184#top"), "730184")
+        self.assertEqual(main.roomCodeFromText("  48-29 15\n"), "482915")
         self.assertEqual(main.roomCodeFromText("https://example.com/somewhere"), "", "a link without a room")
-        self.assertEqual(main.roomCodeFromText("x" * 30), "X" * main.ROOM_CODE_LENGTH)
+        self.assertEqual(main.roomCodeFromText("7" * 30), "7" * main.ROOM_CODE_LENGTH)
         from textfield import TextField
-        field = TextField("ZZ", maxLength=main.ROOM_CODE_LENGTH, allowed=main.ROOM_CODE_CHARACTERS,
+        field = TextField("99", maxLength=main.ROOM_CODE_LENGTH, allowed=main.ROOM_CODE_CHARACTERS,
                           transform=str.upper, onPaste=main.pasteRoomCode)
-        field.paste("https://chess-playing-ai.vercel.app/?room=AB12CD")
-        self.assertEqual(field.value, "AB12CD", "an invite link replaces the box's text with its code")
+        field.paste("https://chess-playing-ai.vercel.app/?room=482915")
+        self.assertEqual(field.value, "482915", "an invite link replaces the box's text with its code")
+        field.setValue("4829")
         field.moveCaret(2)
-        field.paste("x y")
-        self.assertEqual((field.value, field.caret), ("ABXY12CD", 4), "a plain code goes in at the caret")
+        field.paste("7 3")
+        self.assertEqual((field.value, field.caret), ("487329", 4), "a plain code goes in at the caret")
 
     def test_reset_link_from_hash(self):
         main = self.main
@@ -2569,12 +2570,12 @@ class GameLoopTest(unittest.TestCase):
             await asyncio.sleep(0.2)
             seen['cursor'] = main.CURSOR[0]
             await self.click(room.center, 0.2)
-            await self.typeText("ab-1 2!")
+            await self.typeText("4a8 2!")
             seen['typed'] = values[-1]
             await self.key(p.K_HOME)
-            await self.typeText("z")
+            await self.typeText("9")
             seen['home'] = values[-1]
-            browser.clipboardText = lambda: "https://chess-playing-ai.vercel.app/?room=QX7RT2"
+            browser.clipboardText = lambda: "https://chess-playing-ai.vercel.app/?room=730184"
             p.event.post(p.event.Event(p.KEYDOWN, key=p.K_v, unicode="\x16", mod=p.KMOD_CTRL, scancode=0))
             await asyncio.sleep(0.3)
             seen['pasted'] = values[-1]
@@ -2598,11 +2599,11 @@ class GameLoopTest(unittest.TestCase):
             if os.path.exists(network.SESSION_FILE):
                 os.remove(network.SESSION_FILE)  # no Rejoin row for the other tests
         self.assertEqual(seen['cursor'], 'ibeam')
-        self.assertEqual(seen['typed'], ("AB-12", 5, True), "uppercase, only room code characters")
-        self.assertEqual(seen['home'], ("ZAB-12", 1, True), "typed at the caret")
-        self.assertEqual(seen['pasted'][:2], ("QX7RT2", 6), "the invite link's code replaced the text")
+        self.assertEqual(seen['typed'], ("482", 3, True), "only room code characters")
+        self.assertEqual(seen['home'], ("9482", 1, True), "typed at the caret")
+        self.assertEqual(seen['pasted'][:2], ("730184", 6), "the invite link's code replaced the text")
         self.assertFalse(seen['enter'][2], "Enter leaves the box")
-        self.assertEqual(topics, ["QX7RT2"], "Join used the pasted code")
+        self.assertEqual(topics, ["730184"], "Join used the pasted code")
 
     # --- step 8: invite links, joining from a link, quick chat
 
@@ -2659,7 +2660,7 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(main.inviteUrl("http://127.0.0.1:8870/index.html", "x-_9"),
                          "http://127.0.0.1:8870/index.html?room=x-_9")
         self.assertEqual(main.inviteUrl("https://a.app/?lang=en", "Q1"), "https://a.app/?lang=en&room=Q1")
-        for code in ("AB12CD", "QX7-RT_2", "Z" * main.ROOM_CODE_LENGTH):
+        for code in ("482915", "000000", "9" * main.ROOM_CODE_LENGTH):
             self.assertEqual(main.roomCodeFromText(main.inviteUrl(site, code)), code)
         self.assertEqual(browser.siteUrl(), browser.SITE_URL, "on desktop the link points at the public site")
         self.assertEqual(browser.paramFromUrl(main.inviteUrl(site, "AB12CD"), 'room'), "AB12CD")
@@ -2815,7 +2816,7 @@ class GameLoopTest(unittest.TestCase):
 
         async def script():
             await asyncio.sleep(1.0)
-            seen['start'] = ("Join room TEST12 as Black?" in texts, list(removed), list(topics))
+            seen['start'] = ("Join room 123456 as Black?" in texts, list(removed), list(topics))
             _, join, _ = main.promptRects()
             self.mouse[0] = join.center
             await asyncio.sleep(0.2)
@@ -2828,7 +2829,7 @@ class GameLoopTest(unittest.TestCase):
             await asyncio.sleep(0.5)
 
         sent, topics, restoreRoom = self.offlineRoom()
-        removed, restoreParam = self.openedWithRoomParam("test12")
+        removed, restoreParam = self.openedWithRoomParam("123456")
         main.get_fitting_text = recordText
         try:
             self.runGame(script)
@@ -2838,7 +2839,7 @@ class GameLoopTest(unittest.TestCase):
             restoreRoom()
         self.assertEqual(seen['start'], (True, ['room'], []), "the prompt asks first; the link left the address")
         self.assertEqual(seen['cursor'], 'hand')
-        self.assertEqual(seen['joined'], (["TEST12"], ['client']), "Join connects as the guest")
+        self.assertEqual(seen['joined'], (["123456"], ['client']), "Join connects as the guest")
 
     def test_invite_link_prompt_cancel_keeps_the_code(self):
         main = self.main
@@ -2862,7 +2863,7 @@ class GameLoopTest(unittest.TestCase):
             await asyncio.sleep(0.5)
 
         sent, topics, restoreRoom = self.offlineRoom()
-        removed, restoreParam = self.openedWithRoomParam("https://example.app/?room=ab-12")
+        removed, restoreParam = self.openedWithRoomParam("https://example.app/?room=48-12")
         main.drawTextField = record
         try:
             self.runGame(script)
@@ -2870,8 +2871,8 @@ class GameLoopTest(unittest.TestCase):
             main.drawTextField = realDraw
             restoreParam()
             restoreRoom()
-        self.assertEqual(seen['cancelled'], ("AB-12", []), "online setup with the room box filled in")
-        self.assertEqual(seen['joined'], ["AB-12"])
+        self.assertEqual(seen['cancelled'], ("4812", []), "online setup with the room box filled in")
+        self.assertEqual(seen['joined'], ["4812"])
 
     def test_invite_link_cancel_then_host_makes_a_new_room(self):
         # the invited room is the friend's: hosting instead (to play White) must not join it as a second host
@@ -2889,14 +2890,14 @@ class GameLoopTest(unittest.TestCase):
             await asyncio.sleep(0.5)
 
         sent, topics, restoreRoom = self.offlineRoom()
-        removed, restoreParam = self.openedWithRoomParam("FRIEND")
+        removed, restoreParam = self.openedWithRoomParam("654321")
         try:
             self.runGame(script)
         finally:
             restoreParam()
             restoreRoom()
         self.assertEqual(len(seen['hosted']), 1)
-        self.assertNotEqual(seen['hosted'][0], "FRIEND", "a room of its own")
+        self.assertNotEqual(seen['hosted'][0], "654321", "a room of its own")
         self.assertEqual(len(seen['hosted'][0]), main.ROOM_CODE_HOST_LENGTH)
 
     def test_chat_from_the_rooms_history_stays_hidden(self):
@@ -3283,9 +3284,8 @@ class GameLoopTest(unittest.TestCase):
             restoreRoom()
         self.assertEqual(len(topics[0]), main.ROOM_CODE_HOST_LENGTH)
         self.assertTrue(set(topics[0]) <= set(main.ROOM_CODE_HOST_CHARACTERS))
-        self.assertFalse(set("IO01") & set(main.ROOM_CODE_HOST_CHARACTERS), "letters and digits that look alike")
-        self.assertGreaterEqual(len(main.ROOM_CODE_HOST_CHARACTERS) ** main.ROOM_CODE_HOST_LENGTH, 10 ** 14)
-        self.assertGreaterEqual(main.ROOM_CODE_HOST_LENGTH, 10)
+        self.assertEqual(main.ROOM_CODE_HOST_LENGTH, 6, "a room code is 6 digits")
+        self.assertTrue(topics[0].isdigit())
         self.assertLessEqual(main.ROOM_CODE_HOST_LENGTH, main.ROOM_CODE_LENGTH, "a room code that can be typed in")
 
     def test_heartbeats_come_less_often_when_nobody_answers(self):
@@ -4608,7 +4608,7 @@ class GameLoopTest(unittest.TestCase):
             await self.click(modeRect.center)
             await self.click(main.dropdownOptionRects(modeRect, len(main.MODE_OPTIONS))[2].center, 0.5)
             seen['room field'] = published[-1]['fields'].get('room')
-            typed.append({'id': 'room', 'value': 'ab-12 x!', 'caret': 8, 'rev': 1})
+            typed.append({'id': 'room', 'value': '48-12 x!', 'caret': 8, 'rev': 1})
             await asyncio.sleep(0.3)
             seen['room typed'] = published[-1]['fields']['room']
             typed.append({'id': 'room', 'value': seen['room typed']['value'] + 'cd', 'caret': 6, 'rev': 2})
@@ -4638,10 +4638,10 @@ class GameLoopTest(unittest.TestCase):
         panel = main.panelLayout(2, False)['room']
         self.assertEqual((room['x'], room['y'], room['w'], room['h']), (panel.x, panel.y, panel.width, panel.height))
         self.assertEqual((room['caps'], room['max']), ('characters', main.ROOM_CODE_LENGTH))
-        self.assertEqual(seen['room typed']['value'], 'AB-12X'[:main.ROOM_CODE_LENGTH], "cleaned like typed text")
+        self.assertEqual(seen['room typed']['value'], '4812'[:main.ROOM_CODE_LENGTH], "cleaned like typed text")
         self.assertNotIn('!', seen['room typed']['value'])
         self.assertEqual(seen['room more'][1], 2)
-        self.assertTrue(seen['room more'][0]['value'].startswith('AB-12'))
+        self.assertTrue(seen['room more'][0]['value'].startswith('4812'))
         self.assertEqual(seen['in a room'], {}, "once in a room the box is gone")
         self.assertEqual(seen['username']['value'], 'DuyT_9', "only username characters")
         self.assertEqual(seen['register password']['auto'], 'new-password')
