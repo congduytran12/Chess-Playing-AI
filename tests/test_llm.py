@@ -39,7 +39,7 @@ class LLMResponseTests(unittest.TestCase):
 
 class FakeUpstream:
     def __init__(self, status=200, body=None):
-        self.status_code, self.body, self.sent = status, body, None
+        self.status_code, self.body, self.sent, self.headers = status, body, None, {}
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.sent = json
@@ -356,31 +356,100 @@ class ProxyTests(unittest.TestCase):
             self.post({'prompt': 'x'})
         self.assertEqual(self.post(ANALYSIS).status_code, 200)
 
-    def test_every_configured_provider_is_asked_and_the_first_valid_answer_wins(self):
+    ENV_ALL = {'OPENROUTER_API_KEY': 'k', 'GEMINI_API_KEY': 'k', 'CLOUDFLARE_API_TOKEN': 'k',
+               'CLOUDFLARE_ACCOUNT_ID': 'acct'}
+
+    def providerCalls(self, behaviour):
+        """Runs the proxy with every provider configured; behaviour(name) -> FakeUpstream or a function to call."""
         calls = []
 
         def post(url, headers=None, json=None, timeout=None):
-            calls.append((url, json['model']))
-            if 'openrouter' in url:  # one provider failing doesn't matter
-                raise self.proxy.requests.RequestException('down')
-            fake = FakeUpstream(200, reply('From ' + json['model']))
-            return fake
+            name = next(n for n in ('groq', 'openrouter', 'generativelanguage', 'cloudflare') if n in url)
+            calls.append(name)
+            result = behaviour(name)
+            if isinstance(result, Exception):
+                raise result
+            return result
 
-        env = {'OPENROUTER_API_KEY': 'k', 'GEMINI_API_KEY': 'k', 'CLOUDFLARE_API_TOKEN': 'k',
-               'CLOUDFLARE_ACCOUNT_ID': 'acct'}
-        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, env):
+        return calls, post
+
+    def test_the_first_provider_answers_alone(self):
+        calls, post = self.providerCalls(lambda name: FakeUpstream(200, reply('From ' + name)))
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, self.ENV_ALL):
             response = self.post(ANALYSIS)
-            for _ in range(100):  # the slower providers are still being asked when the first answer comes back
-                if len(calls) == 4:
-                    break
-                time.sleep(0.02)
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json['text'].startswith('From '))
-        self.assertEqual(len(calls), 4)
-        self.assertEqual(sorted(model for _, model in calls),
-                         sorted(['openai/gpt-oss-120b', 'nvidia/nemotron-3-ultra', 'gemini-3.8-flash',
-                                 '@cf/openai/gpt-oss-120b']))
-        self.assertTrue(any('/accounts/acct/ai/' in url for url, _ in calls))
+        self.assertEqual((response.status_code, response.json['text']), (200, 'From groq'))
+        self.assertEqual(calls, ['groq'], 'the others are not asked, so they spend no quota')
+
+    def test_a_429_switches_to_the_next_provider_at_once_and_rests_the_first(self):
+        limited = FakeUpstream(429, None)
+        limited.headers = {'Retry-After': '30'}
+        calls, post = self.providerCalls(lambda name: limited if name == 'groq'
+                                         else FakeUpstream(200, reply('From ' + name)))
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, self.ENV_ALL):
+            started = time.monotonic()
+            first = self.post(ANALYSIS)
+            took = time.monotonic() - started
+            second = self.post(ANALYSIS)
+        self.assertEqual((first.status_code, first.json['text']), (200, 'From openrouter'))
+        self.assertLess(took, self.proxy.coach_module.HEDGE_SECONDS, 'no waiting for the slow-provider timer')
+        self.assertEqual((second.status_code, second.json['text']), (200, 'From openrouter'))
+        self.assertEqual(calls, ['groq', 'openrouter', 'openrouter'], 'groq rests after its 429')
+        remaining = self.proxy.coach_module.paused_until['groq'] - time.monotonic()
+        self.assertTrue(25 < remaining <= 30, 'it rests for the Retry-After time')
+
+    def test_a_rested_provider_is_still_the_last_resort(self):
+        coach = self.proxy.coach_module
+        coach.pause_provider('groq', 60)
+        calls, post = self.providerCalls(lambda name: FakeUpstream(200, reply('From ' + name))
+                                         if name == 'groq' else FakeUpstream(500, None))
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, self.ENV_ALL):
+            response = self.post(ANALYSIS)
+        self.assertEqual((response.status_code, response.json['text']), (200, 'From groq'))
+        self.assertEqual(calls, ['openrouter', 'generativelanguage', 'cloudflare', 'groq'])
+
+    def test_an_error_or_a_broken_answer_moves_on_too(self):
+        def behaviour(name):
+            if name == 'groq':
+                return self.proxy.requests.RequestException('down')
+            if name == 'openrouter':
+                return FakeUpstream(200, {'choices': []})
+            return FakeUpstream(200, reply('From ' + name))
+
+        calls, post = self.providerCalls(behaviour)
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, self.ENV_ALL):
+            response = self.post(ANALYSIS)
+        self.assertEqual((response.status_code, response.json['text']), (200, 'From generativelanguage'))
+        self.assertEqual(calls, ['groq', 'openrouter', 'generativelanguage'])
+
+    def test_a_slow_provider_gets_the_next_one_beside_it(self):
+        def behaviour(name):
+            if name == 'groq':
+                time.sleep(0.6)
+            return FakeUpstream(200, reply('From ' + name))
+
+        calls, post = self.providerCalls(behaviour)
+        self.proxy.coach_module.HEDGE_SECONDS = 0.1
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, self.ENV_ALL):
+            started = time.monotonic()
+            response = self.post(ANALYSIS)
+            took = time.monotonic() - started
+        self.assertEqual(response.json['text'], 'From openrouter')
+        self.assertLess(took, 0.5)
+
+    def test_every_provider_limited_is_a_plain_error(self):
+        calls, post = self.providerCalls(lambda name: FakeUpstream(429, None))
+        with mock.patch.object(self.proxy.requests, 'post', post), mock.patch.dict(os.environ, self.ENV_ALL):
+            response = self.post(ANALYSIS)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(sorted(calls), ['cloudflare', 'generativelanguage', 'groq', 'openrouter'])
+
+    def test_retry_after_is_read_safely(self):
+        coach = self.proxy.coach_module
+        self.assertEqual(coach.retry_after_seconds('30'), 30)
+        self.assertEqual(coach.retry_after_seconds('99999'), coach.MAX_PAUSE)
+        self.assertEqual(coach.retry_after_seconds('0'), 1)
+        for value in (None, '', 'Wed, 21 Oct 2026 07:28:00 GMT'):
+            self.assertEqual(coach.retry_after_seconds(value), coach.RATE_LIMIT_PAUSE)
 
     def test_all_providers_failing_is_a_plain_error(self):
         with mock.patch.dict(os.environ, {'GEMINI_API_KEY': 'k'}):

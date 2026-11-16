@@ -1,5 +1,5 @@
 """Server-side proxy for the browser's optional LLM chess coach (Groq, OpenRouter, Gemini and Cloudflare Workers AI,
-all asked at once, see game/llm.py).
+asked in turn with failover on 429 and other errors, see game/llm.py).
 
 The browser sends the game's analysis (moves, best moves, evaluations, marks, result), never a prompt: the prompt is
 built here, by game/llm.py's own _prompt, from data checked to be chess data. So the endpoint can't be used as a
@@ -68,6 +68,9 @@ def askProvider(provider, prompt, tokens):
     """The text one provider answers with; raises when it can't be reached, errs or answers with nothing."""
     response = requests.post(provider["url"], headers={"Authorization": "Bearer " + provider["key"]},
                              json=coach_module.chat_body(provider, prompt, tokens), timeout=20)
+    if response.status_code == 429:  # too many requests: the next provider is asked at once, this one rests a while
+        raise coach_module.RateLimited("%s returned status 429" % provider["name"],
+                                       coach_module.retry_after_seconds(response.headers.get("Retry-After")))
     if response.status_code != 200:
         raise ValueError("%s returned status %s" % (provider["name"], response.status_code))
     try:
@@ -218,8 +221,8 @@ def coach():
     prompt = coach_module.prompt_for(kind, data, lang)
     tokens = coach_module.max_tokens(kind, lang)
     try:
-        # every configured provider is asked at once; the first valid answer wins
-        text = coach_module.first_answer([(lambda p=p: askProvider(p, prompt, tokens)) for p in chosen], timeout=20)
+        # the providers are asked in turn: the next at once when one fails or answers 429, or when one is slow
+        text = coach_module.ask_in_order(chosen, lambda p: askProvider(p, prompt, tokens), timeout=20)
     except coach_module.LLMError as e:
         print("[llm] %s" % e)
         return jsonify(error="The coaching service returned an error"), 502

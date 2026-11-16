@@ -1,9 +1,11 @@
 """Optional LLM coaching built on top of the game's Stockfish analysis.
 
 The LLM is never used to choose or validate a chess move.  It only explains
-analysis that Stockfish has already produced. Every provider with a key is asked
-at the same time and the first valid answer is used (a provider that fails or
-times out is skipped):
+analysis that Stockfish has already produced. The providers with a key are asked
+in this order, one at a time: the next one is asked at once when one fails or
+answers 429 (too many requests; that provider then rests for its Retry-After
+time, or a minute, and is tried last), and also when one is slower than
+HEDGE_SECONDS, so a slow provider doesn't hold the answer back:
 
     GROQ_API_KEY                      GROQ_MODEL (openai/gpt-oss-120b)
     OPENROUTER_API_KEY                OPENROUTER_MODEL (nvidia/nemotron-3-ultra)
@@ -22,6 +24,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -118,21 +122,73 @@ def chat_body(provider, prompt, tokens):
     return body
 
 
-def first_answer(calls, timeout=20):
-    """Run the calls (zero-argument functions returning text, raising when they fail) at the same time and return the
-    first non-empty text. Raises LLMError when none gives one. Late answers are dropped (their threads finish alone)."""
-    if not calls:
-        raise LLMError("No coaching provider is configured")
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(calls))
+class RateLimited(LLMError):
+    """A provider answered 429 (too many requests). retry_after is how long it asked us to wait, in seconds, or None."""
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+RATE_LIMIT_PAUSE = 60  # seconds a provider that answered 429 is left alone when it didn't say how long
+MAX_PAUSE = 600  # whatever a provider asks for, it is asked again after this long at the latest
+HEDGE_SECONDS = 4  # a provider that hasn't answered by then gets the next one started beside it
+paused_until = {}  # provider name -> time.monotonic() until which it is tried last
+pausedLock = threading.Lock()
+
+
+def retry_after_seconds(value):
+    """The seconds of a Retry-After header (a number; a date or nothing gives the default pause)."""
     try:
-        pending = {pool.submit(call) for call in calls}
+        return max(1, min(MAX_PAUSE, int(float(value))))
+    except (TypeError, ValueError):
+        return RATE_LIMIT_PAUSE
+
+
+def pause_provider(name, seconds=None):
+    with pausedLock:
+        paused_until[name] = time.monotonic() + (seconds or RATE_LIMIT_PAUSE)
+
+
+def in_order(found):
+    """The providers in the order to try them: the ones not paused first (as configured), the paused ones after them,
+    so a provider that returned 429 is still the last resort instead of being dropped."""
+    now = time.monotonic()
+    with pausedLock:
+        ready = [p for p in found if paused_until.get(p["name"], 0) <= now]
+    return ready + [p for p in found if p not in ready]
+
+
+def ask_in_order(found, ask, timeout=20, hedge=None):
+    """Ask the providers one after another and return the first non-empty text; ask(provider) returns text or raises.
+    The next provider is started the moment one fails (a 429 pauses that provider for a while), or when one hasn't
+    answered within hedge seconds, so a slow provider doesn't hold the answer back. Raises LLMError when none answers
+    within timeout seconds in all."""
+    ordered = in_order(found)
+    if not ordered:
+        raise LLMError("No coaching provider is configured")
+    hedge = HEDGE_SECONDS if hedge is None else hedge
+
+    def call(provider):
+        try:
+            return ask(provider)
+        except RateLimited as error:
+            pause_provider(provider["name"], error.retry_after)
+            raise
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(ordered))
+    try:
+        deadline = time.monotonic() + timeout
         errors = []
-        deadline = None if timeout is None else timeout
+        pending = {pool.submit(call, ordered[0])}
+        started = 1
         while pending:
-            done, pending = concurrent.futures.wait(
-                pending, timeout=deadline, return_when=concurrent.futures.FIRST_COMPLETED)
-            if not done:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 break
+            wait = min(remaining, hedge) if started < len(ordered) else remaining
+            done, pending = concurrent.futures.wait(pending, timeout=wait,
+                                                    return_when=concurrent.futures.FIRST_COMPLETED)
             for future in done:
                 try:
                     text = future.result()
@@ -141,10 +197,15 @@ def first_answer(calls, timeout=20):
                     continue
                 if text:
                     return text
+                errors.append("a provider answered with nothing")
+            if started < len(ordered):  # one failed or was too slow: the next provider joins in
+                pending.add(pool.submit(call, ordered[started]))
+                started += 1
         raise LLMError("No coaching provider answered (%s)" % "; ".join(errors[:4]) if errors
                        else "No coaching provider answered")
     finally:
-        pool.shutdown(wait=False)  # every provider was started; the slower ones just finish unused
+        pool.shutdown(wait=False)  # a provider still running when the answer comes just finishes unused
+
 
 
 def enabled():
@@ -497,6 +558,9 @@ def _request_provider(provider, prompt, tokens=TOKENS["game"]):
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
+        if error.code == 429:
+            raise RateLimited("%s is rate limited (429)" % name,
+                              retry_after_seconds(error.headers.get("Retry-After"))) from error
         detail = error.read().decode("utf-8", "replace")[:200]
         raise LLMError("%s request failed (%d): %s" % (name, error.code, detail)) from error
     except (urllib.error.URLError, TimeoutError, ValueError) as error:
@@ -509,8 +573,8 @@ def _request_provider(provider, prompt, tokens=TOKENS["game"]):
 
 
 def _request(prompt, tokens=TOKENS["game"]):
-    """Ask every configured provider at once and take the first answer."""
-    return first_answer([(lambda p=p: _request_provider(p, prompt, tokens)) for p in providers()])
+    """Ask the configured providers in turn (the next one at once when one fails or is rate limited)."""
+    return ask_in_order(providers(), lambda p: _request_provider(p, prompt, tokens))
 
 
 async def _request_browser(analysis):
