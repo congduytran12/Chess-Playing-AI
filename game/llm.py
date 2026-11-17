@@ -227,7 +227,7 @@ LANGUAGES = {"en": "English", "vi": "Vietnamese"}
 HISTORY_PLIES = 10  # the moves before the explained one that the coach is told
 CHECKMATE = 1000  # chessAi.CHECKMATE and MATE_THRESHOLD: this file stands alone (the server loads it by itself)
 MATE_THRESHOLD = 800
-TOKENS = {"game": 300, "move": 220, "mistake": 220, "hint": 140, "pick": 120}  # the answer's limit; Vietnamese needs about twice as many
+TOKENS = {"game": 400, "move": 220, "mistake": 220, "hint": 140, "pick": 120}  # the answer's limit; Vietnamese needs about twice as many
 
 
 def max_tokens(kind, lang="en"):
@@ -287,7 +287,7 @@ def _prompt(move_codes, best_san, evals, marks, result, lang="en"):
         "(positive: White is better), while pawns_lost is what the side that moved gave up; give it only when it "
         "is a number. Refer to a move by its move_number and side (\"Black's 3rd move\") and write played_from_to "
         "as the squares it joins; name the engine_best_move whenever there is one, and give lessons that follow "
-        "from the listed mistakes, not general advice. Keep the answer under 90 words. "
+        "from the listed mistakes, not general advice. Keep the answer under 90 words and end it with a complete sentence. "
         "Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps({"moves": move_codes, "mistakes": mistakes, "result": result},
                      separators=(",", ":"))

@@ -84,7 +84,7 @@ class ProxyTests(unittest.TestCase):
         self.assertIn('"moves":["e2e4","e7e5","f2f3"]', prompt)
         self.assertIn('"engine_best_move":"Nf3"', prompt)
         self.assertIn('Black wins by resignation', prompt)
-        self.assertEqual(self.upstream.sent['max_tokens'], 300)
+        self.assertEqual(self.upstream.sent['max_tokens'], 400)
 
     def test_free_text_is_not_accepted(self):
         # the endpoint is not a chatbot: a prompt of the caller's own is refused, with or without chess data
@@ -299,7 +299,7 @@ class ProxyTests(unittest.TestCase):
                          ("decisively better", "decisively worse"))
 
     def test_the_answer_comes_in_the_chosen_language(self):
-        for payload, tokens in ((dict(ANALYSIS, lang='vi'), 600), (dict(self.MOVE, lang='vi'), 440),
+        for payload, tokens in ((dict(ANALYSIS, lang='vi'), 800), (dict(self.MOVE, lang='vi'), 440),
                                 (dict(self.MISTAKE, lang='vi'), 440)):
             self.assertEqual(self.post(payload).status_code, 200)
             self.assertIn('Write the answer in Vietnamese', self.upstream.sent['messages'][1]['content'])
@@ -309,7 +309,7 @@ class ProxyTests(unittest.TestCase):
             self.assertNotIn('Vietnamese', self.upstream.sent['messages'][1]['content'])
         self.assertEqual(self.upstream.sent['max_tokens'], 220)
         self.post(ANALYSIS)
-        self.assertEqual(self.upstream.sent['max_tokens'], 300, "an English game summary")
+        self.assertEqual(self.upstream.sent['max_tokens'], 400, "an English game summary")
 
     def test_a_request_about_a_move_or_mistake_is_checked_too(self):
         move, mistake = self.MOVE, self.MISTAKE
