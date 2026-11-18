@@ -377,6 +377,7 @@ def _move_prompt(data, lang="en"):
         "analysis_mark": marks.get(data.get("mark")),
         "pawns_lost": _lost(data.get("loss"), data["after"]),
     }
+    _add_move_facts(facts, data["fen"], data["played"], side, lang)
     return (
         "You are a concise chess coach. Explain one move of a completed game to a club player, using only the "
         "supplied Stockfish analysis. Evaluations are in pawns from the point of view of the side that moved "
@@ -387,7 +388,7 @@ def _move_prompt(data, lang="en"):
         "advantage of. Say who is better only in the words of the assessment fields (they are for the side that "
         "moved: the opponent is better exactly when they say worse, and never both sides at once), and give "
         "pawns_lost only when "
-        "it is a number. Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
+        "it is a number. " + BOARD_RULE + "Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
 
 
@@ -406,6 +407,7 @@ def _mistake_prompt(data, lang="en"):
         "assessment_after_move_played": _assess(data["after"]),
         "pawns_lost": _lost(data["loss"], data["after"]),
     }
+    _add_move_facts(facts, data["fen"], data["played"], side, lang)
     return (
         "You are a concise chess coach. The player made a mistake in their own game. Using only the supplied "
         "Stockfish analysis, explain what was wrong with the move they played and what the best move does better. "
@@ -413,7 +415,7 @@ def _mistake_prompt(data, lang="en"):
         "tactics, variations or evaluations that are not in the data; if the data doesn't show the reason, say so "
         "and describe the difference in general terms. In two or three sentences, under 60 words, speaking to the "
         "player (\"you\"). Say who is better only in the words of the assessment fields, and give pawns_lost only "
-        "when it is a number. Return plain text, no headings or markdown." + _language_note(lang)
+        "when it is a number. " + BOARD_RULE + "Return plain text, no headings or markdown." + _language_note(lang)
         + (" Call the player \"bạn\" throughout, never by the color of their side." if lang == "vi" else "")
         + "\n\n"
         + json.dumps(_in_language(facts, lang), separators=(",", ":")))
@@ -497,6 +499,30 @@ def _mover(san, side_pieces):
         return "castling " + ("queenside" if san.startswith("O-O-O") else "kingside"), None
     kind = {"K": "king", "Q": "queen", "R": "rooks", "B": "bishops", "N": "knights"}.get(san[0], "pawns")
     return kind.rstrip("s") if kind != "pawns" else "pawn", side_pieces.get(kind)
+
+
+# what the move and mistake prompts say about the board facts, so the model names only pieces that are really there
+BOARD_RULE = ("The piece lists are exact and are the position before the move: mention only pieces and squares they "
+              "show, with the side they belong to, and do not say what a piece attacks, blocks or covers unless the "
+              "data names it. If the move gives checkmate, say which piece gives it and that the king has no escape, "
+              "without inventing how each square is covered. ")
+
+
+def _add_move_facts(facts, fen, san, side, lang):
+    """Adds the board facts for a move that was played (its position before, the piece it moves, where it goes and
+    what stands on that file), in place; the same facts the hint prompt has, so no piece or square is made up."""
+    facts.update(_board_facts(fen))
+    piece, _ = _mover(san, facts["pieces_" + side.lower()])
+    facts["piece_the_move_played_moves"] = piece
+    square = _destination(san)
+    if square:
+        facts["square_the_move_played_goes_to"] = square
+        facts["everything_on_that_file"] = _file_contents(fen, square[0])
+    if san.endswith("#"):
+        facts["the_move_played_gives_checkmate"] = True
+    if lang == "vi":
+        for key in [k for k in facts if k.startswith(("pieces_", "everything_", "piece_the"))]:
+            facts[key] = _vi_pieces(facts[key])
 
 
 def _hint_prompt(data, lang="en"):

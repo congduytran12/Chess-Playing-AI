@@ -267,7 +267,7 @@ PUZZLE_MODE = 3  # the index of Puzzles in MODE_OPTIONS
 MISTAKES_MODE = 4  # Your mistakes: the player's own mistakes (mistakes.py) as puzzles
 PUZZLE_MODES = (PUZZLE_MODE, MISTAKES_MODE)  # the modes that play puzzles
 PUZZLE_REPLY_MS = 500  # the opponent's answer in a puzzle comes this long after the player's move
-PUZZLE_UNDO_MS = 900  # a wrong move stays on the board this long, and is taken back
+PUZZLE_UNDO_MS = 1500  # a wrong move stays on the board this long (long enough to see it), and is taken back
 PUZZLE_SHOW_MS = 800  # the solution of a puzzle given up on is played out, a move this often
 LEVEL_OPTIONS = [level[0] for level in chessAi.LEVELS]
 SIDE_OPTIONS = ["White", "Black", "Random"]
@@ -1164,6 +1164,7 @@ async def main():
     savedGameId = None  # its id there, so finishing again after an undo updates it
     savingGame = None  # (the GameState, the task) of the last save sent, so a re-save of that game waits for its id
     gameLoaded = False  # loaded from a file or the account, so not saved again
+    loadedNames = {}  # a loaded game's player names by color (its PGN headers), shown instead of the current setup
     ratingReported = False
     asyncio.ensure_future(account.restore())  # stays signed in from last time
     hintEnginePrepared = False  # stockfish.prepareHintEngine() was called for the signed-in player
@@ -1471,8 +1472,8 @@ async def main():
             ply = analysis.get('explainOpen')
             text = analysis['explained'].get((ply, i18n.language())) if ply is not None and ply == shownPly() else None
             if text:
-                i = ply - 1
-                note = "%d.%s%s" % (i // 2 + 1, "" if i % 2 == 0 else "..", gs.moveLog[i].san or "")
+                number, dots, _ = moveNumber(ply - 1, startsWithBlack(gs))
+                note = "%d.%s%s" % (number, dots, gs.moveLog[ply - 1].san or "")
                 return text, note, lambda: analysis.update(explainOpen=None)
             if analysis.get('coachOpen') and analysis.get('coach'):
                 return analysis['coach'], None, lambda: analysis.update(coachOpen=False)
@@ -1629,9 +1630,10 @@ async def main():
         nonlocal playerWhiteHuman, playerBlackHuman, timeControl, clocks, clockHistory, lastClockTick
         nonlocal gameSaved, savedGameId, gameLoaded, ratingReported, boardFlipped, drag, kingFlash, premove
         nonlocal endSoundPlayed, lowTimeWarned, puzzle, undoAsked, drawOffered, hintUsedOnline, hintIdea, hintIdeaTask
-        nonlocal hintAlt, hintAltTask
+        nonlocal hintAlt, hintAltTask, loadedNames
         clearReview()
         clearAnnotations()
+        loadedNames = {}
         if hintIdeaTask is not None:
             hintIdeaTask.cancel()
             hintIdeaTask = None
@@ -2058,6 +2060,8 @@ async def main():
             if mistake:
                 return puzzle['data'].opponent or "Opponent"
             return "Puzzle (%d)" % puzzle['data'].rating
+        if loadedNames.get(color) and currentModeIndex in (0, 1):
+            return loadedNames[color]
         if currentModeIndex == 0:
             if (color == 'w') == playerWhiteHuman:
                 if account.signedIn:
@@ -2077,10 +2081,15 @@ async def main():
             return "You" if color == myColor() else "Opponent"
         return "White" if color == 'w' else "Black"
 
+    # an online room nobody else has joined yet: no message from the opponent's role and no moves
+    def opponentAbsent():
+        return currentModeIndex == 2 and networkConnected and opponentSeen is None and not gs.moveLog
+
     # which controls can be clicked right now
     def controlStates():
         inProgress = not gameOver
         online = currentModeIndex == 2
+        alone = opponentAbsent()
         if currentModeIndex in PUZZLE_MODES:
             # explain: one of the player's mistakes, once it was tried (or given up): it tells the best move
             return {'hint': puzzle is not None and not puzzle['done'] and humanTurn, 'skip': puzzle is not None,
@@ -2091,13 +2100,13 @@ async def main():
         return {
             'hint': (inProgress and humanTurn and (not online or networkConnected) and hintState is None
                      and hintsLeft() > 0),
-            'resign': inProgress and (not online or networkConnected),
-            'draw': inProgress and (not online or networkConnected) and pendingPrompt is None,
+            'resign': inProgress and (not online or networkConnected) and not alone,
+            'draw': inProgress and (not online or networkConnected) and pendingPrompt is None and not alone,
             'undo': not online or (networkConnected and len(gs.moveLog) > 0 and pendingPrompt is None),
             'save': len(gs.moveLog) > 0,
             'load': not online,
             'join': bool(roomCode),
-            'chat': chatReady(p.time.get_ticks(), lastChatSent),
+            'chat': chatReady(p.time.get_ticks(), lastChatSent) and not alone,
             'analyze': analysis is None and len(gs.moveLog) > 0,
             'practice': bool(gameMistakes()),
             'explain': (analysis is not None and analysis['done'] and shownPly() > 0
@@ -2129,7 +2138,8 @@ async def main():
                               prompt=pendingPrompt is not None,
                               analysis=None if analysis is None else 'done' if analysis['done'] else 'running',
                               moves=len(gs.moveLog), atStart=shownPly() == 0, atEnd=shownPly() == len(gs.moveLog),
-                              roomCode=roomCode, chatWait=not chatReady(p.time.get_ticks(), lastChatSent))
+                              roomCode=roomCode, chatWait=not chatReady(p.time.get_ticks(), lastChatSent),
+                              alone=opponentAbsent())
 
     # what the pointer is over, topmost first: (id, tooltip text or None, clickable)
     # the id restarts the tooltip's delay when it changes; clickable gives the hand cursor
@@ -2244,12 +2254,15 @@ async def main():
         showStatus(pgn.savePgn(text, time.strftime("chess-%Y%m%d-%H%M%S.pgn")))
 
     def loadPgnText(text):
-        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult, gameLoaded, endSoundPlayed
+        nonlocal moveMade, moveUndone, clocks, clockHistory, gameResult, gameLoaded, endSoundPlayed, loadedNames
         headers, sans = pgn.parsePgn(text)
         if headers.get('SetUp') == '1' or 'FEN' in headers:
             showStatus("Games from a custom start position aren't supported")
             return
         resetGame()
+        # the names the game was played under ("Computer (Very Hard)"), not today's settings
+        loadedNames = {color: headers[tag].strip() for color, tag in (('w', 'White'), ('b', 'Black'))
+                       if headers.get(tag, '').strip() not in ('', '?')}
         loaded = 0
         for san in sans:
             move = gs.findMoveBySan(san, validMoves)
@@ -3134,6 +3147,9 @@ async def main():
                     if leavesRoom:
                         pendingPrompt = {'kind': 'restart', 'text': "Leave this room?", 'yes': "Leave", 'no': "Stay",
                                          'confirm': True, 'action': applyChoice}
+                    elif losesGame and name == 'mode':  # another mode: the game is left, not restarted
+                        pendingPrompt = {'kind': 'restart', 'text': "Leave this game?", 'yes': "Leave",
+                                         'no': "Stay", 'confirm': True, 'action': applyChoice}
                     elif losesGame:
                         pendingPrompt = {'kind': 'restart', 'text': "Start a new game?", 'yes': "Restart",
                                          'no': "Cancel", 'confirm': True, 'action': applyChoice}
@@ -3781,7 +3797,8 @@ async def main():
         if reviewGs is not None:
             drawGameState(boardSurface, reviewGs, [], (), flip_board, arrows, rings=rings)
             if lookingBack:
-                drawLookBackBanner(boardSurface, lookBackText(gs.moveLog, reviewPly, browser.touchScreen()))
+                drawLookBackBanner(boardSurface, lookBackText(gs.moveLog, reviewPly, browser.touchScreen(),
+                                                              startsWithBlack(gs)))
         else:
             # the premove's squares, or the piece picked up for one and where it could go
             premoveShown = {'squares': list(premove) if premove else [], 'moves': []}
@@ -3810,11 +3827,13 @@ async def main():
         # the move list; after the game and while looking back the shown move is highlighted (and kept in view)
         highlighted = shownPly() - 1 if gameOver or lookingBack else None
         moveList = moveListLayout(len(gs.moveLog), areas['list'][0], areas['list'][1], moveLogScroll,
-                                  highlighted if reviewScroll else None)
+                                  highlighted if reviewScroll else None, startsWithBlack(gs))
         moveLogScroll = moveList['scroll']
         figurines = settingValue('figurines')
         drawMoveList(screen, moveList, gs.moveLog, highlighted, marks, thumbGrab is not None, figurines)
-        if not gs.moveLog and not gameOver:  # nothing to list yet: say how to begin (or why no mistake is shown)
+        # nothing to list yet: say how to begin (or why no mistake is shown); in landscape a prompt lies over the
+        # list, so the note would show cut off around it
+        if not gs.moveLog and not gameOver and not (pendingPrompt and LAYOUT.kind != 'portrait'):
             note = (mistakesNote(mistakeSet, account.signedIn) if currentModeIndex == MISTAKES_MODE
                     else emptyListNote(currentModeIndex, networkConnected, guest, browser.touchScreen(),
                                        ourColor() if multiplayerMode and networkConnected else None,
@@ -3823,7 +3842,7 @@ async def main():
         reviewScroll = False
         if gameOver:  # the shown position, its evaluation and the analysis, and the evaluation graph
             drawReviewInfo(screen, infoRect, gs.moveLog, shownPly(), analysis, marks, shownGs.checkmate, outcome[0],
-                           figurines)
+                           figurines, startsWithBlack(gs))
             if 'graph' in layout:
                 drawEvalGraph(screen, layout['graph'], analysis['evals'], len(gs.moveLog), marks, shownPly(),
                               analysis['done'])
@@ -4556,7 +4575,14 @@ def drawProfile(screen, box, account):
         screen.blit(premiumObj, (x + width - premiumObj.get_width(),
                                  y + ratingObj.get_height() - premiumObj.get_height()))
     y += 36
-    note = countGames(rated) + " rated online" if rated else "Play online games while signed in to get rated"
+    # the Online row below counts every online game saved; only those both players reported the same way are rated,
+    # so when fewer are rated the note says of how many
+    online = (account.stats or {}).get('online') or {}
+    played = sum(online.get(key, 0) for key in ('won', 'drawn', 'lost'))
+    if rated and played > rated:
+        note = "%d of %d online games rated" % (rated, played)
+    else:
+        note = countGames(rated) + " rated online" if rated else "Play online games while signed in to get rated"
     screen.blit(get_fitting_text(note, width, 18, UI['textDim'], False), (x, y))
     y += 28 + 16
     stats = account.stats or {}
@@ -4652,6 +4678,8 @@ def drawAccountWindow(screen, view, fields, focus, message, busy, account, rows,
                 left = "%s   %s" % (str(row.get('played_at', ''))[:10], i18n.tr(gameRowResult(row)))
                 right = row.get('opponent') or "Local game"
             else:
+                if getattr(account, 'signedIn', False) and row.get('username') == account.username:  # your place
+                    p.draw.rect(screen, p.Color(UI['logHighlight']), rect, border_radius=4)
                 left = "%d. %s" % (i + 1, row['username'])
                 right = "%d  (%s)" % (row["rating"], i18n.tr(countGames(row["rated_games"])))
             screen.blit(get_fitting_text(left, rect.width // 2, 18, UI['text'], False), (rect.x + 6, rect.y + 3))
@@ -5288,13 +5316,15 @@ SCROLLBAR_MIN_THUMB = 24
 # newest; follow: a ply to keep in view (the shown move), scrolling as little as needed
 # returns {'scroll' (clamped), 'first' (first row shown), 'visible' (rows that fit), 'rows', 'area',
 # 'cells': [(rect, ply)], 'numbers': [(move number, y)], 'track' and 'thumb' (rects, None when everything fits)}
-def moveListLayout(plies, top, bottom, scroll=0, follow=None):
+def moveListLayout(plies, top, bottom, scroll=0, follow=None, blackFirst=False):
     layout = LAYOUT  # the sizes and columns (MOVE_ROW_HEIGHT, MOVE_COLUMNS... in landscape)
     rowHeight = layout.moveRow
-    rows = (plies + 1) // 2
+    # blackFirst: the game started with Black to move (a puzzle), so its first move goes in row 1's Black column
+    offset = 1 if blackFirst else 0
+    rows = (plies + offset + 1) // 2
     visible = max(1, (bottom - top - layout.movePadding) // rowHeight)
     if follow is not None and rows:
-        row = min(max(follow, 0) // 2, rows - 1)
+        row = min((max(follow, 0) + offset) // 2, rows - 1)
         first = max(0, rows - visible - scroll)
         if row < first:
             scroll = rows - visible - row
@@ -5308,11 +5338,24 @@ def moveListLayout(plies, top, bottom, scroll=0, follow=None):
         y = y0 + (row - first) * rowHeight
         numbers.append((row + 1, y))
         for side in (0, 1):
-            if 2 * row + side < plies:
-                cells.append((p.Rect(layout.moveColumns[side], y, layout.moveCell, rowHeight - 2), 2 * row + side))
+            ply = 2 * row + side - offset
+            if 0 <= ply < plies:
+                cells.append((p.Rect(layout.moveColumns[side], y, layout.moveCell, rowHeight - 2), ply))
     track, thumb = scrollbarRects(layout.scrollbarX, y0, visible * rowHeight - 2, rows, visible, first)
     return {'scroll': scroll, 'first': first, 'visible': visible, 'rows': rows, 'cells': cells, 'numbers': numbers,
-            'area': p.Rect(layout.panel.x, top, layout.panel.width, bottom - top), 'track': track, 'thumb': thumb}
+            'area': p.Rect(layout.panel.x, top, layout.panel.width, bottom - top), 'track': track, 'thumb': thumb,
+            'blackFirst': blackFirst}
+
+
+# whether a game started with Black to move (a puzzle's position), which shifts its move numbers by half a move
+def startsWithBlack(gs):
+    return bool(gs.startFen) and gs.startFen.split()[1:2] == ['b']
+
+
+# the move at index i of a move log as (number, dots, side): "12." is (12, "", 'w') and "12..." is (12, "..", 'b')
+def moveNumber(i, blackFirst=False):
+    slot = i + (1 if blackFirst else 0)
+    return slot // 2 + 1, ("" if slot % 2 == 0 else ".."), ('w' if slot % 2 == 0 else 'b')
 
 
 # the ply of the move drawn at pos, or None
@@ -5366,7 +5409,9 @@ def puzzleInfoLines(state, progress):
         else:
             first = "Solved! Rating %+d" % change if change else "Solved!"
         return first, data.themeLabels + ["Streak %d" % progress['streak']]
-    return ("Find the best move for " + ("White" if data.color == 'w' else "Black"),
+    # after a wrong move the line keeps saying so (the status message fades), until the puzzle is solved
+    return ("Not that one. Try again" if state['failed']
+            else "Find the best move for " + ("White" if data.color == 'w' else "Black"),
             ["Puzzle %d  ·  You %d" % (data.rating, progress['rating'])])
 
 
@@ -5385,7 +5430,8 @@ def mistakeInfoLines(state, left):
         else:
             first = "Good move!" if state.get('alternative') else "Solved!"
         return first, ["Best: %s" % state['bestSan']] + more
-    return ("Find a better move for " + ("White" if data.color == 'w' else "Black"),
+    return ("Not that one. Try again" if state['failed']
+            else "Find a better move for " + ("White" if data.color == 'w' else "Black"),
             ["You played %s" % state['playedSan']] + more)
 
 
@@ -5627,7 +5673,7 @@ def drawMoveList(screen, layout, moveLog, currentPly=None, marks=None, thumbHeld
         if ply == currentPly:
             p.draw.rect(screen, p.Color(UI['logHighlight']), rect, border_radius=4)
         move = moveLog[ply]
-        textObj = sanSurface(move.san or str(move), 'w' if ply % 2 == 0 else 'b', textSize, UI['text'],
+        textObj = sanSurface(move.san or str(move), moveNumber(ply, layout.get('blackFirst'))[2], textSize, UI['text'],
                              figurines=figurines)
         x, y = rect.x + 6, rect.centery - textObj.get_height() // 2
         screen.blit(textObj, (x, y))
@@ -5811,7 +5857,8 @@ def analysisSummary(marks, compact=False):
 
 # the shown position, its evaluation and what the analysis says about the move that led to it
 # result: the game's result text, shown at the final position (the result card may be hidden)
-def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, result=None, figurines=None):
+def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, result=None, figurines=None,
+                   blackFirst=False):
     p.draw.rect(screen, p.Color(UI['infoBox']), rect, border_radius=BUTTON_RADIUS)
     p.draw.rect(screen, p.Color(UI['infoBoxBorder']), rect, 1, border_radius=BUTTON_RADIUS)
     evals = analysis['evals'] if analysis else []
@@ -5822,10 +5869,10 @@ def drawReviewInfo(screen, rect, moveLog, ply, analysis, marks, isCheckmate, res
         if ply == 0:
             parts = [get_text_surface("Start position" + after, size, UI['text'], True)]
         else:
-            i = ply - 1
-            move = moveLog[i]
-            parts = [get_text_surface("After %d.%s " % (i // 2 + 1, "" if i % 2 == 0 else ".."), size, UI['text'], True),
-                     sanSurface(move.san or str(move), 'w' if i % 2 == 0 else 'b', size, UI['text'], True, figurines)]
+            move = moveLog[ply - 1]
+            number, dots, side = moveNumber(ply - 1, blackFirst)
+            parts = [get_text_surface("After %d.%s " % (number, dots), size, UI['text'], True),
+                     sanSurface(move.san or str(move), side, size, UI['text'], True, figurines)]
             if after:
                 parts.append(get_text_surface(after, size, UI['text'], True))
         if sum(part.get_width() for part in parts) <= width:
@@ -6208,7 +6255,10 @@ def hintsLeft():
 # shown as its tooltip, and in the status slot when it's clicked anyway (touch screens have no hover)
 def disabledReason(name, gameOver=False, online=False, connected=False, humanTurn=True, hintsLeft=1,
                    hintBusy=False, prompt=False, analysis=None, moves=0, atStart=False, atEnd=False, roomCode="",
-                   chatWait=False, coachBusy=False):
+                   chatWait=False, coachBusy=False, alone=False):
+    # alone: an online room whose opponent hasn't joined yet, so there is nobody to resign to, offer a draw or chat
+    if name in ('resign', 'draw', 'chat') and alone and not gameOver:
+        return "Your opponent hasn't joined yet"
     if name == 'hint':
         if gameOver:
             return "The game is over"
@@ -6262,18 +6312,33 @@ def disabledReason(name, gameOver=False, online=False, connected=False, humanTur
     return None
 
 
-# where a tooltip for text goes with the pointer at pos: below and right of it, kept inside the screen
-def tooltipRect(text, pos, screenSize):
+# game pixels per pixel of the real screen: the page (or a resized desktop window) shows the game smaller or larger,
+# so a gap that must clear the system's pointer is this many times its size in screen pixels; 1 when unknown
+def pointerScale(screenSize):
+    try:
+        window = (browser.viewportSize() if browser.inBrowser()
+                  else p.display.get_window_size() if DESKTOP_WINDOW else None)
+        if not window:
+            return 1
+        shown = min(window[0] / screenSize[0], window[1] / screenSize[1])
+        return 1 / shown if shown > 0 else 1
+    except Exception:
+        return 1
+
+
+# where a tooltip for text goes with the pointer at pos: below and right of it, clear of the pointer's arrow (about
+# 12 by 22 screen pixels; scale: pointerScale), kept inside the screen
+def tooltipRect(text, pos, screenSize, scale=1):
     width, height = get_font(scaled(TOOLTIP_SIZE), True, True).size(text)
-    rect = p.Rect(pos[0] + 12, pos[1] + 22, width + 18, height + 12)
+    rect = p.Rect(pos[0] + round(12 * scale), pos[1] + round(22 * scale), width + 18, height + 12)
     if rect.bottom > screenSize[1] - 4:
-        rect.bottom = pos[1] - 10  # above the pointer instead
+        rect.bottom = pos[1] - round(10 * scale)  # above the pointer instead
     rect.clamp_ip(p.Rect(4, 4, screenSize[0] - 8, screenSize[1] - 8))
     return rect
 
 
 def drawTooltip(screen, text, pos):
-    rect = tooltipRect(text, pos, screen.get_size())
+    rect = tooltipRect(text, pos, screen.get_size(), max(1, pointerScale(screen.get_size())))
     p.draw.rect(screen, p.Color(UI['tooltipBg']), rect, border_radius=6)
     p.draw.rect(screen, p.Color(*shadeColor(UI['tooltipBg'], 40 if sum(UI['tooltipBg']) < 384 else -40)), rect, 1,
                 border_radius=6)
@@ -6723,12 +6788,12 @@ def drawEndGameText(screen, text, buttons, mouse_pos):
 
 # what the Looking back banner says while the board shows the position after ply moves of moveLog
 # touch: on a phone or tablet, which has no End key and taps rather than clicks
-def lookBackText(moveLog, ply, touch=False):
+def lookBackText(moveLog, ply, touch=False, blackFirst=False):
     if ply == 0:
         shown = "the start position"
     else:
-        i = ply - 1
-        shown = "after %d.%s %s" % (i // 2 + 1, "" if i % 2 == 0 else "..", moveLog[i].san or str(moveLog[i]))
+        number, dots, _ = moveNumber(ply - 1, blackFirst)
+        shown = "after %d.%s %s" % (number, dots, moveLog[ply - 1].san or str(moveLog[ply - 1]))
     if touch:
         return "Looking back: %s  -  tap the board to return" % shown
     return "Looking back: %s  -  click here or press End to return" % shown

@@ -62,6 +62,7 @@ EXACT = {
     "Hint: move the piece shown. Solving it with a hint doesn't change your rating":
         "Gợi ý: đi quân được chỉ. Giải bằng gợi ý thì điểm không đổi",
     "Leave this room?": "Rời khỏi phòng này?", "Start a new game?": "Bắt đầu ván mới?",
+    "Leave this game?": "Rời khỏi ván này?",
     "Invite link copied: send it to your friend": "Đã chép liên kết mời: hãy gửi cho bạn của bạn",
     "New game started": "Đã bắt đầu ván mới", "Undo accepted": "Đã đồng ý cho đi lại",
     "Not in puzzles": "Không dùng được trong câu đố", "The puzzle is solved": "Câu đố đã được giải",
@@ -181,6 +182,7 @@ EXACT = {
     "Ask your opponent to undo (Z)": "Xin đối thủ cho đi lại (Z)", "Leave the room": "Rời khỏi phòng",
     "Your games, record and rating": "Ván, thành tích và điểm của bạn",
     "The game is over": "Ván đã kết thúc", "Join a room first": "Hãy vào một phòng trước",
+    "Your opponent hasn't joined yet": "Đối thủ chưa vào phòng",
     "No hints left today": "Hôm nay hết lượt gợi ý", "Looking for a good move...": "Đang tìm nước đi tốt...",
     "Wait for your turn": "Hãy chờ đến lượt bạn", "Answer the open question first": "Hãy trả lời câu hỏi đang mở trước",
     "No game yet": "Chưa có ván nào", "Make a move first": "Hãy đi một nước trước", "Leave online play first": "Hãy thoát chế độ trực tuyến trước",
@@ -445,6 +447,7 @@ TEMPLATES = {
     "Type a new password for %s.": "Nhập mật khẩu mới cho {0}.", "Missing %s": "Thiếu {0}",
     "Rating %d": "Điểm {0}", "%d games rated online": "{0} ván có tính điểm trực tuyến",
     "%d game rated online": "{0} ván có tính điểm trực tuyến", "%d games": "{0} ván", "%d game": "{0} ván",
+    "%d of %d online games rated": "{0}/{1} ván trực tuyến có tính điểm",
     "%d won, %d lost, %d drawn": "{0} thắng, {1} thua, {2} hòa", "level %d": "cấp {0}", "vs %s": "với {0}",
     "Opponent silent for %d min: they may have left": "Đối thủ im lặng {0} phút: có thể đã rời đi",
     "Analyzing... %d/%d": "Đang phân tích... {0}/{1}", "%s: loses %.1f. Best was %s": "{0}: mất {1}. Nước tốt nhất là {2}",

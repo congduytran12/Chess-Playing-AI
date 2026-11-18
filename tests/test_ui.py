@@ -598,6 +598,12 @@ class GameLoopTest(unittest.TestCase):
             rect = main.tooltipRect("Ask your opponent to undo (Z)", pos, screen)
             self.assertTrue(p.Rect(0, 0, *screen).contains(rect), pos)
             self.assertFalse(rect.collidepoint(pos), "the tooltip doesn't cover the pointer")
+        # a game shown at under half size (a phone's portrait page): the gap below the pointer grows with it, so the
+        # system's arrow doesn't hide the tooltip's first letters
+        middle = (screen[0] // 3, screen[1] // 3)
+        self.assertEqual(main.tooltipRect("Resign", middle, screen, 2.3).y - middle[1], round(22 * 2.3))
+        self.assertEqual(main.tooltipRect("Resign", middle, screen).y - middle[1], 22)
+        self.assertEqual(main.pointerScale(screen), 1, "no page or scaled window under the tests")
 
     def test_tooltip_and_hand_cursor(self):
         main = self.main
@@ -1896,6 +1902,36 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(main.moveListLayout(70, top, bottom, 10, follow=41)['first'], 20, "already in view")
         self.assertEqual(main.moveListLayout(70, top, bottom, 10, follow=51)['first'], 21, "scrolls just enough")
 
+    def test_move_list_of_a_game_black_starts(self):
+        # a puzzle whose first move is Black's: "1... Raa8 2. Rxh7#", not Raa8 in White's column
+        main = self.main
+        top = main.STRIP_HEIGHT
+        layout = main.moveListLayout(2, top, 600, blackFirst=True)
+        cells = dict((ply, rect) for rect, ply in layout['cells'])
+        self.assertEqual(layout['rows'], 2)
+        self.assertEqual(cells[0].x, main.MOVE_COLUMNS[1], "Black's first move on the right")
+        self.assertEqual(cells[1].x, main.MOVE_COLUMNS[0], "White's reply starts row 2")
+        self.assertEqual(cells[1].y, cells[0].y + main.MOVE_ROW_HEIGHT)
+        self.assertEqual([number for number, _ in layout['numbers']], [1, 2])
+        self.assertEqual(main.moveListPly(layout, cells[1].center), 1)
+        self.assertIsNone(main.moveListPly(layout, (main.MOVE_COLUMNS[0] + 10, cells[0].centery)), "row 1's empty cell")
+        self.assertEqual(main.moveListLayout(70, top, top + main.MOVE_LIST_PADDING + 5 * main.MOVE_ROW_HEIGHT,
+                                             blackFirst=True)['rows'], 36)
+        self.assertEqual(main.moveNumber(0), (1, "", 'w'))
+        self.assertEqual(main.moveNumber(1), (1, "..", 'b'))
+        self.assertEqual(main.moveNumber(0, True), (1, "..", 'b'))
+        self.assertEqual(main.moveNumber(1, True), (2, "", 'w'))
+        GameState = support.GameState
+        self.assertTrue(main.startsWithBlack(GameState.fromFen("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")))
+        self.assertFalse(main.startsWithBlack(GameState.fromFen("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")))
+        self.assertFalse(main.startsWithBlack(GameState()))
+        gs = GameState.fromFen("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
+        for san in ("h6", "Ra8+"):
+            valid = gs.getValidMoves()
+            gs.makeMoveWithSan(gs.findMoveBySan(san, valid), valid)
+        self.assertTrue(main.lookBackText(gs.moveLog, 1, blackFirst=True).startswith("Looking back: after 1... h6"))
+        self.assertTrue(main.lookBackText(gs.moveLog, 2, blackFirst=True).startswith("Looking back: after 2. Ra8+"))
+
     def test_scrollbar_geometry(self):
         main = self.main
         top = main.STRIP_HEIGHT
@@ -2763,6 +2799,9 @@ class GameLoopTest(unittest.TestCase):
         self.assertTrue(main.chatReady(10000 + main.CHAT_INTERVAL_MS, 10000))
         self.assertEqual(main.disabledReason('chat', chatWait=True), "Wait a moment")
         self.assertIsNone(main.disabledReason('chat'))
+        for name in ('chat', 'resign', 'draw'):  # a room nobody has joined yet: nobody to talk to or give up to
+            self.assertEqual(main.disabledReason(name, online=True, connected=True, alone=True),
+                             "Your opponent hasn't joined yet", name)
         panel = p.Rect(main.PANEL_X, 0, main.MOVE_LOG_PANEL_WIDTH, main.BOARD_HEIGHT)
         stripY = 450
         for text in main.QUICK_CHAT:
@@ -3647,7 +3686,8 @@ class GameLoopTest(unittest.TestCase):
             await self.move(self.puzzleCell(wrong[:2]), self.puzzleCell(wrong[2:4]), 0.4)
             seen['wrong'] = [t for t in shown['status'] if t.startswith("Not that one")]
             seen['rating'] = puzzles.current()['rating']
-            await asyncio.sleep(1.2)  # the wrong move is taken back
+            seen['still'] = view['puzzle']  # the line keeps saying it was wrong
+            await asyncio.sleep(main.PUZZLE_UNDO_MS / 1000 + 0.3)  # the wrong move is taken back
             for code in (right, chosen.moves[3]):
                 await self.move(self.puzzleCell(code[:2]), self.puzzleCell(code[2:4]), 1.8)
             seen['solved'] = view['puzzle']
@@ -3664,6 +3704,7 @@ class GameLoopTest(unittest.TestCase):
             restore()
         self.assertTrue(seen['wrong'] and "Rating -" in seen['wrong'][0], seen['wrong'])
         self.assertLess(seen['rating'], puzzles.START_RATING)
+        self.assertEqual(seen['still'][0], "Not that one. Try again")
         self.assertEqual(seen['solved'][0], "Solved after a mistake", "and the rating stays")
         self.assertEqual((progress['rating'], progress['streak'], progress['solved']), (seen['rating'], 0, []),
                          "one mistake counted once, and the puzzle is not marked solved")
@@ -3783,6 +3824,9 @@ class GameLoopTest(unittest.TestCase):
         state = {'data': data, 'failed': False, 'hinted': False, 'done': False, 'revealed': False, 'change': 0}
         self.assertEqual(main.puzzleInfoLines(state, progress),
                          ("Find the best move for White", ["Puzzle 800  ·  You 1010"]))
+        state['failed'] = True  # a wrong move: the line keeps saying so after the status message fades
+        self.assertEqual(main.puzzleInfoLines(state, progress)[0], "Not that one. Try again")
+        state['failed'] = False
         state['done'] = True
         self.assertEqual(main.puzzleInfoLines(state, progress), ("Solved!", ["Mate", "Back rank mate", "Streak 2"]))
         state['change'] = 12
@@ -3887,6 +3931,12 @@ class GameLoopTest(unittest.TestCase):
             seen['later'] = shown['status'][-1]
             seen['copied'] = list(copied)
             seen['room'] = topics[-1]
+            await self.click(layout['chat'].center, 0.3)  # nobody has joined yet: nobody to chat with
+            seen['alone'] = [m for m in sent if m.get('type') == 'chat']
+            net.server_time = max(net.server_time, 990)  # the guest arrives
+            net.incoming_messages.append({'type': 'ping', 'role': 'client', 'sender': 'guest', 'game': 0,
+                                          'version': 0, '_time': 990})
+            await asyncio.sleep(0.3)
             await self.click(layout['chat'].center, 0.3)
             await self.click(main.chatItemRects(layout['chat'])[1].center, 0.3)
             seen['sent'] = [(m['id'], m['role']) for m in sent if m.get('type') == 'chat']
@@ -3924,6 +3974,8 @@ class GameLoopTest(unittest.TestCase):
         self.assertIn("Invite link copied: send it to your friend", shown['status'])
         self.assertEqual(seen['refused'], "Couldn't copy the link: share the room code " + seen['room'])
         self.assertEqual(seen['later'], "Invite link copied: send it to your friend", "the browser's later answer")
+        self.assertEqual(seen['alone'], [])
+        self.assertIn("Your opponent hasn't joined yet", shown['status'])
         self.assertEqual(seen['sent'], [(1, 'host')])
         self.assertEqual(seen['own'], [("Good luck!", False)], "by our own strip, at the bottom")
         self.assertIn("Wait a moment", shown['status'])
@@ -4917,6 +4969,9 @@ class GameLoopTest(unittest.TestCase):
                  'playedSan': "g4", 'bestSan': "e4"}
         self.assertEqual(main.mistakeInfoLines(state, 2), ("Find a better move for White", ["You played g4", "2 more"]))
         self.assertEqual(main.mistakeInfoLines(state, 0)[1], ["You played g4"])
+        state['failed'] = True
+        self.assertEqual(main.mistakeInfoLines(state, 0), ("Not that one. Try again", ["You played g4"]))
+        state['failed'] = False
         state['done'] = True
         self.assertEqual(main.mistakeInfoLines(state, 0), ("Solved!", ["Best: e4"]))
         state['alternative'] = True
@@ -5031,7 +5086,7 @@ class GameLoopTest(unittest.TestCase):
             seen['start'] = (list(view['moves']), view['puzzle'], main.MODE_OPTIONS.index("Your mistakes"))
             await self.playCode('g2g4', 0.4)  # the move of the game: wrong at once
             seen['played'] = [text for text in shown['status'] if text.startswith("That's the move")]
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(main.PUZZLE_UNDO_MS / 1000 + 0.3)
             seen['back'] = list(view['moves'])
             await self.playCode('d2d4', 1.0)  # not the best, about as good: searched
             seen['judged'] = (list(judged), view['puzzle'], "Checking your move..." in shown['status'])

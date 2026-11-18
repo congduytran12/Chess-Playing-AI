@@ -241,6 +241,21 @@ class ProxyTests(unittest.TestCase):
         self.assertNotIn('Vietnamese', prompt)
         self.assertEqual(self.upstream.sent['max_tokens'], 220)
 
+    def test_a_move_comes_with_the_exact_board(self):
+        # the model misreads a FEN (it once called White's rook on f8 Black's), so the pieces are spelled out
+        facts = self.facts(self.MOVE)
+        self.assertEqual(facts['pieces_black']['king'], 'e8')
+        self.assertEqual((facts['piece_the_move_played_moves'], facts['square_the_move_played_goes_to']), ('pawn', 'e5'))
+        self.assertIn('pawn e7', facts['everything_on_that_file']['Black'])
+        self.assertNotIn('the_move_played_gives_checkmate', facts)
+        self.assertIn('The piece lists are exact', self.upstream.sent['messages'][1]['content'])
+        mate = self.facts(dict(self.MOVE, fen="rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2",
+                               played='Qh4#', best='Qh4#', reply=None, history=['f3', 'e5', 'g4']))
+        self.assertEqual((mate['piece_the_move_played_moves'], mate['the_move_played_gives_checkmate']), ('queen', True))
+        self.assertEqual(self.facts(dict(self.MISTAKE))['pieces_white']['king'], 'e1', "a mistake has the board too")
+        vi = self.facts(dict(self.MOVE, lang='vi'))
+        self.assertEqual((vi['piece_the_move_played_moves'], vi['pieces_black']['vua']), ('tốt', 'e8'))
+
     def test_a_move_the_analysis_marked_says_so(self):
         facts = self.facts(dict(self.MOVE, mark='??', loss=3.456, after=-3.0))
         self.assertEqual((facts['analysis_mark'], facts['pawns_lost']), ('blunder', 3.46))
