@@ -2787,7 +2787,8 @@ async def main():
                              'no': "Cancel", 'room': invitedCode}
 
     # the first visit opens How to play, but not over a password reset (skipped until a later visit) or an invite
-    # link's Join prompt (it waits until that is answered); closing it in any way marks it seen
+    # link's Join prompt (it waits until that is answered, and after Join it waits for a later visit); closing it in any
+    # way marks it seen
     firstVisitHelp = not settings.get('seenHelp') and not linkInfo
     helpWasOpen = False
 
@@ -3221,6 +3222,8 @@ async def main():
                             else:
                                 restartGame()
                         elif kind == 'joinInvite' and accepted:  # opened from an invite link
+                            # How to play would cover the game just joined: it waits for a later visit (not seen)
+                            firstVisitHelp = False
                             roomCode = prompt['room']
                             connectOnline('client')
                             await asyncio.sleep(0)  # yield so poll task can start

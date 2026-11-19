@@ -4078,6 +4078,32 @@ class GameLoopTest(unittest.TestCase):
         self.assertEqual(seen['after'], 0, "How to play opens once it is answered")
         self.assertTrue(seen['closed'])
 
+    def test_first_visit_help_does_not_cover_a_joined_game(self):
+        main = self.main
+        seen = {}
+
+        async def script():
+            await asyncio.sleep(0.8)
+            await self.click(main.promptRects()[1].center, 0.6)  # Join
+            seen['after'] = [page for page in pages if page is not None]
+            seen['seen'] = self.settings.get('seenHelp')
+            p.event.post(p.event.Event(p.QUIT))
+            await asyncio.sleep(0.3)
+
+        pages, restore = self.recordHelpPages()
+        sent, topics, restoreRoom = self.offlineRoom()
+        removed, restoreParam = self.openedWithRoomParam("test12")
+        try:
+            self.settings.put('seenHelp', False)
+            self.runGame(script)
+        finally:
+            restore()
+            restoreParam()
+            restoreRoom()
+            self.settings.put('seenHelp', True)
+        self.assertEqual(seen['after'], [], "How to play doesn't open over the game just joined")
+        self.assertFalse(seen['seen'], "it isn't marked seen, so a later visit still opens it")
+
     def test_first_visit_help_opened_by_hand_under_the_prompt(self):
         # read (H) and closed while the Join prompt waited: answering the prompt doesn't open it a second time
         main = self.main
