@@ -497,8 +497,10 @@ def orchestrate(games):
     relayPort, apiPort = freePort(), freePort()
     folder = tempfile.mkdtemp(prefix='chess-e2e-')
     me = [sys.executable, os.path.abspath(__file__)]
-    background = [subprocess.Popen(me + ['relay', str(relayPort)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
-                  subprocess.Popen(me + ['api', str(apiPort)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
+    background = [subprocess.Popen(me + ['relay', str(int(relayPort))], shell=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                  subprocess.Popen(me + ['api', str(int(apiPort))], shell=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
     try:
         waitUp('http://127.0.0.1:%d/stats' % relayPort)
         waitUp('http://127.0.0.1:%d/debug' % apiPort)
@@ -510,8 +512,9 @@ def orchestrate(games):
                        CHESS_NO_STOCKFISH='1', PYTHONIOENCODING='utf-8', CHESS_NTFY_URL='http://127.0.0.1:%d' % relayPort,
                        CHESS_API_URL='http://127.0.0.1:%d' % apiPort)
             log = open(os.path.join(folder, role + '.log'), 'w', encoding='utf-8')
-            players[role] = (subprocess.Popen(me + ['player', role, str(relayPort), str(apiPort), folder, str(games)],
-                                              stdout=log, stderr=subprocess.STDOUT, env=env), log)
+            args = ['player', role, str(int(relayPort)), str(int(apiPort)), folder, str(int(games))]
+            players[role] = (subprocess.Popen(me + args, shell=False, stdout=log, stderr=subprocess.STDOUT, env=env),
+                             log)
         started = time.time()
         for role, (proc, log) in players.items():
             try:

@@ -479,8 +479,11 @@ class Engine:
             if path is None:
                 raise EngineError("no stockfish executable found (set STOCKFISH_PATH, or put one in engines/)")
             command = [path]
+        # an argument list, never a command line a shell (or Windows) would parse
+        if not isinstance(command, (list, tuple)) or not command or not all(isinstance(a, str) for a in command):
+            raise EngineError("the engine command must be a list of arguments")
         flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)  # Windows: no console window
-        self._proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self._proc = subprocess.Popen(list(command), shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, text=True, bufsize=1, creationflags=flags)
         threading.Thread(target=self._readLoop, args=(self._proc,), daemon=True).start()
 
