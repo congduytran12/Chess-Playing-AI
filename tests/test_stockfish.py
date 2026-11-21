@@ -166,6 +166,41 @@ class StockfishTest(unittest.TestCase):
         self.assertEqual(sent[sent.index('setoption name MultiPV value 4'):].count('setoption name MultiPV value 1'), 1,
                          "the next normal search goes back to the single best line")
 
+    def test_the_coachs_pick_gets_a_search_of_its_own(self):
+        saved = stockfish.hintEngine
+        stockfish.hintEngine = stockfish.engine  # the stand-in answers for the hint engine too
+
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            gs = GameState()
+            quiet = await stockfish.checkAlternative(gs, gs.findMoveByCode('e2e4', gs.getValidMoves()), 0.05)
+            restored = (len(gs.moveLog), gs.whiteToMove)
+            fools = GameState()
+            for code in ('f2f3', 'e7e5'):
+                fools.makeMove(fools.findMoveByCode(code, fools.getValidMoves()))
+            # 2. g4 walks into a mate in one (the stand-in scores it so for Black)
+            blunder = await stockfish.checkAlternative(fools, fools.findMoveByCode('g2g4', fools.getValidMoves()), 0.05)
+            fools.makeMove(fools.findMoveByCode('g2g4', fools.getValidMoves()))
+            sent = len(self.commands())
+            mates = await stockfish.checkAlternative(fools, fools.findMoveByCode('d8h4', fools.getValidMoves()), 0.05)
+            return quiet, restored, blunder, mates, sent == len(self.commands())
+
+        try:
+            quiet, restored, blunder, mates, unsearched = asyncio.run(run())
+        finally:
+            stockfish.hintEngine = saved
+        self.assertEqual(quiet, -0.42, "the search scores the reply for the opponent: the move's score is its negative")
+        self.assertEqual(restored, (0, True), "the board is set back")
+        self.assertLess(blunder, -chessAi.MATE_THRESHOLD)
+        self.assertEqual(mates, chessAi.CHECKMATE)
+        self.assertTrue(unsearched, "a move that mates needs no search")
+        self.assertTrue(stockfish.alternativeHolds(-0.42, 0.0))
+        self.assertFalse(stockfish.alternativeHolds(-0.6, 0.0), "more than ALTERNATIVE_MARGIN worse than the hint")
+        self.assertFalse(stockfish.alternativeHolds(blunder, 0.0), "a forced mate against it")
+        self.assertFalse(stockfish.alternativeHolds(None, 0.0), "not searched: not shown")
+        self.assertTrue(stockfish.alternativeHolds(mates, 0.0))
+        self.assertTrue(stockfish.alternativeHolds(0.1, None))
+
     def test_no_alternatives_without_the_hint_engine_or_with_one_move(self):
         async def run():
             gs = GameState()

@@ -669,6 +669,34 @@ async def searchAlternatives(gs, validMoves, seconds, history=(), best=None):
     return alternatives
 
 
+async def checkAlternative(gs, move, seconds):
+    """The score (in pawns, for the side to move in gs) of playing move, from a search of its own: the position after
+    it, searched for its single best line by the hint engine. A multi-line search shares its time between its lines,
+    and in an endgame it can score a losing move as a draw (a run of checks it takes for a perpetual), so the move
+    the coach picked is searched again before it is shown. gs is played on and set back (a copy the caller owns);
+    None when the hint engine can't search."""
+    if not await hintEngine.ready(0):
+        return None
+    gs.makeMove(move)
+    try:
+        if not gs.getValidMoves():  # the move ends the game
+            return chessAi.CHECKMATE if gs.inCheck else chessAi.STALEMATE
+        found = await hintEngine.go(moveCodes(gs), seconds, start=gs.startFen)
+    finally:
+        gs.undoMove()
+    if not found or found[1] is None:
+        return None
+    return -found[1]  # the search scores it for the opponent, who is to move after it
+
+
+def alternativeHolds(score, best):
+    """Whether an alternative that checkAlternative scored stays safe beside the best move's score (both in pawns, for
+    the side to move): no more than ALTERNATIVE_MARGIN worse, and no forced mate against it."""
+    if score is None or score <= -chessAi.MATE_THRESHOLD:
+        return False
+    return best is None or score >= best - ALTERNATIVE_MARGIN
+
+
 async def analyzePosition(gs, validMoves, seconds, history=()):
     """Like searchPosition, for the analysis after the game: searched by the hint engine (the full build), which it
     waits for while it loads, so one game's scores all come from the same engine."""

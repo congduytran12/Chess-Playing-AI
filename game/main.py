@@ -5591,7 +5591,9 @@ async def explainMistake(mistake, lang):
 
 # a drawish position: the coach's winning try beside the hint. Stockfish lists the moves it rates nearly as well as
 # its best (stockfish.searchAlternatives); the coach only picks a number from that list (llm.parse_pick), so the move
-# is always legal and safe. board is a copy of the game; hintMove the move already suggested, hintSan its notation.
+# is always legal; before it is shown it gets a search of its own (stockfish.checkAlternative), and a move that turns
+# out worse than the hint by more than stockfish.ALTERNATIVE_MARGIN is dropped. board is a copy of the game;
+# hintMove the move already suggested, hintSan its notation, score the hint's score (for the side to move).
 # Returns {'move', 'san', 'score', 'text', 'hint', 'open'}, or None when there is no safe alternative or the coach
 # chose none
 async def hintAlternative(board, history, hintMove, hintSan, score, historySans, lang):
@@ -5606,7 +5608,10 @@ async def hintAlternative(board, history, hintMove, hintSan, score, historySans,
     if picked is None:
         return None
     index, reason = picked
-    return {'move': options[index][0], 'san': sans[index], 'score': options[index][1], 'text': reason,
+    checked = await stockfish.checkAlternative(board, options[index][0], HINT_SECONDS)
+    if not stockfish.alternativeHolds(checked, score):
+        return None  # not as safe as the shared search made it look: the hint stands alone
+    return {'move': options[index][0], 'san': sans[index], 'score': checked, 'text': reason,
             'hint': hintSan, 'open': True}
 
 

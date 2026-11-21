@@ -5289,11 +5289,13 @@ class GameLoopTest(unittest.TestCase):
         import llm
         import stockfish
         main = self.main
-        for score, expectTry in ((0.1, True), (1.8, False)):
+        # the hint's score, what the pick's own search finds (None: no pick asked for), and whether the try shows
+        for score, checkedScore, expectTry in ((0.1, -0.1, True), (1.8, None, False), (0.1, -3.0, False)):
             seen = {}
             main.GAME_VIEW = view = {}
-            searched, asked = [], []
+            searched, asked, checked = [], [], []
             realHint, realAlternatives = stockfish.searchHintPosition, stockfish.searchAlternatives
+            realCheck = stockfish.checkAlternative
             realEnabled, realExplain = llm.enabled, llm.explain
 
             async def hint(board, moves, seconds, history=()):
@@ -5302,6 +5304,10 @@ class GameLoopTest(unittest.TestCase):
             async def alternatives(board, moves, seconds, history=(), best=None):
                 searched.append(best.getCode())
                 return [(board.findMoveByCode('d2d4', moves), 0.0), (board.findMoveByCode('g1f3', moves), -0.1)]
+
+            async def check(board, move, seconds):
+                checked.append((move.getCode(), len(board.moveLog)))
+                return checkedScore
 
             async def explain(payload):
                 asked.append(payload)
@@ -5320,11 +5326,13 @@ class GameLoopTest(unittest.TestCase):
                 await asyncio.sleep(0.5)
 
             stockfish.searchHintPosition, stockfish.searchAlternatives = hint, alternatives
+            stockfish.checkAlternative = check
             llm.enabled, llm.explain = lambda: True, explain
             try:
                 self.runGame(script)
             finally:
                 stockfish.searchHintPosition, stockfish.searchAlternatives = realHint, realAlternatives
+                stockfish.checkAlternative = realCheck
                 llm.enabled, llm.explain = realEnabled, realExplain
                 main.GAME_VIEW = None
             self.assertEqual(seen['hint'][0], 'e2e4')
@@ -5339,6 +5347,11 @@ class GameLoopTest(unittest.TestCase):
                 pick = next(payload for payload in asked if payload['kind'] == 'pick')
                 self.assertEqual((pick['best'], [o['san'] for o in pick['options']]), ('e4', ['d4', 'Nf3']))
                 self.assertTrue(self.proxyAccepts(pick), pick)
+                self.assertEqual(checked, [('g1f3', 0)], "the pick gets a search of its own before it shows")
+            elif checkedScore is not None:
+                self.assertIsNone(seen['hint'][1], "its own search finds the pick losing: no winning try")
+                self.assertEqual(seen['hint'][2], ("Idea.", "e4"))
+                self.assertEqual(checked, [('g1f3', 0)])
             else:
                 self.assertIsNone(seen['hint'][1])
                 self.assertEqual(seen['hint'][2], ("Idea.", "e4"))
