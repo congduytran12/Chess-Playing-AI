@@ -77,14 +77,35 @@ class ProxyTests(unittest.TestCase):
     def post(self, payload=None, **kwargs):
         return self.client.post('/api/llm', json=payload, **kwargs)
 
+    def answerTokens(self):
+        """The answer's token limit in the last request to Groq, without the room it adds for its reasoning."""
+        groq = next(provider for provider in llm.providers() if provider['name'] == 'groq')
+        return self.upstream.sent['max_tokens'] - groq['headroom']
+
+    def test_an_answer_cut_off_at_the_token_limit_keeps_its_full_sentences(self):
+        self.upstream.body = {'choices': [{'message': {'content': 'Play Nxe5. It wins a pawn and attacks the'},
+                                           'finish_reason': 'length'}]}
+        self.assertEqual(self.post(ANALYSIS).json['text'], 'Play Nxe5.')
+        self.upstream.body = {'choices': [{'message': {'content': 'Play Nxe5: you capture White\'s active knight on'},
+                                           'finish_reason': 'length'}]}
+        self.assertEqual(self.post(ANALYSIS).status_code, 502, "nothing whole is left: no answer, not half of one")
+        self.upstream.body = {'choices': [{'message': {'content': 'Play Nxe5 and win'}, 'finish_reason': 'stop'}]}
+        self.assertEqual(self.post(ANALYSIS).json['text'], 'Play Nxe5 and win', "a finished answer stays as it is")
+        self.assertEqual(llm.whole_sentences('2: Bc5 keeps tension. It targets f2, giving'), '2: Bc5 keeps tension.')
+        self.assertEqual(llm.whole_sentences('He said "go." Then'), 'He said "go."')
+        self.assertEqual(llm.whole_sentences('no end'), '')
+        self.assertGreater(next(p['headroom'] for p in llm.providers() if p['name'] == 'groq'), 0,
+                           "Groq's gpt-oss counts its reasoning against the limit, like Cloudflare's")
+
     def test_explains_a_checked_analysis_with_a_prompt_built_on_the_server(self):
         response = self.post(ANALYSIS)
         self.assertEqual((response.status_code, response.json), (200, {'text': 'Nice game.'}))
         prompt = self.upstream.sent['messages'][1]['content']
-        self.assertIn('"moves":["e2e4","e7e5","f2f3"]', prompt)
+        self.assertIn('"moves":["1. e2-e4","1... e7-e5","2. f2-f3"]', prompt,
+                      "numbered: the coach takes a move's number from the list instead of counting")
         self.assertIn('"engine_best_move":"Nf3"', prompt)
         self.assertIn('Black wins by resignation', prompt)
-        self.assertEqual(self.upstream.sent['max_tokens'], 400)
+        self.assertEqual(self.answerTokens(), 400)
 
     def test_free_text_is_not_accepted(self):
         # the endpoint is not a chatbot: a prompt of the caller's own is refused, with or without chess data
@@ -184,7 +205,7 @@ class ProxyTests(unittest.TestCase):
         facts = json.loads(prompt[prompt.index('{'):])
         self.assertEqual((facts['player_to_move'], facts['suggested_move']), ('Black', 'e5'))
         self.assertEqual(facts['evaluation'], 0.3)
-        self.assertEqual(self.upstream.sent['max_tokens'], 140)
+        self.assertEqual(self.answerTokens(), 140)
 
     def test_the_hint_is_told_where_the_pieces_stand(self):
         hint = dict(self.HINT, fen='r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 w - - 0 7', best='Re1')
@@ -239,7 +260,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual((facts['previous_moves'], facts['engine_best_reply_to_the_move_played']), (['f3'], 'g4'))
         self.assertIsNone(facts['analysis_mark'])
         self.assertNotIn('Vietnamese', prompt)
-        self.assertEqual(self.upstream.sent['max_tokens'], 220)
+        self.assertEqual(self.answerTokens(), 220)
 
     def test_a_move_comes_with_the_exact_board(self):
         # the model misreads a FEN (it once called White's rook on f8 Black's), so the pieces are spelled out
@@ -284,7 +305,7 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(facts['pawns_lost'], "not counted: a forced mate follows", "a mate's loss is only a cap")
         self.assertEqual((facts['assessment_after_move_played'], facts['assessment_of_best_move']),
                          ("a forced mate against this side", "roughly equal"))
-        self.assertEqual(self.upstream.sent['max_tokens'], 220)
+        self.assertEqual(self.answerTokens(), 220)
 
     def test_the_facts_are_in_vietnamese_for_a_vietnamese_answer(self):
         facts = self.facts(dict(self.MISTAKE, lang='vi'))
@@ -318,13 +339,13 @@ class ProxyTests(unittest.TestCase):
                                 (dict(self.MISTAKE, lang='vi'), 440)):
             self.assertEqual(self.post(payload).status_code, 200)
             self.assertIn('Write the answer in Vietnamese', self.upstream.sent['messages'][1]['content'])
-            self.assertEqual(self.upstream.sent['max_tokens'], tokens)
+            self.assertEqual(self.answerTokens(), tokens)
         for payload in (ANALYSIS, dict(ANALYSIS, lang='en'), self.MOVE):
             self.post(payload)
             self.assertNotIn('Vietnamese', self.upstream.sent['messages'][1]['content'])
-        self.assertEqual(self.upstream.sent['max_tokens'], 220)
+        self.assertEqual(self.answerTokens(), 220)
         self.post(ANALYSIS)
-        self.assertEqual(self.upstream.sent['max_tokens'], 400, "an English game summary")
+        self.assertEqual(self.answerTokens(), 400, "an English game summary")
 
     def test_a_request_about_a_move_or_mistake_is_checked_too(self):
         move, mistake = self.MOVE, self.MISTAKE
@@ -365,6 +386,84 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(codes, [200] * self.proxy.LIMIT_REQUESTS + [429, 429])
         self.assertEqual(self.post(ANALYSIS, headers={'X-Forwarded-For': '5.6.7.8'}).status_code, 200)  # another visitor
         self.assertEqual(self.post({'prompt': 'x'}, headers={'X-Forwarded-For': '1.2.3.4'}).status_code, 400)
+
+    def test_a_429_says_when_to_ask_again(self):
+        for _ in range(self.proxy.LIMIT_REQUESTS):
+            self.post(ANALYSIS, headers={'X-Forwarded-For': '9.9.9.9'})
+        limited = self.post(ANALYSIS, headers={'X-Forwarded-For': '9.9.9.9'})
+        self.assertEqual(limited.status_code, 429)
+        self.assertTrue(0 < int(limited.headers['Retry-After']) <= self.proxy.LIMIT_SECONDS)
+
+    def supabaseAt(self, users, premiumUntil='2999-01-01T00:00:00+00:00', username='someone'):
+        """A fake account service: users maps an access token to a player id; every player has the given profile.
+        Returns (the requests.get stand-in, the urls it was asked)."""
+        asked = []
+
+        class Answer:
+            def __init__(self, status, body):
+                self.status_code, self.body = status, body
+
+            def json(self):
+                return self.body
+
+        def get(url, params=None, headers=None, timeout=None):
+            asked.append(url)
+            if url.endswith('/auth/v1/user'):
+                token = headers['Authorization'].split(' ', 1)[1]
+                return Answer(200, {'id': users[token]}) if token in users else Answer(401, {'msg': 'bad token'})
+            return Answer(200, [{'id': params['id'][3:], 'username': username, 'premium_until': premiumUntil}])
+        return get, asked
+
+    def test_a_premium_player_has_a_larger_limit_of_their_own(self):
+        get, asked = self.supabaseAt({'tok-a': 'player-a'})
+        env = {'SUPABASE_URL': 'https://db.example', 'SUPABASE_SERVICE_ROLE_KEY': 'service'}
+        with mock.patch.object(self.proxy.requests, 'get', get), mock.patch.dict(os.environ, env):
+            codes = [self.post(dict(ANALYSIS, token='tok-a'), headers={'X-Forwarded-For': '7.7.7.7'}).status_code
+                     for _ in range(self.proxy.PREMIUM_LIMIT_REQUESTS + 1)]
+            self.assertEqual(codes, [200] * self.proxy.PREMIUM_LIMIT_REQUESTS + [429])
+            self.assertEqual(len(asked), 2, 'the token is checked once, then remembered')
+            # the same connection without the token still has the visitor's own limit, untouched by the player's
+            self.assertEqual(self.post(ANALYSIS, headers={'X-Forwarded-For': '7.7.7.7'}).status_code, 200)
+
+    def test_a_token_without_premium_counts_as_the_visitor(self):
+        env = {'SUPABASE_URL': 'https://db.example', 'SUPABASE_SERVICE_ROLE_KEY': 'service'}
+        expired, _ = self.supabaseAt({'tok-b': 'player-b'}, premiumUntil='2000-01-01T00:00:00+00:00')
+        with mock.patch.object(self.proxy.requests, 'get', expired), mock.patch.dict(os.environ, env):
+            for token in ('tok-b', 'not-a-token'):
+                self.proxy.visits.clear()
+                codes = [self.post(dict(ANALYSIS, token=token)).status_code
+                         for _ in range(self.proxy.LIMIT_REQUESTS + 1)]
+                self.assertEqual(codes[-1], 429, token)
+
+        def unreachable(*args, **kwargs):
+            raise self.proxy.requests.exceptions.ConnectionError('down')
+        self.proxy.visits.clear()
+        with mock.patch.object(self.proxy.requests, 'get', unreachable), mock.patch.dict(os.environ, env):
+            self.assertEqual(self.post(dict(ANALYSIS, token='tok-c')).status_code, 200,
+                             'the account service down: the coach still answers, under the visitor limit')
+
+    def test_an_admin_has_premium(self):
+        get, _ = self.supabaseAt({'tok-d': 'player-d'}, premiumUntil=None, username='CongDuyTran12')
+        env = {'SUPABASE_URL': 'https://db.example', 'SUPABASE_SERVICE_ROLE_KEY': 'service'}
+        with mock.patch.object(self.proxy.requests, 'get', get), mock.patch.dict(os.environ, env):
+            self.assertEqual(self.proxy.premiumPlayer('tok-d', time.time()), 'player-d')
+
+    def test_the_browser_sends_a_premium_players_token_and_rests_after_a_429(self):
+        analysis = {'kind': 'hint', 'lang': 'en'}
+        saved = llm.access_token
+        try:
+            llm.access_token = None
+            self.assertEqual(json.loads(llm._request_body(analysis)), analysis)
+            llm.access_token = lambda: 'tok-e'
+            self.assertEqual(json.loads(llm._request_body(analysis)), dict(analysis, token='tok-e'))
+        finally:
+            llm.access_token = saved
+        llm._proxy_rest_until[0] = time.time() + 30
+        try:
+            self.assertTrue(25 <= llm.proxy_resting() <= 30)
+        finally:
+            llm._proxy_rest_until[0] = 0.0
+        self.assertEqual(llm.proxy_resting(), 0)
 
     def test_invalid_requests_do_not_count_against_the_limit(self):
         for _ in range(self.proxy.LIMIT_REQUESTS + 5):

@@ -245,6 +245,32 @@ def parseLine(line):
         return None
 
 
+# the depth of a UCI 'info' line (0 when it names none)
+def lineDepth(line):
+    parts = line.split()
+    try:
+        return int(parts[parts.index('depth') + 1])
+    except (ValueError, IndexError):
+        return 0
+
+
+# [(move code, score in pawns)] of a multi-line search, best first, each move once, from its deepest depth that
+# reported every line: a search stopped part way through a depth has reported only some of that depth's lines, and
+# putting them beside the lines of the depth before can list one move twice, with scores from two different depths
+# byDepth: depth -> {rank -> (first move of its line, UCI score)}, as parseLine reads them
+def bestLines(byDepth):
+    if not byDepth:
+        return []
+    most = max(len(lines) for lines in byDepth.values())
+    depth = max(d for d, lines in byDepth.items() if len(lines) == most)
+    found, seen = [], set()
+    for _, (move, value) in sorted(byDepth[depth].items()):
+        if move not in seen:
+            seen.add(move)
+            found.append((move, scoreInPawns(value)))
+    return found
+
+
 # a UCI score in pawns for the side to move, on chessAi's scale (a forced mate is near +-chessAi.CHECKMATE)
 def scoreInPawns(score):
     kind, value = score
@@ -352,7 +378,7 @@ class Engine:
         self._send(go)
         self._searching = True
         score = None
-        ranked = {}  # multipv: rank -> (first move of its line, score), the latest depth's
+        ranked = {}  # multipv: depth -> {rank -> (first move of its line, score)}
         deadline = time.time() + seconds + ANSWER_GRACE
         while True:
             for line in self._take():
@@ -361,14 +387,14 @@ class Engine:
                     if lines > 1:
                         found = parseLine(line)
                         if found:
-                            ranked[found[0]] = found[1]
+                            ranked.setdefault(lineDepth(line), {})[found[0]] = found[1]
                 elif line.startswith('bestmove'):
                     self._searching = False
                     parts = line.split()
                     best = parts[1] if len(parts) > 1 and parts[1] != '(none)' else None
                     result = best, (scoreInPawns(score) if score else None)
                     if lines > 1:
-                        return result + ([(move, scoreInPawns(value)) for _, (move, value) in sorted(ranked.items())],)
+                        return result + (bestLines(ranked),)
                     return result
             if time.time() > deadline:
                 raise EngineError("no answer to 'go'")
@@ -568,9 +594,10 @@ async def findBestMove(gs, validMoves, level=None, history=()):
         move = gs.findMoveByCode(found[0], validMoves) if found and found[0] else None
         if move in candidates:
             if repeating and takesTheDraw(found[1]):
-                print("AI (%s, Stockfish): %s repeats, as playing on scores %s" % (name, repeating[0], found[1]))
+                print("AI (%s, Stockfish): %s repeats, as playing on scores %s"
+                      % (name, repeating[0].getCode(), found[1]))
                 return repeating[0]
-            print("AI (%s, Stockfish): %s score %s" % (name, move, found[1]))
+            print("AI (%s, Stockfish): %s score %s" % (name, move.getCode(), found[1]))
             return move
     move = await chessAi.findBestMove(gs, validMoves, level, history)
     if move in candidates or not repeating:

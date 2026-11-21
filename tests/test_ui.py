@@ -4526,6 +4526,12 @@ class GameLoopTest(unittest.TestCase):
         self.assertNotIn("Press H", main.emptyListNote(0, False, touch=True)[1], "a phone has no H key")
         self.assertIn("tap", main.emptyListNote(1, False, touch=True)[1])
         self.assertIn("Host", notes[(2, False, False)][1], "online setup: host or join")
+        black = main.emptyListNote(0, False, computerFirst=True)
+        self.assertEqual(black[0], "White moves first", "playing Black: not 'Your move' while the computer thinks")
+        self.assertIn("computer", black[1])
+        self.assertNotIn("Press H", main.emptyListNote(0, False, touch=True, computerFirst=True)[1])
+        self.assertEqual(main.emptyListNote(1, False, computerFirst=True), notes[(1, False, False)],
+                         "two players: the same note either way")
         try:
             for kind, height in (('landscape', None), ('portrait', 1400), ('portrait', 1662)):
                 layout = main.setLayout(kind, height)
@@ -5044,6 +5050,24 @@ class GameLoopTest(unittest.TestCase):
         self.assertTrue(main.tooltipText('practice'))
         self.assertEqual(main.MODE_OPTIONS[main.MISTAKES_MODE], "Your mistakes")
         self.assertEqual(main.panelRows(main.MISTAKES_MODE, False), main.panelRows(main.PUZZLE_MODE, False))
+
+    def test_analysis_scores_a_draw_by_rule_as_a_draw(self):
+        main = self.main
+        from engine import GameState
+        import chessAi
+        gs = GameState()
+        history = [gs.getPositionKey()]
+        self.assertIsNone(main.terminalScore(gs, gs.getValidMoves(), history), "the game goes on: the engine judges")
+        # the knights go out and back twice: the starting position stands for the third time, a draw
+        for code in ['g1f3', 'g8f6', 'f3g1', 'f6g8'] * 2:
+            gs.makeMove(gs.findMoveByCode(code, gs.getValidMoves()))
+            history.append(gs.getPositionKey())
+        self.assertEqual(main.terminalScore(gs, gs.getValidMoves(), history), chessAi.STALEMATE,
+                         "the game ended there in a draw: no engine score, which would mark the move that drew")
+        mate = GameState()
+        for code in ('f2f3', 'e7e5', 'g2g4', 'd8h4'):
+            mate.makeMove(mate.findMoveByCode(code, mate.getValidMoves()))
+        self.assertEqual(main.terminalScore(mate, mate.getValidMoves(), []), -chessAi.CHECKMATE)
 
     def test_another_move_as_good_as_the_best_solves_a_mistake(self):
         main = self.main

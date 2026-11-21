@@ -266,6 +266,10 @@ EXACT = {
         "Bạn chơi quân Đen. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô.",
     "You play Black. Send the link or the room code, then drag a piece, or tap it and then a square.":
         "Bạn chơi quân Đen. Hãy gửi liên kết hoặc mã phòng, rồi kéo một quân, hoặc chạm vào quân rồi chạm vào một ô.",
+    "The computer plays White and is thinking. Press H for How to play.":
+        "Máy chơi quân Trắng và đang suy nghĩ. Nhấn H để xem Hướng dẫn chơi.",
+    "The computer plays White and is thinking. The menu has How to play.":
+        "Máy chơi quân Trắng và đang suy nghĩ. Trong menu có phần Hướng dẫn chơi.",
     "Drag a piece, or click it and then a square. Press H for How to play.":
         "Kéo một quân, hoặc nhấp vào quân rồi nhấp vào một ô. Nhấn H để xem Hướng dẫn chơi.",
     "Drag a piece, or tap it and then a square. The menu has How to play.":

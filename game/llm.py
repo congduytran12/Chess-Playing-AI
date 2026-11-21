@@ -23,6 +23,7 @@ the Vercel project.
 import asyncio
 import concurrent.futures
 import json
+import math
 import os
 import re
 import sys
@@ -43,7 +44,8 @@ JS_HELPERS = '''
     window.chessLlmResults = {};
     window.chessLlmRequest = function(id, body) {
         fetch("/api/llm", {method: "POST", headers: {"Content-Type": "application/json"}, body: body})
-            .then(r => r.text().then(t => { window.chessLlmResults[id] = JSON.stringify({status: r.status, body: t}); }))
+            .then(r => r.text().then(t => { window.chessLlmResults[id] = JSON.stringify(
+                {status: r.status, body: t, retry: r.headers.get("Retry-After") || ""}); }))
             .catch(e => { window.chessLlmResults[id] = JSON.stringify({status: 0, body: String(e)}); });
     };
     window.chessLlmTake = function(id) {
@@ -78,6 +80,20 @@ def _content_text(content):
     return clean_text(content) if isinstance(content, str) else ""
 
 
+def whole_sentences(text):
+    """text up to the end of its last full sentence ('' when it has none): an answer cut off at the token limit,
+    shown as it came, would stop in the middle of a sentence."""
+    found = re.match(r"^(.*[.!?][\"')]*)(?=\s|$)", text or "", re.DOTALL)
+    return found.group(1).strip() if found else ""
+
+
+def choice_text(choice):
+    """The answer of one OpenAI-format choice, as plain text; one the provider cut off at its token limit
+    (finish_reason 'length') keeps its full sentences only, and none at all counts as no answer."""
+    text = _content_text(choice["message"].get("content"))
+    return whole_sentences(text) if choice.get("finish_reason") == "length" else text
+
+
 def providers():
     """The configured providers, each {name, url, key, model, extra, headroom}. All of them speak the OpenAI chat
     format. headroom is added to the answer's token limit for models that count their reasoning against it."""
@@ -87,7 +103,7 @@ def providers():
         found.append({
             "name": "groq", "key": env("GROQ_API_KEY"), "model": env("GROQ_MODEL", "openai/gpt-oss-120b"),
             "url": env("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"),
-            "extra": {"reasoning_effort": "low"}, "headroom": 0})
+            "extra": {"reasoning_effort": "low"}, "headroom": 256})  # gpt-oss counts its reasoning, as on Cloudflare
     if env("OPENROUTER_API_KEY"):
         found.append({
             "name": "openrouter", "key": env("OPENROUTER_API_KEY"),
@@ -279,6 +295,10 @@ def _prompt(move_codes, best_san, evals, marks, result, lang="en"):
             "evaluation_after": _pawns(evals[ply + 1]) if ply + 1 < len(evals) else None,
         })
     mistakes = [_in_language(m, lang) for m in mistakes]
+    # numbered as a score sheet ("20. e1-g1", "37... f8-f4"): a model counting through a long list of bare moves
+    # names the wrong move number
+    numbered = [("%d. " if ply % 2 == 0 else "%d... ") % (ply // 2 + 1) + _from_to(code)
+                for ply, code in enumerate(move_codes)]
     return (
         "You are a concise chess coach. Explain the following completed game using only "
         "the supplied Stockfish analysis. Do not invent tactics or evaluations. Mention "
@@ -286,10 +306,12 @@ def _prompt(move_codes, best_san, evals, marks, result, lang="en"):
         "mistakes, describe one strategic strength. Evaluations are in pawns from White's point of view "
         "(positive: White is better), while pawns_lost is what the side that moved gave up; give it only when it "
         "is a number. Refer to a move by its move_number and side (\"Black's 3rd move\") and write played_from_to "
-        "as the squares it joins; name the engine_best_move whenever there is one, and give lessons that follow "
+        "as the squares it joins; moves lists every move with its number (\"20. e1-g1\" is White's 20th move, "
+        "\"37... f8-f4\" Black's 37th): take a move's number from there, never count. Name the engine_best_move "
+        "whenever there is one, and give lessons that follow "
         "from the listed mistakes, not general advice. Keep the answer under 90 words and end it with a complete sentence. "
         "Return plain text, no headings or markdown." + _language_note(lang) + "\n\n"
-        + json.dumps({"moves": move_codes, "mistakes": mistakes, "result": result},
+        + json.dumps({"moves": numbered, "mistakes": mistakes, "result": result},
                      separators=(",", ":"))
     )
 
@@ -653,7 +675,7 @@ def _request_provider(provider, prompt, tokens=TOKENS["game"]):
     except (urllib.error.URLError, TimeoutError, ValueError) as error:
         raise LLMError("%s request failed: %s" % (name, error)) from error
     try:
-        text = _content_text(data["choices"][0]["message"].get("content"))
+        text = choice_text(data["choices"][0])
     except (KeyError, IndexError, TypeError, AttributeError) as error:
         raise LLMError("%s returned an invalid response" % name) from error
     return text or None
@@ -664,13 +686,37 @@ def _request(prompt, tokens=TOKENS["game"]):
     return ask_in_order(providers(), lambda p: _request_provider(p, prompt, tokens))
 
 
+# the browser's coach: who is asking (a function giving a Premium player's access token, or None; main sets it, so
+# the proxy gives them their own, larger request limit), and until when (time.time()) the proxy said to wait after
+# answering 429: until then the coach isn't asked, as the answer would be the same
+access_token = None
+_proxy_rest_until = [0.0]
+
+
+def proxy_resting():
+    """Seconds until the site's proxy takes coaching requests again after a 429, 0 when it does now."""
+    return max(0, math.ceil(_proxy_rest_until[0] - time.time()))
+
+
+def _request_body(analysis):
+    """The JSON the proxy is sent: the analysis, and a Premium player's access token when there is one."""
+    token = None
+    try:
+        token = access_token() if access_token is not None else None
+    except Exception:
+        token = None
+    return json.dumps(dict(analysis, token=token) if isinstance(token, str) and token else analysis)
+
+
 async def _request_browser(analysis):
     """Ask the site's proxy, which builds the prompt itself from this analysis (it takes no free text)."""
     if js is None:
         raise LLMError("Browser coaching is unavailable")
+    if proxy_resting():
+        raise LLMError("The coach is resting, try again in %d s" % proxy_resting())
     js.eval(JS_HELPERS)
     request_id = "coach_" + str(id(analysis))
-    js.eval("window.chessLlmRequest(%s, %s)" % (json.dumps(request_id), json.dumps(json.dumps(analysis))))
+    js.eval("window.chessLlmRequest(%s, %s)" % (json.dumps(request_id), json.dumps(_request_body(analysis))))
     deadline = asyncio.get_running_loop().time() + 20
     while True:
         raw = js.eval("window.chessLlmTake(%s)" % json.dumps(request_id))
@@ -685,6 +731,8 @@ async def _request_browser(analysis):
         status = int(reply["status"])
     except (ValueError, TypeError, KeyError) as error:
         raise LLMError("The coaching server returned an invalid response") from error
+    if status == 429:  # the proxy's limit: wait as long as it says (a minute when it doesn't say)
+        _proxy_rest_until[0] = time.time() + (retry_after_seconds(reply.get("retry")) or 60)
     if status != 200:
         message = data.get("error") if isinstance(data, dict) else None
         raise LLMError(message or "The coaching server returned an error")

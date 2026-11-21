@@ -40,6 +40,8 @@ import settings
 import browser
 from textfield import TextField
 from account import account, AccountError
+# the site's coach gives a Premium player (unlimited hints) their own, larger request limit: it is shown who asks
+llm.access_token = lambda: account.token if account.signedIn and account.isPremium else None
 import random
 import string
 import time
@@ -1292,12 +1294,12 @@ async def main():
             moves = board.getValidMoves()
             history = [board.getPositionKey()]
             for i in range(len(log) + 1):
-                if moves:
+                score = terminalScore(board, moves, history)
+                if score is None:
                     score, best, _ = await stockfish.analyzePosition(board, moves, ANALYSIS_SECONDS, history=history)
                     result['best'].append(best.getCode())
                     result['bestSan'].append(sanWithCheck(board, best, moves))
                 else:
-                    score = -chessAi.CHECKMATE if board.inCheck else chessAi.STALEMATE
                     result['best'].append(None)
                     result['bestSan'].append(None)
                 result['evals'].append(score if board.whiteToMove else -score)  # from White's point of view
@@ -3840,7 +3842,7 @@ async def main():
             note = (mistakesNote(mistakeSet, account.signedIn) if currentModeIndex == MISTAKES_MODE
                     else emptyListNote(currentModeIndex, networkConnected, guest, browser.touchScreen(),
                                        ourColor() if multiplayerMode and networkConnected else None,
-                                       opponentSeen is not None))
+                                       opponentSeen is not None, playerBlackHuman and not playerWhiteHuman))
             drawEmptyListNote(screen, areas['list'], note)
         reviewScroll = False
         if gameOver:  # the shown position, its evaluation and the analysis, and the evaluation graph
@@ -5623,8 +5625,10 @@ def drawPuzzleInfo(screen, rect, lines):
 
 
 # what the move list says before the first move, as (heading, text): how to move, and what to do online
-# touch: a phone or tablet (tap, and no keyboard for the How to play key)
-def emptyListNote(modeIndex, connected, guest=False, touch=False, color=None, opponentHere=False):
+# touch: a phone or tablet (tap, and no keyboard for the How to play key); computerFirst: against the computer, the
+# player has Black, so the computer is thinking about the first move
+def emptyListNote(modeIndex, connected, guest=False, touch=False, color=None, opponentHere=False,
+                  computerFirst=False):
     moving = "Drag a piece, or %s it and then a square." % ("tap" if touch else "click")
     if modeIndex == 2 and not connected:
         return ("Play online",
@@ -5639,6 +5643,9 @@ def emptyListNote(modeIndex, connected, guest=False, touch=False, color=None, op
                 + moving[1:])
     if modeIndex == 1:
         return ("White moves first", moving)
+    if modeIndex == 0 and computerFirst:
+        return ("White moves first", "The computer plays White and is thinking. "
+                + ("The menu has How to play." if touch else "Press H for How to play."))
     return ("Your move", moving + " " + ("The menu has How to play." if touch else "Press H for How to play."))
 
 
@@ -6857,6 +6864,18 @@ def getDrawReason(gs, positionHistory):
         return 'Draw by 50-move rule'
     if gs.insufficientMaterial():
         return 'Draw by insufficient material'
+    return None
+
+
+# the score (for the side to move, in pawns) of a position where the game is over, for the analysis: checkmate,
+# stalemate, or a draw by rule (threefold repetition, 50 moves, too little material), which ends the game there
+# whatever an engine would make of playing on; None while the game goes on. moves: the position's legal moves,
+# positionHistory: the position keys up to it, as getDrawReason reads them
+def terminalScore(gs, moves, positionHistory):
+    if not moves:
+        return -chessAi.CHECKMATE if gs.inCheck else chessAi.STALEMATE
+    if getDrawReason(gs, positionHistory):
+        return chessAi.STALEMATE
     return None
 
 

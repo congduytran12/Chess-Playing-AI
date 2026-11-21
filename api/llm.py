@@ -6,12 +6,14 @@ built here, by game/llm.py's own _prompt, from data checked to be chess data. So
 general chatbot with the project's key, whatever is posted to it.
 """
 
+import hashlib
 import importlib.util
 import math
 import os
 import re
 import threading
 import time
+from datetime import datetime, timezone
 
 import requests
 from flask import Flask, jsonify, request
@@ -37,8 +39,17 @@ MAX_NUMBER = 1000000
 # Explaining single moves is a request each, so the limit is roomier than a game summary alone would need
 LIMIT_REQUESTS = 30
 LIMIT_SECONDS = 600
+# a Premium player (unlimited hints) counts on their own, with room for a hint's explanation and the coach's pick
+# on every move of a game played from hints (about two requests every 12 s)
+PREMIUM_LIMIT_REQUESTS = 120
 visits = {}
 visitsLock = threading.Lock()
+# who a Premium access token belongs to, remembered for a while so a hint doesn't wait on the account service each
+# time: sha256 of the token -> (checked at, the player's id, or None when it isn't a Premium player's)
+PREMIUM_CACHE_SECONDS = 600
+premiumCache = {}
+premiumLock = threading.Lock()
+ADMIN_USERNAMES = {'congduytran12'}  # as api/account.py: an admin has Premium
 
 
 def loadCoach():
@@ -74,7 +85,10 @@ def askProvider(provider, prompt, tokens):
     if response.status_code != 200:
         raise ValueError("%s returned status %s" % (provider["name"], response.status_code))
     try:
-        text = _content_text(response.json()["choices"][0]["message"].get("content"))
+        choice = response.json()["choices"][0]
+        text = _content_text(choice["message"].get("content"))
+        if choice.get("finish_reason") == "length" and coach_module is not None:
+            text = coach_module.whole_sentences(text)  # cut off at the token limit: its full sentences only
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise ValueError("%s returned an invalid response" % provider["name"])
     if not text:
@@ -207,18 +221,76 @@ def checkedRequest(payload):
     return None if data is None else (kind, lang, data)
 
 
-def tooMany(visitor, now):
+def tooMany(visitor, now, limit=LIMIT_REQUESTS):
+    """0 when the visitor may ask now (and counts the request), else the seconds until they may ask again."""
     with visitsLock:
         recent = [t for t in visits.get(visitor, []) if now - t < LIMIT_SECONDS]
-        if len(recent) >= LIMIT_REQUESTS:
+        if len(recent) >= limit:
             visits[visitor] = recent
-            return True
+            return max(1, math.ceil(recent[len(recent) - limit] + LIMIT_SECONDS - now))
         recent.append(now)
         visits[visitor] = recent
         if len(visits) > 5000:  # forget visitors who haven't come for a while
             for key in [k for k, v in visits.items() if not v or now - v[-1] >= LIMIT_SECONDS]:
                 del visits[key]
-        return False
+        return 0
+
+
+def _parseTime(value):
+    """A timestamp from the database (ISO 8601, any number of digits after the second's point), or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    value = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], value.replace("Z", "+00:00"))
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _lookUpPremium(token):
+    """The id of the Premium player this access token signs in, or None: no account service configured, a token
+    that doesn't sign in, no Premium, or the service unreachable (the visitor's own limit applies then)."""
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        user = requests.get(url + "/auth/v1/user", headers={"apikey": key, "Authorization": "Bearer " + token},
+                            timeout=5)
+        if user.status_code != 200:
+            return None
+        userId = user.json().get("id")
+        if not isinstance(userId, str) or not userId:
+            return None
+        rows = requests.get(url + "/rest/v1/profiles", params={"id": "eq." + userId, "select": "*"},
+                            headers={"apikey": key, "Authorization": "Bearer " + key}, timeout=5)
+        if rows.status_code != 200 or not isinstance(rows.json(), list) or not rows.json():
+            return None
+        profile = rows.json()[0]
+    except (requests.exceptions.RequestException, ValueError, AttributeError):
+        return None
+    until = _parseTime(profile.get("premium_until"))
+    admin = str(profile.get("username") or "").lower() in ADMIN_USERNAMES
+    return userId if admin or (until is not None and until > datetime.now(timezone.utc)) else None
+
+
+def premiumPlayer(token, now):
+    """The id of the Premium player whose access token was sent with a request, or None (see _lookUpPremium)."""
+    if not isinstance(token, str) or not token or len(token) > 4096:
+        return None
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with premiumLock:
+        known = premiumCache.get(digest)
+    if known is not None and now - known[0] < PREMIUM_CACHE_SECONDS:
+        return known[1]
+    player = _lookUpPremium(token)
+    with premiumLock:
+        if len(premiumCache) > 2000:  # forget tokens checked a while ago
+            for key in [k for k, v in premiumCache.items() if now - v[0] >= PREMIUM_CACHE_SECONDS]:
+                del premiumCache[key]
+        premiumCache[digest] = (now, player)
+    return player
 
 
 def visitorOf(req):
@@ -239,8 +311,11 @@ def coach():
     chosen = coach_module.providers() if coach_module is not None else []
     if not chosen:
         return jsonify(error="Browser coaching is not configured"), 503
-    if tooMany(visitorOf(request), time.time()):
-        return jsonify(error="Too many coaching requests, try again later"), 429
+    now = time.time()
+    player = premiumPlayer(payload.get("token"), now)
+    wait = tooMany("premium:" + player, now, PREMIUM_LIMIT_REQUESTS) if player else tooMany(visitorOf(request), now)
+    if wait:
+        return jsonify(error="Too many coaching requests, try again later"), 429, {"Retry-After": str(wait)}
     prompt = coach_module.prompt_for(kind, data, lang)
     tokens = coach_module.max_tokens(kind, lang)
     try:

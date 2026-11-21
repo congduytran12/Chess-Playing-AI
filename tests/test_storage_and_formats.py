@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 
 import support  # noqa: F401  (puts game/ on the path)
@@ -220,6 +221,24 @@ class AccountClientTest(unittest.TestCase):
             return answer
         client._post = post
         return client
+
+    def test_the_access_token_is_refreshed_before_it_runs_out(self):
+        fresh = {'token': "t2", 'refresh': "r2", 'expires_in': 3600, 'profile': {'id': "u", 'username': "duy"}}
+        client = self.client({'refresh': fresh, 'save_game': {'id': 7}})
+        client._signedInWith({'token': "t1", 'refresh': "r1", 'expires_in': 3600, 'profile': fresh['profile']})
+        asyncio.run(client._authed('save_game'))
+        self.assertEqual(client.calls, ['save_game'], "a token with an hour left is used as it is")
+        client.tokenExpires = time.monotonic() - 1  # nearly an hour later
+        asyncio.run(client._authed('save_game'))
+        self.assertEqual(client.calls, ['save_game', 'refresh', 'save_game'], "refreshed first: no 401 to recover from")
+        self.assertEqual(client.token, "t2")
+        self.assertGreater(client.tokenExpires, time.monotonic() + 3000)
+        # the server unreachable for the refresh: the request still goes out with the token it has
+        client = self.client({'refresh': account.AccountError("Can't reach the server", 0), 'save_game': {'id': 8}})
+        client._signedInWith({'token': "t1", 'refresh': "r1", 'profile': fresh['profile']})
+        client.tokenExpires = 0.0
+        self.assertEqual(asyncio.run(client._authed('save_game')), {'id': 8})
+        self.assertEqual(client.calls, ['refresh', 'save_game'])
 
     def test_a_saved_password_stays_saved_when_signing_in_fails(self):
         signedIn = {'token': "t", 'refresh': "r2", 'profile': {'id': "u", 'username': "duy", 'rating': 1200}}

@@ -58,6 +58,8 @@ FAKE_ENGINE = textwrap.dedent('''
                 say('info depth 5 multipv 1 score cp 10 upperbound pv e2e4')
                 for rank, (cp, move) in enumerate([(10, 'e2e4'), (5, 'd2d4'), (-30, 'a2a3'), (-200, 'h2h3')], 1):
                     say('info depth 6 multipv %d score cp %d pv %s' % (rank, cp, move))
+                # stopped part way through depth 7: one line of it, which a mix of depths would list twice
+                say('info depth 7 multipv 1 score cp 8 pv d2d4')
                 say('bestmove e2e4')
             else:
                 say('info depth 5 score cp 10 upperbound pv a2a3')
@@ -126,6 +128,15 @@ class StockfishTest(unittest.TestCase):
         self.assertIsNone(stockfish.parseLine('info depth 6 multipv 2 score cp -30 lowerbound pv a2a3'), "a bound")
         self.assertIsNone(stockfish.parseLine('info depth 6 score cp -30 pv a2a3'), "no rank")
         self.assertIsNone(stockfish.parseLine('info string NNUE enabled'))
+        self.assertEqual(stockfish.lineDepth('info depth 17 seldepth 20 multipv 1 score cp 3 pv e2e4'), 17)
+        self.assertEqual(stockfish.lineDepth('info string NNUE enabled'), 0)
+        # depth 9 finished, depth 10 stopped after its first line: depth 9's lines, d3 once
+        byDepth = {9: {1: ('d2d3', ('cp', 4)), 2: ('b1c3', ('cp', 0)), 3: ('d1e2', ('cp', -23))},
+                   10: {1: ('b1c3', ('cp', 6))}}
+        self.assertEqual(stockfish.bestLines(byDepth), [('d2d3', 0.04), ('b1c3', 0.0), ('d1e2', -0.23)])
+        self.assertEqual(stockfish.bestLines({5: {1: ('e2e4', ('cp', 10)), 2: ('e2e4', ('cp', 9))}}),
+                         [('e2e4', 0.1)], "a move listed once")
+        self.assertEqual(stockfish.bestLines({}), [])
         self.assertTrue(stockfish.isDrawish(0.0) and stockfish.isDrawish(-0.3) and stockfish.isDrawish(0.3))
         self.assertFalse(stockfish.isDrawish(0.31) or stockfish.isDrawish(-1.5) or stockfish.isDrawish(None))
 

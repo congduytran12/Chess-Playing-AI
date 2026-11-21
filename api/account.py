@@ -149,8 +149,9 @@ def getProfile(userId):
 
 
 def signedIn(session):
+    # expires_in: the access token's lifetime in seconds, so the game refreshes it before it runs out
     return {'token': session['access_token'], 'refresh': session['refresh_token'],
-            'profile': getProfile(session['user']['id'])}
+            'expires_in': session.get('expires_in'), 'profile': getProfile(session['user']['id'])}
 
 
 def register(data):

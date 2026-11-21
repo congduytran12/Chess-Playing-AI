@@ -21,6 +21,8 @@ if WASM:
 # the browser build calls its own site; the desktop game calls the deployed one (override with CHESS_API_URL)
 API_URL = "/api/account" if WASM else os.environ.get('CHESS_API_URL', "https://chess-playing-ai.vercel.app") + "/api/account"
 REQUEST_SECONDS = 20
+TOKEN_LIFETIME = 3600  # seconds an access token lasts when the server doesn't say (Supabase's default)
+TOKEN_MARGIN = 120  # it is refreshed this long before it runs out
 STORAGE_KEY = "chess_ai_account"
 STORAGE_FILE = os.path.join(os.path.expanduser("~"), ".chess-playing-ai-account.json")  # desktop only
 
@@ -49,6 +51,7 @@ class AccountError(Exception):
 class Account:
     def __init__(self):
         self.token = None  # access token, valid for about an hour
+        self.tokenExpires = 0.0  # time.monotonic() at which the token is refreshed before the next request
         self.refreshToken = None
         self.profile = None  # {'id', 'username', 'rating', 'rated_games', 'admin', 'premium', 'premium_until'}
         self.stats = {}  # 'ai0'..'ai4' / 'online' -> {'won', 'lost', 'drawn'}
@@ -114,10 +117,18 @@ class Account:
             raise AccountError(data.get('error') or ("Can't reach the server" if status == 0 else "Server error %d" % status), status)
         return data
 
-    # a signed-in request; an expired access token is refreshed once and the request retried
+    # a signed-in request; a token about to run out is refreshed first (so the request isn't refused for it), and
+    # one the server refuses as expired anyway is refreshed once and the request retried
     async def _authed(self, action, **fields):
         if not self.token:
             raise AccountError("Not signed in", 401)
+        if self.refreshToken and time.monotonic() >= self.tokenExpires:
+            try:
+                await self._refresh()
+            except AccountError as e:
+                if e.status == 401 or not self.token:
+                    raise  # the refresh token is refused too: signed out
+                # the server can't be reached for now: the request is tried with the token as it is
         try:
             return await self._post(dict(fields, action=action, token=self.token))
         except AccountError as e:
@@ -140,6 +151,9 @@ class Account:
 
     def _signedInWith(self, data):
         self.token = data['token']
+        lifetime = data.get('expires_in')
+        lifetime = lifetime if isinstance(lifetime, (int, float)) and lifetime > 0 else TOKEN_LIFETIME
+        self.tokenExpires = time.monotonic() + max(lifetime - TOKEN_MARGIN, lifetime / 2)
         self.refreshToken = data['refresh']
         self.profile = data['profile']
         self._store(self.refreshToken)
