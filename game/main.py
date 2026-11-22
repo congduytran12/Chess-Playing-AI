@@ -422,7 +422,7 @@ SELECTED_ALPHA = 175
 HINT_COLOR = (64, 160, 220)
 COORD_SIZE = 17  # the board's rank and file letters (scaled up in portrait, where the board shows smaller)
 ARROW_COLOR = HINT_COLOR + (190,)  # hint arrows, and the better move in the analysis
-ALT_ARROW_COLOR = (214, 118, 0, 200)  # the coach's winning try, next to the hint's arrow
+ALT_ARROW_COLOR = (214, 118, 0, 200)  # the winning try, next to the hint's arrow
 ARROW_LAYER = None  # see-through board-sized surface the arrows are drawn on, made on first use
 MOVE_MARKER_COLOR = (0, 0, 0, 62)  # dots and rings showing where the selected piece can go (dark: any board)
 MOVE_MARKERS = {}  # 'dot' / 'ring' surfaces, made on first use
@@ -1191,7 +1191,7 @@ async def main():
     hintPly = 0  # the number of moves in the position the hint is for
     hintIdea = None  # {'text': str, 'san': str, 'open': bool} strategic hint from the coach
     hintIdeaTask = None  # background task fetching the coach's strategic explanation
-    hintAlt = None  # {'move': Move, 'san': str, 'score': float, 'text': str}: the coach's winning try, drawish positions
+    hintAlt = None  # {'move': Move, 'san': str, 'score': float, 'text': str}: the winning try, drawish positions
     hintAltTask = None  # background task: Stockfish's safe alternatives, and the coach's pick among them
     puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
@@ -1462,7 +1462,7 @@ async def main():
         altOpen = hintAlt is not None and hintAlt.get('open')
         if not gameOver and (ideaOpen or altOpen):
             parts = [hintIdea['text']] if ideaOpen else []
-            if altOpen:  # a drawish position: the coach's winning try, after the idea of the hint
+            if altOpen:  # a drawish position: the winning try, after the idea of the hint
                 parts.append(i18n.tr("To play for a win, try %s:" % hintAlt['san']) + " " + hintAlt['text'])
 
             def closeHintCard():
@@ -3579,8 +3579,9 @@ async def main():
                 hintState = 'running'
                 hintPly = len(gs.moveLog)
                 board = copyGame(gs)  # a copy: the player may move on while it searches
+                moves = board.getValidMoves()
                 hintTask = asyncio.ensure_future(stockfish.searchHintPosition(
-                    board, board.getValidMoves(), HINT_SECONDS, history=list(positionHistory)))
+                    board, moves, stockfish.hintSeconds(board, moves), history=list(positionHistory)))
             else:
                 hintState = None
         if hintTask is not None and (hintState != 'running' or len(gs.moveLog) != hintPly or gameOver):
@@ -3612,20 +3613,21 @@ async def main():
                     hints.use()
                     showStatus("Hint: %s (%d left today)" % (san, hints.remaining())
                                + (" - this game won't be rated" if unrated else ""), 4000)
+                historySans = [m.san for m in gs.moveLog if m.san]
+                lang = i18n.language()
                 if llm.enabled():
                     if hintIdeaTask is not None:
                         hintIdeaTask.cancel()
-                    historySans = [m.san for m in gs.moveLog if m.san]
-                    lang = i18n.language()
                     payload = llm.hint_payload(lang, gs.toFen(), san, historySans, evalScore)
                     hintIdeaTask = asyncio.ensure_future(llm.explain(payload))
-                    # a drawish position: the coach also picks a winning try from the moves Stockfish rates safe
-                    if hintAltTask is not None:
-                        hintAltTask.cancel()
-                    hintAltTask = hintAlt = None
-                    if stockfish.isDrawish(evalScore):
-                        hintAltTask = asyncio.ensure_future(hintAlternative(
-                            copyGame(gs), list(positionHistory), suggestion, san, evalScore, historySans, lang))
+                # a drawish position: Stockfish also looks for a move with better winning chances (the coach, when
+                # there is one, explains it)
+                if hintAltTask is not None:
+                    hintAltTask.cancel()
+                hintAltTask = hintAlt = None
+                if stockfish.isDrawish(evalScore):
+                    hintAltTask = asyncio.ensure_future(hintWinningTry(
+                        copyGame(gs), list(positionHistory), suggestion, san, evalScore, historySans, lang))
 
         # genetare new set of valid move if valid move is made
         if moveMade:
@@ -3783,7 +3785,7 @@ async def main():
         # a hint is for the game in progress (it may end by resigning), in the live position
         if hintMove is not None and not gameOver and reviewPly is None:
             arrows.append(((hintMove.startRow, hintMove.startCol), (hintMove.endRow, hintMove.endCol)))
-            if hintAlt is not None:  # the coach's winning try, in another color
+            if hintAlt is not None:  # the winning try, in another color
                 alt = hintAlt['move']
                 arrows.append(((alt.startRow, alt.startCol), (alt.endRow, alt.endCol), ALT_ARROW_COLOR))
         if gameOver and shownPly() - 1 in marks and analysis['best'][shownPly() - 1]:
@@ -5589,30 +5591,32 @@ async def explainMistake(mistake, lang):
     return await llm.explain(await mistakeFacts(mistake, lang))
 
 
-# a drawish position: the coach's winning try beside the hint. Stockfish lists the moves it rates nearly as well as
-# its best (stockfish.searchAlternatives); the coach only picks a number from that list (llm.parse_pick), so the move
-# is always legal; before it is shown it gets a search of its own (stockfish.checkAlternative), and a move that turns
-# out worse than the hint by more than stockfish.ALTERNATIVE_MARGIN is dropped. board is a copy of the game;
-# hintMove the move already suggested, hintSan its notation, score the hint's score (for the side to move).
-# Returns {'move', 'san', 'score', 'text', 'hint', 'open'}, or None when there is no safe alternative or the coach
-# chose none
-async def hintAlternative(board, history, hintMove, hintSan, score, historySans, lang):
-    moves = board.getValidMoves()
-    options = await stockfish.searchAlternatives(board, moves, HINT_SECONDS, history=history, best=hintMove)
-    if not options:
+# a drawish position: the winning try beside the hint. Stockfish picks it by its own chances of winning, from the
+# moves it rates nearly as well as its best, and searches it again on its own before it is shown
+# (stockfish.searchWinningTry); the coach, when there is one, only explains the move, and without it the card says
+# how much better its winning chances are. board is a copy of the game; hintMove the move already suggested, hintSan
+# its notation, score the hint's score (for the side to move). Returns {'move', 'san', 'score', 'text', 'hint',
+# 'open'}, or None when there is no winning try
+async def hintWinningTry(board, history, hintMove, hintSan, score, historySans, lang):
+    found = await stockfish.searchWinningTry(board, board.getValidMoves(), HINT_SECONDS, history=history,
+                                             best=hintMove, score=score)
+    if found is None:
         return None
-    sans = [board.getSan(move, moves) for move, _ in options]
-    answer = await llm.explain(llm.pick_payload(
-        lang, board.toFen(), hintSan, [(san, value) for san, (_, value) in zip(sans, options)], historySans, score))
-    picked = llm.parse_pick(answer, len(options))
-    if picked is None:
-        return None
-    index, reason = picked
-    checked = await stockfish.checkAlternative(board, options[index][0], HINT_SECONDS)
-    if not stockfish.alternativeHolds(checked, score):
-        return None  # not as safe as the shared search made it look: the hint stands alone
-    return {'move': options[index][0], 'san': sans[index], 'score': checked, 'text': reason,
-            'hint': hintSan, 'open': True}
+    san = board.getSan(found['move'], board.getValidMoves())
+    text = None
+    if llm.enabled():
+        try:
+            text = await llm.explain(llm.hint_payload(lang, board.toFen(), san, historySans, found['score']))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # the coach is unavailable: the try still shows, with its numbers
+            print("Main: the coach could not explain the winning try -", error)
+    if not text:
+        text = i18n.tr(WINNING_TRY_TEXT % (round(found['wdl'][0] / 10), round(found['hintWdl'][0] / 10)))
+    return {'move': found['move'], 'san': san, 'score': found['score'], 'text': text, 'hint': hintSan, 'open': True}
+
+
+WINNING_TRY_TEXT = "Stockfish gives it %d winning chances in 100, against %d for the hint."
 
 
 # the status line for a coach that failed: the service's own words can be long (a JSON body), so it keeps the start

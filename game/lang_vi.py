@@ -430,6 +430,8 @@ TEMPLATES = {
     "Hint: %s": "Gợi ý: {0}", "Hint: %s (%d left today)": "Gợi ý: {0} (hôm nay còn {1})",
     "Hint: %s (%d left)": "Gợi ý: {0} (còn {1})",
     "To play for a win, try %s:": "Để chơi tìm cách thắng, hãy thử {0}:",
+    "Stockfish gives it %d winning chances in 100, against %d for the hint.":
+        "Stockfish cho nước này {0} cơ hội thắng trên 100, so với {1} của gợi ý.",
     "Find the best move for %s": "Tìm nước đi tốt nhất cho quân {0}", "Rematch: you play %s": "Đấu lại: bạn chơi quân {0}",
     "Puzzle %d  ·  You %d": "Câu đố {0}  ·  Bạn {1}", "You (%d)": "Bạn ({0})", "Puzzle (%d)": "Câu đố ({0})",
     "Streak %d": "Chuỗi thắng {0}", "Solved! Rating %+d": "Đã giải được! Điểm {0}",

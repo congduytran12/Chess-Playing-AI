@@ -254,20 +254,32 @@ def lineDepth(line):
         return 0
 
 
-# [(move code, score in pawns)] of a multi-line search, best first, each move once, from its deepest depth that
-# reported every line: a search stopped part way through a depth has reported only some of that depth's lines, and
-# putting them beside the lines of the depth before can list one move twice, with scores from two different depths
-# byDepth: depth -> {rank -> (first move of its line, UCI score)}, as parseLine reads them
+# the (win, draw, loss) chances in per mille, for the side to move, of a UCI 'info' line sent with UCI_ShowWDL
+# (None when it has none)
+def parseWdl(line):
+    parts = line.split()
+    try:
+        i = parts.index('wdl')
+        return int(parts[i + 1]), int(parts[i + 2]), int(parts[i + 3])
+    except (ValueError, IndexError):
+        return None
+
+
+# [(move code, score in pawns, wdl or None)] of a multi-line search, best first, each move once, from its deepest
+# depth that reported every line: a search stopped part way through a depth has reported only some of that depth's
+# lines, and putting them beside the lines of the depth before can list one move twice, with scores from two different
+# depths. byDepth: depth -> {rank -> (first move of its line, UCI score[, wdl])}, as parseLine and parseWdl read them
 def bestLines(byDepth):
     if not byDepth:
         return []
     most = max(len(lines) for lines in byDepth.values())
     depth = max(d for d, lines in byDepth.items() if len(lines) == most)
     found, seen = [], set()
-    for _, (move, value) in sorted(byDepth[depth].items()):
+    for _, line in sorted(byDepth[depth].items()):
+        move, value = line[0], line[1]
         if move not in seen:
             seen.add(move)
-            found.append((move, scoreInPawns(value)))
+            found.append((move, scoreInPawns(value), line[2] if len(line) > 2 else None))
     return found
 
 
@@ -283,8 +295,9 @@ def scoreInPawns(score):
 
 class Engine:
     def __init__(self, command=None, worker_url=WORKER_URL, channel='main', start_seconds=START_SECONDS, saved=False,
-                 hint=False):
+                 hint=False, threads=None):
         self.command = command  # desktop: the command to run (a list); None: findExecutable()
+        self.fixedThreads = threads  # desktop: the threads to run on, instead of what the machine allows (tools)
         self.worker_url = worker_url
         self.channel = channel
         self.start_seconds = start_seconds
@@ -378,7 +391,7 @@ class Engine:
         self._send(go)
         self._searching = True
         score = None
-        ranked = {}  # multipv: depth -> {rank -> (first move of its line, score)}
+        ranked = {}  # multipv: depth -> {rank -> (first move of its line, score, wdl or None)}
         deadline = time.time() + seconds + ANSWER_GRACE
         while True:
             for line in self._take():
@@ -387,7 +400,7 @@ class Engine:
                     if lines > 1:
                         found = parseLine(line)
                         if found:
-                            ranked.setdefault(lineDepth(line), {})[found[0]] = found[1]
+                            ranked.setdefault(lineDepth(line), {})[found[0]] = found[1] + (parseWdl(line),)
                 elif line.startswith('bestmove'):
                     self._searching = False
                     parts = line.split()
@@ -428,10 +441,13 @@ class Engine:
                 if line.startswith('id name '):
                     self.name = line[len('id name '):]
             if not WASM:
-                self.threads = hintThreads(os.cpu_count()) if self.hint else max(1, min(4, (os.cpu_count() or 2) // 2))
+                self.threads = self.fixedThreads or (hintThreads(os.cpu_count()) if self.hint
+                                                     else max(1, min(4, (os.cpu_count() or 2) // 2)))
             self._send('setoption name Hash value %d' % (hintHash() if self.hint and self.threads > 1 else HASH_MB))
             if not WASM or self.threads > 1:
                 self._send('setoption name Threads value %d' % self.threads)
+            if self.hint:  # each line's win/draw/loss chances, for the winning try (searchWinningTry)
+                self._send('setoption name UCI_ShowWDL value true')
             self._send('isready')
             await self._waitFor('readyok', self.start_seconds)
             self.state = 'ready'
@@ -638,42 +654,92 @@ async def searchHintPosition(gs, validMoves, seconds, history=()):
     return await searchPosition(gs, validMoves, seconds, history=history)
 
 
+# the hint's thinking time: a forced reply needs little, the opening is well trodden, and the more pieces (and moves)
+# a position has, the more a deeper search finds in it; that is where games against the computer are won
+HINT_FORCED_SECONDS = 1.5  # two legal moves or fewer
+HINT_OPENING_SECONDS = 4.0  # the first HINT_OPENING_PLIES plies
+HINT_OPENING_PLIES = 12
+HINT_BASE_SECONDS = 5.0  # a bare ending
+HINT_MAX_SECONDS = 12.0  # a full middlegame
+PIECE_WEIGHT = {'Q': 4, 'R': 2, 'B': 1, 'N': 1}  # a side's full set of pieces weighs 12
+
+
+def hintSeconds(gs, validMoves):
+    """The seconds a hint searches for in this position (validMoves: its legal moves)."""
+    if len(validMoves) <= 2:
+        return HINT_FORCED_SECONDS
+    if len(gs.moveLog) < HINT_OPENING_PLIES and gs.startFen is None:
+        return HINT_OPENING_SECONDS
+    material = sum(PIECE_WEIGHT.get(square[1], 0) for row in gs.board for square in row if square != '--')
+    complexity = 0.7 * min(1.0, material / 24) + 0.3 * min(1.0, len(validMoves) / 40)
+    return round(min(HINT_MAX_SECONDS, HINT_BASE_SECONDS + (HINT_MAX_SECONDS - HINT_BASE_SECONDS) * complexity), 1)
+
+
 DRAWISH_MARGIN = 0.3  # a position this close to equal (in pawns) is drawish: the hint offers a winning try as well
-ALTERNATIVE_MARGIN = 0.5  # an alternative may score this much less than the best move (in pawns) and still be safe
-ALTERNATIVE_LINES = 4  # the best move and up to three alternatives
+ALTERNATIVE_MARGIN = 0.5  # the winning try, searched on its own, may score this much less than the best move (pawns)
+ALTERNATIVE_LINES = 4  # the best move and up to three others
+TRY_MARGIN = 0.3  # a winning try is one of the lines this close (in pawns) to the best line
+TRY_MIN_GAIN = 15  # ... whose chance of winning beats the hint's by this much (per mille), or there is no try
 
 
 def isDrawish(score):
     return score is not None and abs(score) <= DRAWISH_MARGIN
 
 
-async def searchAlternatives(gs, validMoves, seconds, history=(), best=None):
-    """The moves Stockfish rates nearly as well as its best, for the coach to pick a winning try from in a drawish
-    position: [(Move, score in pawns for the side to move)], best first, without best (the move already suggested).
-    Only the hint engine's full build searches; empty when it isn't ready, fails, or has no safe alternative."""
+def pickWinningTry(lines, best=None):
+    """The winning try among the lines of a multi-line search ([(move code, score in pawns, wdl or None)], best first,
+    as bestLines gives them): of the lines within TRY_MARGIN of the best, not best (the hint's move code) and with no
+    forced mate either way, the one Stockfish gives the best chance of winning (its wdl's first number; fewer losses
+    break a tie), when that chance beats the hint's own by TRY_MIN_GAIN. (move code, score, wdl, the hint's wdl), or
+    None when no line does."""
+    if not lines:
+        return None
+    top = lines[0][1]
+    hintWdl = next((wdl for code, _, wdl in lines if code == best), None) or lines[0][2]
+    if hintWdl is None:
+        return None
+    candidates = [(code, score, wdl) for code, score, wdl in lines
+                  if code != best and wdl is not None and score >= top - TRY_MARGIN
+                  and abs(score) < chessAi.MATE_THRESHOLD]
+    if not candidates:
+        return None
+    code, score, wdl = max(candidates, key=lambda line: (line[2][0], -line[2][2]))
+    if wdl[0] < hintWdl[0] + TRY_MIN_GAIN:
+        return None
+    return code, score, wdl, hintWdl
+
+
+async def searchWinningTry(gs, validMoves, seconds, history=(), best=None, score=None):
+    """In a drawish position, the move that plays for a win beside the hint (best, the Move already suggested; score,
+    its score in pawns for the side to move): Stockfish's lines within TRY_MARGIN of its best, from one multi-line
+    search with their win/draw/loss chances, give the try (pickWinningTry), which then gets a search of its own
+    (checkAlternative) and is kept only if it holds (alternativeHolds). {'move', 'score', 'wdl', 'hintWdl'} (wdl in per
+    mille for the side to move), or None: no try, the hint engine not ready, or a try that doesn't hold."""
     if len(validMoves) < 2 or not await hintEngine.ready(0):
-        return []
+        return None
     candidates = nonRepetitionMoves(gs, validMoves, history)
     found = await hintEngine.go(moveCodes(gs), seconds, start=gs.startFen, multipv=ALTERNATIVE_LINES,
                                 search_moves=[move.getCode() for move in candidates])
     if not found or len(found) < 3 or not found[2]:
-        return []
-    top = found[2][0][1]
-    alternatives = []
-    for code, score in found[2]:
-        move = gs.findMoveByCode(code, validMoves)
-        if move is None or (best is not None and move.getCode() == best.getCode()):
-            continue
-        if score >= top - ALTERNATIVE_MARGIN and abs(score) < chessAi.MATE_THRESHOLD:  # no forced mate, either way
-            alternatives.append((move, score))
-    return alternatives
+        return None
+    picked = pickWinningTry(found[2], best.getCode() if best is not None else None)
+    if picked is None:
+        return None
+    code, _, wdl, hintWdl = picked
+    move = gs.findMoveByCode(code, validMoves)
+    if move is None:
+        return None
+    checked = await checkAlternative(gs, move, seconds)
+    if not alternativeHolds(checked, score if score is not None else found[2][0][1]):
+        return None
+    return {'move': move, 'score': checked, 'wdl': wdl, 'hintWdl': hintWdl}
 
 
 async def checkAlternative(gs, move, seconds):
     """The score (in pawns, for the side to move in gs) of playing move, from a search of its own: the position after
     it, searched for its single best line by the hint engine. A multi-line search shares its time between its lines,
-    and in an endgame it can score a losing move as a draw (a run of checks it takes for a perpetual), so the move
-    the coach picked is searched again before it is shown. gs is played on and set back (a copy the caller owns);
+    and in an endgame it can score a losing move as a draw (a run of checks it takes for a perpetual), so the winning
+    try is searched again before it is shown. gs is played on and set back (a copy the caller owns);
     None when the hint engine can't search."""
     if not await hintEngine.ready(0):
         return None

@@ -18,6 +18,12 @@ except ImportError:
 TEST_HINT_SECONDS = 0.5  # how long a hint searches in these tests (runGame), well inside the scripts' waits
 
 
+def testHintSeconds(seconds):
+    """A hint time of stockfish.hintSeconds scaled for runGame, at most TEST_HINT_SECONDS."""
+    import stockfish
+    return round(seconds * TEST_HINT_SECONDS / stockfish.HINT_MAX_SECONDS, 3)
+
+
 @unittest.skipIf(p is None, "needs pygame")
 class GameLoopTest(unittest.TestCase):
     @classmethod
@@ -1183,19 +1189,22 @@ class GameLoopTest(unittest.TestCase):
 
     def runGame(self, script, thinkMs=None):
         """Runs the game loop with script; thinkMs makes the computer take at least that long per move. Hints search
-        for TEST_HINT_SECONDS, so a script's waits don't depend on HINT_SECONDS."""
+        for at most TEST_HINT_SECONDS, so a script's waits don't depend on HINT_SECONDS or stockfish.hintSeconds."""
+        import stockfish
         main = self.main
-        savedThink, savedHint = main.AI_MIN_THINK_MS, main.HINT_SECONDS
+        savedThink, savedHint, realHintSeconds = main.AI_MIN_THINK_MS, main.HINT_SECONDS, stockfish.hintSeconds
 
         async def run():
             await asyncio.gather(main.main(), script())
         if thinkMs is not None:
             main.AI_MIN_THINK_MS = thinkMs
         main.HINT_SECONDS = TEST_HINT_SECONDS
+        stockfish.hintSeconds = lambda gs, moves: testHintSeconds(realHintSeconds(gs, moves))
         try:
             asyncio.run(run())
         finally:
             main.AI_MIN_THINK_MS, main.HINT_SECONDS = savedThink, savedHint
+            stockfish.hintSeconds = realHintSeconds
 
     def premoveTinted(self, row, col):
         """The square's corner shows the premove's purple (more blue than green), not a board color."""
@@ -5285,34 +5294,41 @@ class GameLoopTest(unittest.TestCase):
         spec.loader.exec_module(proxy)
         return proxy.checkedRequest(payload) is not None
 
-    def test_a_drawish_hint_also_shows_the_coachs_winning_try(self):
+    def test_a_drawish_hint_also_shows_a_winning_try(self):
         import llm
         import stockfish
         main = self.main
-        # the hint's score, what the pick's own search finds (None: no pick asked for), and whether the try shows
-        for score, checkedScore, expectTry in ((0.1, -0.1, True), (1.8, None, False), (0.1, -3.0, False)):
+        # the hint's score, whether Stockfish finds a winning try, whether the coach explains it, and the card's text
+        tryText = "Idea.\n\nTo play for a win, try Nf3: "
+        cases = ((0.1, True, True, tryText + "Nf3 keeps more pieces in play."),
+                 (0.1, True, False, tryText + "Stockfish gives it 12 winning chances in 100, against 4 for the hint."),
+                 (0.1, False, True, "Idea."), (1.8, True, True, "Idea."))
+        for score, tryFound, coachExplains, card in cases:
             seen = {}
             main.GAME_VIEW = view = {}
-            searched, asked, checked = [], [], []
-            realHint, realAlternatives = stockfish.searchHintPosition, stockfish.searchAlternatives
-            realCheck = stockfish.checkAlternative
+            searched, asked, timed = [], [], []
+            realHint, realTry = stockfish.searchHintPosition, stockfish.searchWinningTry
             realEnabled, realExplain = llm.enabled, llm.explain
 
             async def hint(board, moves, seconds, history=()):
+                timed.append(seconds)
                 return score, board.findMoveByCode('e2e4', moves), 0
 
-            async def alternatives(board, moves, seconds, history=(), best=None):
-                searched.append(best.getCode())
-                return [(board.findMoveByCode('d2d4', moves), 0.0), (board.findMoveByCode('g1f3', moves), -0.1)]
-
-            async def check(board, move, seconds):
-                checked.append((move.getCode(), len(board.moveLog)))
-                return checkedScore
+            async def winningTry(board, moves, seconds, history=(), best=None, score=None):
+                searched.append((best.getCode(), score))
+                if not tryFound:
+                    return None
+                return {'move': board.findMoveByCode('g1f3', moves), 'score': -0.1, 'wdl': (120, 840, 40),
+                        'hintWdl': (40, 920, 40)}
 
             async def explain(payload):
                 asked.append(payload)
                 await asyncio.sleep(0.05)
-                return "2: Nf3 develops and keeps the winning chances." if payload['kind'] == 'pick' else "Idea."
+                if payload['best'] != 'Nf3':
+                    return "Idea."
+                if not coachExplains:
+                    raise llm.LLMError("The coaching service returned an error")
+                return "Nf3 keeps more pieces in play."
 
             async def script():
                 await asyncio.sleep(1.0)
@@ -5325,38 +5341,28 @@ class GameLoopTest(unittest.TestCase):
                 p.event.post(p.event.Event(p.QUIT))
                 await asyncio.sleep(0.5)
 
-            stockfish.searchHintPosition, stockfish.searchAlternatives = hint, alternatives
-            stockfish.checkAlternative = check
+            stockfish.searchHintPosition, stockfish.searchWinningTry = hint, winningTry
             llm.enabled, llm.explain = lambda: True, explain
             try:
                 self.runGame(script)
             finally:
-                stockfish.searchHintPosition, stockfish.searchAlternatives = realHint, realAlternatives
-                stockfish.checkAlternative = realCheck
+                stockfish.searchHintPosition, stockfish.searchWinningTry = realHint, realTry
                 llm.enabled, llm.explain = realEnabled, realExplain
                 main.GAME_VIEW = None
-            self.assertEqual(seen['hint'][0], 'e2e4')
-            self.assertEqual(seen['moved'], (None, None))
-            if expectTry:
-                self.assertEqual(seen['hint'][1], 'g1f3', "the coach's pick, not Stockfish's own second choice")
-                self.assertEqual(seen['hint'][2], ("Idea.\n\nTo play for a win, try Nf3: Nf3 develops and keeps the "
-                                                   "winning chances.", "e4"))
-                self.assertEqual(searched, ['e2e4'], "the alternatives leave out the suggested move")
-                kinds = sorted(payload['kind'] for payload in asked)
-                self.assertEqual(kinds, ['hint', 'pick'])
-                pick = next(payload for payload in asked if payload['kind'] == 'pick')
-                self.assertEqual((pick['best'], [o['san'] for o in pick['options']]), ('e4', ['d4', 'Nf3']))
-                self.assertTrue(self.proxyAccepts(pick), pick)
-                self.assertEqual(checked, [('g1f3', 0)], "the pick gets a search of its own before it shows")
-            elif checkedScore is not None:
-                self.assertIsNone(seen['hint'][1], "its own search finds the pick losing: no winning try")
-                self.assertEqual(seen['hint'][2], ("Idea.", "e4"))
-                self.assertEqual(checked, [('g1f3', 0)])
-            else:
-                self.assertIsNone(seen['hint'][1])
-                self.assertEqual(seen['hint'][2], ("Idea.", "e4"))
-                self.assertEqual((searched, [payload['kind'] for payload in asked]), ([], ['hint']),
-                                 "a position that isn't drawish asks for no winning try")
+            case = (score, tryFound, coachExplains)
+            self.assertEqual(seen['hint'][0], 'e2e4', case)
+            self.assertEqual(seen['moved'], (None, None), case)
+            self.assertEqual(seen['hint'][2], (card, "e4"), case)
+            self.assertEqual(timed, [testHintSeconds(stockfish.HINT_OPENING_SECONDS)],
+                             "the hint's time follows the position")
+            shown = tryFound and score < 1
+            self.assertEqual(seen['hint'][1], 'g1f3' if shown else None, case)
+            self.assertEqual(searched, [('e2e4', score)] if score < 1 else [],
+                             "a drawish position only; the try leaves out the hint's move and keeps to its score")
+            self.assertEqual([payload['kind'] for payload in asked], ['hint', 'hint'] if shown else ['hint'],
+                             "the coach explains Stockfish's try; it picks nothing")
+            if shown:
+                self.assertTrue(self.proxyAccepts(asked[1]), asked[1])
             self.assertIsNone(seen['closed'], "one close for the whole card")
 
     def test_the_coach_explains_the_shown_move(self):

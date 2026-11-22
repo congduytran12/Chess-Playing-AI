@@ -54,12 +54,13 @@ FAKE_ENGINE = textwrap.dedent('''
             elif moves == ['f2f3', 'e7e5', 'g2g4']:
                 say('info depth 3 score mate 1 pv d8h4')
                 say('bestmove d8h4')
-            elif multipv > 1:  # the best line and three more, the last one clearly worse
+            elif multipv > 1:  # the best line and three more, the last one clearly worse; d4 wins more often than e4
                 say('info depth 5 multipv 1 score cp 10 upperbound pv e2e4')
-                for rank, (cp, move) in enumerate([(10, 'e2e4'), (5, 'd2d4'), (-30, 'a2a3'), (-200, 'h2h3')], 1):
-                    say('info depth 6 multipv %d score cp %d pv %s' % (rank, cp, move))
+                for rank, (cp, wdl, move) in enumerate([(10, '40 920 40', 'e2e4'), (5, '90 870 40', 'd2d4'),
+                                                         (-30, '10 900 90', 'a2a3'), (-200, '0 600 400', 'h2h3')], 1):
+                    say('info depth 6 multipv %d score cp %d wdl %s pv %s' % (rank, cp, wdl, move))
                 # stopped part way through depth 7: one line of it, which a mix of depths would list twice
-                say('info depth 7 multipv 1 score cp 8 pv d2d4')
+                say('info depth 7 multipv 1 score cp 8 wdl 80 880 40 pv d2d4')
                 say('bestmove e2e4')
             else:
                 say('info depth 5 score cp 10 upperbound pv a2a3')
@@ -133,14 +134,20 @@ class StockfishTest(unittest.TestCase):
         # depth 9 finished, depth 10 stopped after its first line: depth 9's lines, d3 once
         byDepth = {9: {1: ('d2d3', ('cp', 4)), 2: ('b1c3', ('cp', 0)), 3: ('d1e2', ('cp', -23))},
                    10: {1: ('b1c3', ('cp', 6))}}
-        self.assertEqual(stockfish.bestLines(byDepth), [('d2d3', 0.04), ('b1c3', 0.0), ('d1e2', -0.23)])
+        self.assertEqual(stockfish.bestLines(byDepth), [('d2d3', 0.04, None), ('b1c3', 0.0, None),
+                                                        ('d1e2', -0.23, None)])
         self.assertEqual(stockfish.bestLines({5: {1: ('e2e4', ('cp', 10)), 2: ('e2e4', ('cp', 9))}}),
-                         [('e2e4', 0.1)], "a move listed once")
+                         [('e2e4', 0.1, None)], "a move listed once")
+        self.assertEqual(stockfish.bestLines({5: {1: ('e2e4', ('cp', 10), (60, 900, 40))}}),
+                         [('e2e4', 0.1, (60, 900, 40))], "with its win/draw/loss chances")
         self.assertEqual(stockfish.bestLines({}), [])
+        self.assertEqual(stockfish.parseWdl('info depth 20 multipv 2 score cp 12 wdl 61 912 27 nodes 9 pv e2e4'),
+                         (61, 912, 27))
+        self.assertIsNone(stockfish.parseWdl('info depth 20 score cp 12 pv e2e4'))
         self.assertTrue(stockfish.isDrawish(0.0) and stockfish.isDrawish(-0.3) and stockfish.isDrawish(0.3))
         self.assertFalse(stockfish.isDrawish(0.31) or stockfish.isDrawish(-1.5) or stockfish.isDrawish(None))
 
-    def test_safe_alternatives_for_a_drawish_position(self):
+    def test_the_winning_try_of_a_drawish_position(self):
         saved = stockfish.hintEngine
         stockfish.hintEngine = stockfish.engine  # the stand-in answers for the hint engine too
 
@@ -149,22 +156,62 @@ class StockfishTest(unittest.TestCase):
             gs = GameState()
             moves = gs.getValidMoves()
             best = gs.findMoveByCode('e2e4', moves)
-            found = await stockfish.searchAlternatives(gs, moves, 0.05, best=best)
+            found = await stockfish.searchWinningTry(gs, moves, 0.05, best=best, score=0.0)
             single = await stockfish.engine.go([], 0.05)
-            return found, single
+            # its own search finds d4 0.42 worse for White: more than ALTERNATIVE_MARGIN below a hint scoring 0.5
+            dropped = await stockfish.searchWinningTry(gs, moves, 0.05, best=best, score=0.5)
+            return found, single, dropped, len(gs.moveLog)
 
         try:
-            found, single = asyncio.run(run())
+            found, single, dropped, plies = asyncio.run(run())
         finally:
             stockfish.hintEngine = saved
-        self.assertEqual([(move.getCode(), score) for move, score in found], [('d2d4', 0.05), ('a2a3', -0.3)],
-                         "not the suggested move, and not the one 2 pawns worse")
+        self.assertEqual((found['move'].getCode(), found['score'], found['wdl'], found['hintWdl']),
+                         ('d2d4', -0.42, (90, 870, 40), (40, 920, 40)),
+                         "d4 wins more often than the hint's e4, and its own search keeps it within the margin")
+        self.assertIsNone(dropped)
+        self.assertEqual(plies, 0, "the board is set back")
         sent = self.commands()
         self.assertIn('setoption name MultiPV value %d' % stockfish.ALTERNATIVE_LINES, sent)
-        self.assertEqual(sent.count('setoption name MultiPV value 4'), 1)
+        self.assertIn('position startpos moves d2d4', sent, "the try gets a search of its own")
         self.assertEqual(len(single), 2, "a normal search still returns (move, score) only")
-        self.assertEqual(sent[sent.index('setoption name MultiPV value 4'):].count('setoption name MultiPV value 1'), 1,
-                         "the next normal search goes back to the single best line")
+        self.assertEqual(sent[sent.index('setoption name MultiPV value 4'):].count('setoption name MultiPV value 1'),
+                         sent.count('setoption name MultiPV value 4'),
+                         "every search after a multi-line one goes back to the single best line")
+
+    def test_picking_the_winning_try(self):
+        lines = [('e2e4', 0.1, (40, 920, 40)), ('d2d4', 0.05, (90, 870, 40)), ('c2c4', -0.15, (110, 800, 90)),
+                 ('a2a3', -0.3, (200, 500, 300)), ('h2h3', -2.0, (0, 600, 400))]
+        self.assertEqual(stockfish.pickWinningTry(lines, 'e2e4'), ('c2c4', -0.15, (110, 800, 90), (40, 920, 40)),
+                         "the best chance of winning among the moves within TRY_MARGIN (a3 is 0.4 worse)")
+        self.assertIsNone(stockfish.pickWinningTry(lines, 'c2c4'),
+                          "the hint's own move is never the try: c4 already has the best chances")
+        self.assertIsNone(stockfish.pickWinningTry([('e2e4', 0.0, (40, 920, 40)), ('d2d4', 0.0, (50, 910, 40))],
+                                                   'e2e4'), "10 per mille better is not enough for a try")
+        self.assertEqual(stockfish.pickWinningTry([('e2e4', 0.0, (40, 920, 40)), ('d2d4', 0.0, (60, 900, 40)),
+                                                   ('c2c4', 0.0, (60, 920, 20))], 'e2e4')[0], 'c2c4',
+                         "the same chance of winning: fewer losses")
+        self.assertIsNone(stockfish.pickWinningTry([('e2e4', 0.0, (40, 920, 40)), ('d2d4', 998.0, (999, 1, 0))],
+                                                   'e2e4'), "no forced mate either way")
+        self.assertIsNone(stockfish.pickWinningTry([('e2e4', 0.0, None), ('d2d4', 0.0, None)], 'e2e4'),
+                          "no win/draw/loss chances: no try")
+        self.assertIsNone(stockfish.pickWinningTry([], 'e2e4'))
+
+    def test_the_hint_thinks_longer_where_there_is_more_to_find(self):
+        def seconds(fen=None, moves=()):
+            gs = GameState.fromFen(fen) if fen else GameState()
+            for code in moves:
+                gs.makeMove(gs.findMoveByCode(code, gs.getValidMoves()))
+            return stockfish.hintSeconds(gs, gs.getValidMoves())
+        self.assertEqual(seconds(), stockfish.HINT_OPENING_SECONDS, "the opening")
+        middlegame = 'r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R2QKB1R w KQ - 0 9'
+        self.assertGreaterEqual(seconds(middlegame), 10.5, "a full middlegame: near HINT_MAX_SECONDS")
+        self.assertLessEqual(seconds(middlegame), stockfish.HINT_MAX_SECONDS)
+        rooks = seconds('8/5pk1/6p1/8/8/6P1/5PK1/R6r w - - 0 40')
+        pawns = seconds('8/5pk1/6p1/8/8/6P1/5PK1/8 w - - 0 50')
+        self.assertTrue(stockfish.HINT_BASE_SECONDS < pawns < rooks < 8, (pawns, rooks))
+        self.assertEqual(seconds('7k/8/6QK/8/8/8/8/8 b - - 0 60'), stockfish.HINT_FORCED_SECONDS,
+                         "nothing to choose between")
 
     def test_the_coachs_pick_gets_a_search_of_its_own(self):
         saved = stockfish.hintEngine
@@ -201,16 +248,16 @@ class StockfishTest(unittest.TestCase):
         self.assertTrue(stockfish.alternativeHolds(mates, 0.0))
         self.assertTrue(stockfish.alternativeHolds(0.1, None))
 
-    def test_no_alternatives_without_the_hint_engine_or_with_one_move(self):
+    def test_no_winning_try_without_the_hint_engine_or_with_one_move(self):
         async def run():
             gs = GameState()
             moves = gs.getValidMoves()
-            return (await stockfish.searchAlternatives(gs, moves, 0.05),
-                    await stockfish.searchAlternatives(gs, moves[:1], 0.05))
+            return (await stockfish.searchWinningTry(gs, moves, 0.05),
+                    await stockfish.searchWinningTry(gs, moves[:1], 0.05))
         saved = stockfish.hintEngine
         stockfish.hintEngine = stockfish.Engine([sys.executable, '-c', 'import time; time.sleep(30)'], channel='hint')
         try:
-            self.assertEqual(asyncio.run(run()), ([], []))
+            self.assertEqual(asyncio.run(run()), (None, None))
         finally:
             stockfish.hintEngine.close()
             stockfish.hintEngine = saved
@@ -463,11 +510,24 @@ class StockfishTest(unittest.TestCase):
                 threads = [int(line.split()[-1]) for line in sent if line.startswith('setoption name Threads value')]
                 hashes = [int(line.split()[-1]) for line in sent if line.startswith('setoption name Hash value')]
                 self.assertEqual(threads, [engine.threads])
+                # the winning try reads each line's win/draw/loss chances: the hint engine only reports them
+                self.assertEqual('setoption name UCI_ShowWDL value true' in sent, engine.hint)
                 return threads[0], hashes[0]
             return options(computerLog, computer), options(hintLog, hint)
         self.assertEqual(started(16), ((4, stockfish.HASH_MB), (stockfish.HINT_MAX_THREADS, stockfish.HINT_HASH_MB)))
         self.assertEqual(started(8), ((4, stockfish.HASH_MB), (6, stockfish.HINT_HASH_MB)))
         self.assertEqual(started(2), ((1, stockfish.HASH_MB), (1, stockfish.HASH_MB)), "one thread: the usual hash")
+
+    def test_a_tool_can_fix_the_threads(self):
+        script = os.path.join(self.folder.name, 'fakefish.py')
+        log = os.path.join(self.folder.name, 'fixed.txt')
+        computer = stockfish.Engine([sys.executable, script, log], threads=1)
+        try:
+            self.assertTrue(asyncio.run(computer.ready(10)))
+        finally:
+            computer.close()
+        with open(log) as f:
+            self.assertIn('setoption name Threads value 1', f.read().split('\n'), "whatever the machine has")
 
     def test_finding_the_executable(self):
         saved = os.environ.get('STOCKFISH_PATH')
