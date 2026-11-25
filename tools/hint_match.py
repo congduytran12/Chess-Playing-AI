@@ -46,6 +46,8 @@ POLICY_CONFIG = {
     'baseline': {'hint': 'fixed', 'winningTry': False},
     'adaptive': {'hint': 'adaptive', 'winningTry': False},
     'adaptive-wdl': {'hint': 'adaptive', 'winningTry': True},
+    # M1: every hint plays for a win (stockfish.searchWinningHint), with the adaptive seconds
+    'win': {'hint': 'adaptive', 'winningTry': False, 'winSeeking': True},
 }
 POLICIES = tuple(POLICY_CONFIG)
 PROFILES = ('browser', 'desktop')
@@ -203,6 +205,9 @@ async def hintMove(policy, gs, moves, history, scale):
     """The hint's move under policy, with (seconds asked, score, whether a winning try was played)."""
     config = POLICY_CONFIG[policy]
     seconds = (5.0 if config['hint'] == 'fixed' else stockfish.hintSeconds(gs, moves)) * scale
+    if config.get('winSeeking'):
+        found = await stockfish.searchWinningHint(gs, moves, seconds, history=history)
+        return found['move'], seconds, found['score'], found['reason'] not in ('best', 'draw')
     score, move, _ = await stockfish.searchHintPosition(gs, moves, seconds, history=history)
     tried = False
     if config['winningTry'] and stockfish.isDrawish(score):

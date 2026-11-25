@@ -6,6 +6,7 @@ import asyncio
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 import support  # noqa: F401  (puts game/ on the path, turns the real Stockfish off)
 import chessAi
@@ -403,6 +404,102 @@ class StockfishTest(unittest.TestCase):
             return await stockfish.engine.go([], 0.05, search_moves=['e2e4'])
         self.assertEqual(asyncio.run(run()), ('e2e4', 0.42))
         self.assertIn('go movetime 50 searchmoves e2e4', self.commands(), "searchmoves last: it takes every word after it")
+
+    def test_a_search_keeps_its_best_lines_moves_and_chances(self):
+        self.assertEqual(stockfish.parsePv('info depth 6 score cp 42 pv e2e4 e7e5'), ['e2e4', 'e7e5'])
+        self.assertEqual(stockfish.parsePv('info string NNUE'), [])
+
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            return await stockfish.engine.go([], 0.05)
+        asyncio.run(run())
+        self.assertEqual(stockfish.engine.lastPv, ['e2e4'], "from the exact report, not the bound before it")
+        self.assertIsNone(stockfish.engine.lastWdl, "no chances without UCI_ShowWDL")
+
+    def test_the_margin_a_winning_hint_allows(self):
+        self.assertEqual(stockfish.winMargin('middlegame', 0.1), stockfish.PHASE_MARGIN['middlegame'])
+        self.assertEqual(stockfish.winMargin('middlegame', 2.5), 0.0, "a won game is converted, not gambled")
+        self.assertEqual(stockfish.winMargin('middlegame', 1.2), stockfish.PHASE_MARGIN['middlegame'] / 2)
+        self.assertGreater(stockfish.winMargin('middlegame', -2.0), stockfish.PHASE_MARGIN['middlegame'],
+                           "a lost game takes more risk")
+        self.assertEqual(stockfish.gamePhase(GameState()), 'opening')
+        self.assertEqual(stockfish.drawValue(-1.0), 0.5, "behind, a draw is worth its usual half")
+        self.assertEqual(stockfish.utility((100, 800, 100), 0.0), 100 + stockfish.DRAW_VALUE * 800)
+
+    def test_picking_the_winning_move(self):
+        def cand(code, score, wdl, **flags):
+            return dict({'code': code, 'multiScore': score, 'wdl': wdl, 'verified': None}, **flags)
+        best = cand('e2e4', 0.10, (40, 920, 40), isBest=True)
+        livelier = cand('d2d4', 0.05, (120, 840, 40), verified=0.04)
+        chosen, worth, bestWorth = stockfish.pickWinningMove([best, livelier], 'middlegame')
+        self.assertEqual(chosen['code'], 'd2d4', "fewer draws, as safe")
+        self.assertGreater(worth, bestWorth)
+        unchecked = cand('d2d4', 0.05, (120, 840, 40))
+        self.assertEqual(stockfish.pickWinningMove([best, unchecked], 'middlegame')[0]['code'], 'e2e4',
+                         "never a move that wasn't searched again")
+        fails = cand('d2d4', 0.05, (120, 840, 40), verified=-0.6)
+        self.assertEqual(stockfish.pickWinningMove([best, fails], 'middlegame')[0]['code'], 'e2e4',
+                         "its own search found it worse")
+        far = cand('d2d4', -0.30, (200, 700, 100), verified=-0.30)
+        self.assertEqual(stockfish.pickWinningMove([best, far], 'middlegame')[0]['code'], 'e2e4', "outside the margin")
+        slight = cand('d2d4', 0.08, (45, 915, 40), verified=0.08)
+        self.assertEqual(stockfish.pickWinningMove([best, slight], 'middlegame')[0]['code'], 'e2e4',
+                         "not worth SWITCH_MIN more")
+        drawing = cand('d2d4', 0.05, (120, 840, 40), verified=0.04, endsInDraw=True)
+        self.assertEqual(stockfish.pickWinningMove([best, drawing], 'middlegame')[0]['code'], 'e2e4',
+                         "a move that ends the game in a draw is worth a draw")
+        won = cand('e2e4', 2.5, (900, 100, 0), isBest=True)
+        greedy = cand('d2d4', 2.45, (950, 50, 0), verified=2.45)
+        self.assertEqual(stockfish.pickWinningMove([won, greedy], 'middlegame')[0]['code'], 'e2e4',
+                         "a won position plays the best move")
+        allowsDraw = cand('e2e4', 0.8, (300, 690, 10), isBest=True, allowsClaim=True)
+        keeps = cand('d2d4', 0.7, (260, 720, 20), verified=0.7)
+        self.assertEqual(stockfish.pickWinningMove([allowsDraw, keeps], 'middlegame')[0]['code'], 'd2d4',
+                         "the computer would claim the draw the best move allows")
+        quietBest = cand('g1f3', 0.0, (20, 960, 20), isBest=True)
+        push = cand('a2a3', -0.02, (20, 960, 20), verified=-0.02, pawnPush=True)
+        self.assertEqual(stockfish.pickWinningMove([quietBest, push], 'endgame', quiet=60)[0]['code'], 'a2a3',
+                         "a pawn move before the 50-move rule ends a level game")
+        self.assertEqual(stockfish.pickWinningMove([quietBest, push], 'endgame', quiet=10)[0]['code'], 'g1f3')
+
+    def test_moves_that_end_or_let_the_game_end_in_a_draw(self):
+        gs, history = playedOut(HOLDING_ON)  # Black can repeat with c6b8
+        quiet = gs.findMoveByCode('h7h6', gs.getValidMoves())
+        self.assertFalse(stockfish.endsInDraw(gs, quiet, history))
+        repeat = gs.findMoveByCode('c6b8', gs.getValidMoves())
+        self.assertTrue(stockfish.endsInDraw(gs, repeat, history), "the start position a third time")
+        gs, history = playedOut(['b1c3', 'b8c6', 'c3b1', 'c6b8', 'b1c3', 'b8c6'])  # White to move
+        back = gs.findMoveByCode('c3b1', gs.getValidMoves())
+        self.assertTrue(stockfish.allowsRepetitionClaim(gs, back, history), "then c6b8 brings the start back again")
+        other = gs.findMoveByCode('e2e4', gs.getValidMoves())
+        self.assertFalse(stockfish.allowsRepetitionClaim(gs, other, history))
+        self.assertEqual(len(gs.moveLog), 6, "the game is set back")
+        self.assertEqual(stockfish.quietPlies(gs), 6)
+
+    def test_the_winning_hint(self):
+        stockfish.hintEngine, saved = stockfish.engine, stockfish.hintEngine  # the stand-in plays the hint engine
+
+        async def verify(gs, move, seconds):
+            return 0.40, (120, 840, 40), 'e7e5'  # d4, searched on its own, holds and wins more often
+
+        async def run(check):
+            self.assertTrue(await stockfish.engine.ready(10))
+            gs = GameState()
+            with mock.patch.object(stockfish, 'checkAlternativeDetailed', check):
+                return await stockfish.searchWinningHint(gs, gs.getValidMoves(), 0.05, history=[gs.getPositionKey()])
+        try:
+            found = asyncio.run(run(verify))
+            self.assertEqual(found['move'].getCode(), 'd2d4')
+            self.assertEqual(found['best'].getCode(), 'e2e4')
+            self.assertEqual(found['reason'], 'winning')
+
+            async def refuted(gs, move, seconds):
+                return -0.9, (10, 600, 390), 'e7e5'
+            found = asyncio.run(run(refuted))
+            self.assertEqual(found['move'].getCode(), 'e2e4', "an alternative its own search refutes isn't played")
+            self.assertEqual(found['reason'], 'best')
+        finally:
+            stockfish.hintEngine = saved
 
     def test_a_node_budget_for_the_tools(self):
         # tools/hint_match: a search of `seconds` becomes a node count, so a loaded machine doesn't change its result

@@ -255,6 +255,14 @@ def lineDepth(line):
         return 0
 
 
+# the moves (codes) of a UCI 'info' line's line ('pv ...'), or []
+def parsePv(line):
+    parts = line.split()
+    if 'pv' not in parts:
+        return []
+    return parts[parts.index('pv') + 1:]
+
+
 # the nodes per second a UCI 'info' line reports, or None
 def lineNps(line):
     parts = line.split()
@@ -329,6 +337,10 @@ class Engine:
         # share a machine without the load changing what each search finds; None: 'go movetime' (the game)
         self.nodesPerSecond = None
         self.lastNps = None  # nodes per second in the last search's last report (calibration)
+        # the last search's best line, from its last exact report: (win, draw, loss) per mille for the side to move
+        # (the hint engine, UCI_ShowWDL) or None, and its moves (codes)
+        self.lastWdl = None
+        self.lastPv = []
 
     @property
     def busy(self):
@@ -412,10 +424,15 @@ class Engine:
         score = None
         ranked = {}  # multipv: depth -> {rank -> (first move of its line, score, wdl or None)}
         deadline = time.time() + wait + ANSWER_GRACE
+        self.lastWdl, self.lastPv = None, []
         while True:
             for line in self._take():
                 if line.startswith('info'):
-                    score = parseScore(line) or score
+                    exact = parseScore(line)  # the best line's, and not a bound
+                    if exact:
+                        score = exact
+                        self.lastWdl = parseWdl(line) or self.lastWdl
+                        self.lastPv = parsePv(line) or self.lastPv
                     nps = lineNps(line)
                     if nps:
                         self.lastNps = nps
@@ -764,26 +781,248 @@ async def checkAlternative(gs, move, seconds):
     and in an endgame it can score a losing move as a draw (a run of checks it takes for a perpetual), so the winning
     try is searched again before it is shown. gs is played on and set back (a copy the caller owns);
     None when the hint engine can't search."""
+    return (await checkAlternativeDetailed(gs, move, seconds))[0]
+
+
+async def checkAlternativeDetailed(gs, move, seconds):
+    """checkAlternative's search, with what else it found: (score, (win, draw, loss) per mille for the side to move in
+    gs or None, the opponent's best reply code or None). (None, None, None) when the hint engine can't search."""
     if not await hintEngine.ready(0):
-        return None
+        return None, None, None
     gs.makeMove(move)
     try:
         if not gs.getValidMoves():  # the move ends the game
-            return chessAi.CHECKMATE if gs.inCheck else chessAi.STALEMATE
+            if gs.inCheck:
+                return chessAi.CHECKMATE, (1000, 0, 0), None
+            return chessAi.STALEMATE, (0, 1000, 0), None
         found = await hintEngine.go(moveCodes(gs), seconds, start=gs.startFen)
     finally:
         gs.undoMove()
     if not found or found[1] is None:
-        return None
-    return -found[1]  # the search scores it for the opponent, who is to move after it
+        return None, None, None
+    wdl = hintEngine.lastWdl
+    reply = hintEngine.lastPv[0] if hintEngine.lastPv else found[0]
+    # the search scores it for the opponent, who is to move after it
+    return -found[1], ((wdl[2], wdl[1], wdl[0]) if wdl else None), reply
 
 
-def alternativeHolds(score, best):
+def alternativeHolds(score, best, margin=ALTERNATIVE_MARGIN):
     """Whether an alternative that checkAlternative scored stays safe beside the best move's score (both in pawns, for
-    the side to move): no more than ALTERNATIVE_MARGIN worse, and no forced mate against it."""
+    the side to move): no more than margin worse, and no forced mate against it."""
     if score is None or score <= -chessAi.MATE_THRESHOLD:
         return False
-    return best is None or score >= best - ALTERNATIVE_MARGIN
+    return best is None or score >= best - margin
+
+
+# --- the hint that plays for a win (searchWinningHint): Stockfish against Stockfish draws most games, so of the moves
+# that lose (almost) nothing against the best one, the hint prefers the one most likely to win, and steers away from
+# the rules that end a game in a draw (repetition, 50 moves, stalemate). Every move it prefers over the best one is
+# searched again on its own first. The constants are tuned with tools/hint_match.py.
+PHASE_MARGIN = {'opening': 0.20, 'middlegame': 0.30, 'endgame': 0.15, 'pawns': 0.05}  # pawns below the best move
+WINNING_EVAL, CLEAR_EVAL, LOSING_EVAL = 2.0, 1.0, -1.5  # convert a win (margin 0), keep an edge (half), swindle (1.5x)
+VERIFY_SLACK = 0.15  # a verified alternative may score this much more below the best than the margin
+KEEP_EDGE = 0.5  # with the best move this far ahead, an alternative must stay above KEEP_EDGE_FLOOR when verified
+KEEP_EDGE_FLOOR = 0.2
+DRAW_VALUE = 0.35  # a draw counts this much of a win (a draw is what Stockfish against Stockfish gets anyway)
+SWITCH_MIN = 12  # per mille: another move is played only when it beats the best move by this much
+MAX_VERIFY = 2  # alternatives searched again on their own
+VERIFY_FRACTION = 0.4  # ... each for this share of the hint's seconds
+REPEAT_PENALTY = 25  # per mille, for a move that brings back a position already seen (when not behind)
+DRIFT_PLIES, DRIFT_BONUS_MAX = 40, 40  # plies without a pawn move or capture before a pawn move earns a bonus
+QUEEN_TRADE_PENALTY = 10  # per mille, for trading queens in a level middlegame
+
+
+def materialWeight(gs):
+    """Both sides' pieces by PIECE_WEIGHT (a full set weighs 12 a side)."""
+    return sum(PIECE_WEIGHT.get(square[1], 0) for row in gs.board for square in row if square != '--')
+
+
+def gamePhase(gs):
+    if len(gs.moveLog) < 20 and gs.startFen is None:
+        return 'opening'
+    weight = materialWeight(gs)
+    if weight == 0:
+        return 'pawns'
+    return 'endgame' if weight < 14 else 'middlegame'
+
+
+def winMargin(phase, best):
+    """How far below the best move's score (pawns) another move may score and still be played to win."""
+    margin = PHASE_MARGIN[phase]
+    if best >= WINNING_EVAL:
+        return 0.0
+    if best >= CLEAR_EVAL:
+        return margin / 2
+    if best <= LOSING_EVAL:
+        return min(ALTERNATIVE_MARGIN, margin * 1.5)
+    return margin
+
+
+def drawValue(best):
+    return 0.5 if best < -REPETITION_MARGIN else DRAW_VALUE  # behind, a draw is worth its usual half
+
+
+def utility(wdl, best):
+    """A move's worth in per mille from its (win, draw, loss) chances: wins, plus draws at drawValue."""
+    return wdl[0] + drawValue(best) * wdl[1]
+
+
+def quietPlies(gs):
+    """Plies since the last pawn move or capture (the 50-move rule's count)."""
+    count = 0
+    for move in reversed(gs.moveLog):
+        if move.pieceMoved[1] == 'p' or move.pieceCaptured != '--':
+            break
+        count += 1
+    return count
+
+
+def endsInDraw(gs, move, history):
+    """Whether playing move ends the game in a draw: stalemate, too little material, 50 moves, or a third repetition.
+    gs is played on and set back."""
+    gs.makeMove(move)
+    try:
+        if not gs.getValidMoves():
+            return not gs.inCheck
+        return (gs.insufficientMaterial() or gs.fiftyMoveRuleReached()
+                or list(history).count(gs.getPositionKey()) >= 2)
+    finally:
+        gs.undoMove()
+        gs.getValidMoves()
+
+
+def allowsRepetitionClaim(gs, move, history):
+    """Whether, after move, the opponent has a reply that repeats a position a third time (the computer claims such a
+    draw when playing on scores worse than REPETITION_MARGIN). gs is played on and set back."""
+    gs.makeMove(move)
+    try:
+        seen = list(history) + [gs.getPositionKey()]
+        for reply in gs.getValidMoves():
+            gs.makeMove(reply)
+            repeated = seen.count(gs.getPositionKey()) >= 2
+            gs.undoMove()
+            if repeated:
+                return True
+        return False
+    finally:
+        gs.undoMove()
+        gs.getValidMoves()
+
+
+def candidateWorth(cand, best, quiet):
+    """A candidate's worth for pickWinningMove (per mille), and its draw-adjusted wdl."""
+    wdl = cand['wdl'] or (0, 1000, 0)
+    if cand.get('endsInDraw') or (cand.get('allowsClaim') and (cand.get('verified') if cand.get('verified')
+                                                               is not None else cand['multiScore']) > REPETITION_MARGIN):
+        wdl = (0, 1000, 0)
+    worth = utility(wdl, best)
+    if cand.get('repeats') and best >= 0:
+        worth -= REPEAT_PENALTY
+    if cand.get('tradesQueens') and abs(best) <= 0.5 and cand.get('phase') == 'middlegame':
+        worth -= QUEEN_TRADE_PENALTY
+    if cand.get('pawnPush') and quiet >= DRIFT_PLIES and best >= -0.3:
+        worth += min(DRIFT_BONUS_MAX, 10 + (quiet - DRIFT_PLIES) / 2)
+    return worth + cand.get('trapBonus', 0), wdl
+
+
+def pickWinningMove(cands, phase, quiet=0):
+    """The move to play among cands (dicts: 'code', 'multiScore' (pawns, from the multi-line search), 'wdl', 'isBest'
+    for the best line, 'verified' (pawns, its own search; None: not searched again), and flags 'endsInDraw',
+    'allowsClaim', 'repeats', 'tradesQueens', 'pawnPush', 'trapBonus'). Another move than the best is played only when
+    it is within winMargin of the best, searched again and still safe (alternativeHolds), and worth SWITCH_MIN more.
+    (the chosen candidate, its worth, the best one's worth)."""
+    best = next(c for c in cands if c.get('isBest'))
+    top = best['multiScore']
+    margin = winMargin(phase, top)
+    bestWorth, _ = candidateWorth(dict(best, phase=phase), top, quiet)
+    chosen, chosenWorth = best, bestWorth
+    for cand in cands:
+        if cand is best or cand['multiScore'] < top - margin or abs(cand['multiScore']) >= chessAi.MATE_THRESHOLD:
+            continue
+        verified = cand.get('verified')
+        if not alternativeHolds(verified, top, min(ALTERNATIVE_MARGIN, margin + VERIFY_SLACK)):
+            continue
+        if top >= KEEP_EDGE and verified <= KEEP_EDGE_FLOOR:
+            continue  # never give an edge away for equality
+        worth, _ = candidateWorth(dict(cand, phase=phase), top, quiet)
+        if worth >= chosenWorth + (SWITCH_MIN if chosen is best else 0) and worth >= bestWorth + SWITCH_MIN:
+            chosen, chosenWorth = cand, worth
+    return chosen, chosenWorth, bestWorth
+
+
+MULTI_FRACTION = 0.6  # the multi-line search for alternatives gets this share of the hint's seconds
+
+
+async def searchWinningHint(gs, validMoves, seconds, history=()):
+    """The hint that plays for a win. The best move comes from the hint's usual search (searchHintPosition, the full
+    seconds, so it is never weaker than the plain hint); unless the game is already won, a multi-line search
+    (ALTERNATIVE_LINES, with win/draw/loss chances, MULTI_FRACTION of the seconds) offers alternatives, scored against
+    the best by their distance from that search's own top line; the ones that could beat the best move are searched
+    again on their own (at most MAX_VERIFY), then pickWinningMove chooses. gs is a copy the caller owns. {'move',
+    'score', 'best' (Stockfish's top move), 'bestScore', 'wdl', 'reason': 'best', 'winning', 'drift' or 'draw'}."""
+    score, move, _ = await searchHintPosition(gs, validMoves, seconds, history=history)
+    plain = {'move': move, 'score': score, 'best': move, 'bestScore': score, 'wdl': None, 'reason': 'best'}
+    if (move is None or score is None or len(validMoves) <= 2 or hintEngine.state != 'ready'
+            or abs(score) >= WINNING_EVAL):
+        return plain
+    candidates = nonRepetitionMoves(gs, validMoves, history)
+    if move not in candidates:  # it takes a repetition: the draw is better than playing on
+        return dict(plain, wdl=(0, 1000, 0), reason='draw')
+    bestWdl = hintEngine.lastWdl
+    found = await hintEngine.go(moveCodes(gs), seconds * MULTI_FRACTION, start=gs.startFen,
+                                multipv=ALTERNATIVE_LINES, search_moves=[m.getCode() for m in candidates])
+    if not found or len(found) < 3 or not found[2]:
+        return plain
+    lines = found[2]
+    top, bestCode = score, move.getCode()
+    phase, quiet = gamePhase(gs), quietPlies(gs)
+
+    def candidate(code, multiScore, wdl, isBest):
+        m = gs.findMoveByCode(code, validMoves)
+        if m is None:
+            return None
+        return {'code': code, 'move': m, 'multiScore': multiScore, 'wdl': wdl, 'isBest': isBest, 'verified': None,
+                'endsInDraw': endsInDraw(gs, m, history), 'allowsClaim': allowsRepetitionClaim(gs, m, history),
+                'repeats': _repeats(gs, m, history),
+                'tradesQueens': m.pieceMoved[1] == 'Q' and m.pieceCaptured[1:] == 'Q',
+                'pawnPush': m.pieceMoved[1] == 'p' and m.pieceCaptured == '--'}
+    bestLine = next((line for line in lines if line[0] == bestCode), None)
+    cands = [candidate(bestCode, top, (bestLine[2] if bestLine and bestLine[2] else bestWdl), True)]
+    for code, lineScore, wdl in lines:
+        if code != bestCode:
+            cand = candidate(code, top + (lineScore - lines[0][1]), wdl, False)
+            if cand:
+                cands.append(cand)
+    if cands[0]['wdl'] is None:
+        return plain
+    # search again only the alternatives that could be played: within the margin and, on their multi-line chances,
+    # worth more than the best move
+    margin = winMargin(phase, top)
+    bestWorth, _ = candidateWorth(dict(cands[0], phase=phase), top, quiet)
+    hopeful = [c for c in cands[1:] if c['multiScore'] >= top - margin and abs(c['multiScore']) < chessAi.MATE_THRESHOLD
+               and candidateWorth(dict(c, phase=phase), top, quiet)[0] >= bestWorth + SWITCH_MIN]
+    hopeful.sort(key=lambda c: -candidateWorth(dict(c, phase=phase), top, quiet)[0])
+    for cand in hopeful[:MAX_VERIFY]:
+        verified, wdl, _ = await checkAlternativeDetailed(gs, cand['move'], seconds * VERIFY_FRACTION)
+        cand['verified'] = verified
+        if wdl:
+            cand['wdl'] = wdl
+    chosen, _, _ = pickWinningMove(cands, phase, quiet)
+    reason = 'best'
+    if not chosen['isBest']:
+        reason = 'drift' if chosen['pawnPush'] and quiet >= DRIFT_PLIES else 'winning'
+    return {'move': chosen['move'], 'score': chosen['verified'] if chosen['verified'] is not None
+            else chosen['multiScore'], 'best': cands[0]['move'], 'bestScore': top, 'wdl': chosen['wdl'],
+            'reason': reason}
+
+
+def _repeats(gs, move, history):
+    """Whether move brings back a position already in history (once or more)."""
+    gs.makeMove(move)
+    try:
+        return gs.getPositionKey() in history
+    finally:
+        gs.undoMove()
 
 
 async def analyzePosition(gs, validMoves, seconds, history=()):
