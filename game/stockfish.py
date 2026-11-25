@@ -621,8 +621,9 @@ async def findBestMove(gs, validMoves, level=None, history=()):
     move = await chessAi.findBestMove(gs, validMoves, level, history)
     if move in candidates or not repeating:
         return move
-    # chessAi chose to repeat: it plays on if a move that doesn't repeat is about as good
-    score, other, _ = await chessAi.searchPosition(gs, candidates, seconds, history=history)
+    # chessAi chose to repeat: it plays on if a move that doesn't repeat is about as good, searched at the same level
+    maxDepth, noise = chessAi.LEVELS[level][2:4]
+    score, other, _ = await chessAi.searchPosition(gs, candidates, seconds, maxDepth, noise, history=history)
     return move if takesTheDraw(score) or other is None else other
 
 

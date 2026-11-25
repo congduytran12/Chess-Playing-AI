@@ -1,9 +1,10 @@
 """Optional LLM coaching built on top of the game's Stockfish analysis.
 
-The LLM is never used to choose a move freely or to validate one.  It explains
-analysis that Stockfish has already produced; the one exception is a drawish
-hint, where it picks a winning try from a short list of moves Stockfish rates
-safe (kind "pick": it answers with a number from that list, never a move). The providers with a key are asked
+The LLM never chooses a move or validates one. It explains analysis that
+Stockfish has already produced, including the winning try of a drawish hint,
+which Stockfish picks (stockfish.searchWinningTry). Kind "pick" (the coach
+answering with a number from Stockfish's list) is still accepted by the proxy
+for older pages; the game no longer sends it. The providers with a key are asked
 in this order, one at a time: the next one is asked at once when one fails or
 answers 429 (too many requests; that provider then rests for its Retry-After
 time, or a minute, and is tried last), and also when one is slower than
@@ -40,13 +41,25 @@ if WASM:
     except ImportError:
         js = None
 
+# evaluated before every request: keeps the answers of requests still being polled (a hint's idea and its winning
+# try are asked at the same time)
 JS_HELPERS = '''
-    window.chessLlmResults = {};
+    window.chessLlmResults = window.chessLlmResults || {};
+    window.chessLlmWaiting = window.chessLlmWaiting || {};
     window.chessLlmRequest = function(id, body) {
+        window.chessLlmWaiting[id] = true;
+        const store = function(result) {
+            if (window.chessLlmWaiting[id]) window.chessLlmResults[id] = JSON.stringify(result);
+            delete window.chessLlmWaiting[id];
+        };
         fetch("/api/llm", {method: "POST", headers: {"Content-Type": "application/json"}, body: body})
-            .then(r => r.text().then(t => { window.chessLlmResults[id] = JSON.stringify(
-                {status: r.status, body: t, retry: r.headers.get("Retry-After") || ""}); }))
-            .catch(e => { window.chessLlmResults[id] = JSON.stringify({status: 0, body: String(e)}); });
+            .then(r => r.text().then(t => store(
+                {status: r.status, body: t, retry: r.headers.get("Retry-After") || ""})))
+            .catch(e => store({status: 0, body: String(e)}));
+    };
+    window.chessLlmForget = function(id) {
+        delete window.chessLlmWaiting[id];
+        delete window.chessLlmResults[id];
     };
     window.chessLlmTake = function(id) {
         const result = window.chessLlmResults[id];
@@ -230,9 +243,9 @@ def enabled():
     return WASM or bool(providers())
 
 
-# What the coach is asked, as the browser sends it to /api/llm (and the desktop turns into a prompt itself). There are
-# three kinds, each with the language to answer in; the server checks every field (api/llm.py), so no text of the
-# caller's own reaches the model:
+# What the coach is asked, as the browser sends it to /api/llm (and the desktop turns into a prompt itself). Each kind
+# carries the language to answer in; the server checks every field (api/llm.py), so no text of the caller's own reaches
+# the model (hint and pick are built by hint_payload and pick_payload below):
 #   game     moves (codes), best (SAN, one per position), evals (White's point of view), marks, result
 #   move     fen (before the move), played, history (SAN), best, reply, before and after (White's point of view),
 #            mark, loss
@@ -691,6 +704,7 @@ def _request(prompt, tokens=TOKENS["game"]):
 # answering 429: until then the coach isn't asked, as the answer would be the same
 access_token = None
 _proxy_rest_until = [0.0]
+_request_count = [0]  # numbers the browser's requests (their answers are kept by id in window.chessLlmResults)
 
 
 def proxy_resting():
@@ -715,16 +729,21 @@ async def _request_browser(analysis):
     if proxy_resting():
         raise LLMError("The coach is resting, try again in %d s" % proxy_resting())
     js.eval(JS_HELPERS)
-    request_id = "coach_" + str(id(analysis))
-    js.eval("window.chessLlmRequest(%s, %s)" % (json.dumps(request_id), json.dumps(_request_body(analysis))))
+    _request_count[0] += 1
+    request_id = json.dumps("coach_%d" % _request_count[0])  # never reused, so no request takes another's answer
+    js.eval("window.chessLlmRequest(%s, %s)" % (request_id, json.dumps(_request_body(analysis))))
     deadline = asyncio.get_running_loop().time() + 20
-    while True:
-        raw = js.eval("window.chessLlmTake(%s)" % json.dumps(request_id))
-        if raw:
-            break
-        if asyncio.get_running_loop().time() > deadline:
-            raise LLMError("The coaching server didn't answer")
-        await asyncio.sleep(0.05)
+    try:
+        while True:
+            raw = js.eval("window.chessLlmTake(%s)" % request_id)
+            if raw:
+                break
+            if asyncio.get_running_loop().time() > deadline:
+                raise LLMError("The coaching server didn't answer")
+            await asyncio.sleep(0.05)
+    except BaseException:  # given up (cancelled or timed out): its answer, when it comes, is dropped
+        js.eval("window.chessLlmForget(%s)" % request_id)
+        raise
     try:
         reply = json.loads(str(raw))
         data = json.loads(reply["body"]) if reply["body"] else {}

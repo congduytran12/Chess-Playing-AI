@@ -1128,6 +1128,8 @@ async def main():
     opponentInfo = None  # {'uid', 'name', 'rating'} of a signed-in online opponent
     opponentSeen = None  # ntfy server time of the opponent's latest message, None before they have sent any
     lastMessageSent = 0  # ticks when we last sent anything online
+    stateOwed = None  # (reason, ticks): a heartbeat or sync reply held back by SEND_MIN_MS, sent when it has passed
+    heartbeatSent = False  # a heartbeat went out since the frame last counted one
     chatOpen = False  # the quick chat's messages are showing (opened from the Chat button like the menu)
     lastChatSent = None  # ticks when we last sent a chat message (CHAT_INTERVAL_MS apart)
     chatBubbles = {}  # color -> (text, ticks): the chat message shown by that player's strip, for CHAT_BUBBLE_MS
@@ -1192,7 +1194,7 @@ async def main():
     hintIdea = None  # {'text': str, 'san': str, 'open': bool} strategic hint from the coach
     hintIdeaTask = None  # background task fetching the coach's strategic explanation
     hintAlt = None  # {'move': Move, 'san': str, 'score': float, 'text': str}: the winning try, drawish positions
-    hintAltTask = None  # background task: Stockfish's safe alternatives, and the coach's pick among them
+    hintAltTask = None  # background task: Stockfish's winning try (hintWinningTry), and the coach's words on it
     puzzleNext = None  # the puzzle the next reset starts (to try it again); None: the next one
     statusText = ""  # short message shown at the bottom of the board
     statusUntil = 0
@@ -1845,26 +1847,29 @@ async def main():
             takeBack(1)
 
     def sendOnline(message):
+        """Sends a message to the room; False when it was held back."""
         nonlocal lastMessageSent
         now = p.time.get_ticks()
         # ntfy.sh free tier rate-limits to roughly 1 message per 5 s; moves and game-changing events are
-        # always sent, but low-priority messages (heartbeat, ping, sync replies) are dropped when we sent
-        # something very recently, to avoid a burst of requests that triggers a 429 response
+        # always sent, but low-priority messages (a ping, a state re-sent as a heartbeat or a sync reply) are
+        # held back when we sent something very recently, to avoid a burst of requests that triggers a 429
         mtype = message.get('type', '')
-        is_low_priority = mtype in ('heartbeat', 'ping', 'sync')
-        if is_low_priority and now - lastMessageSent < SEND_MIN_MS:
-            return  # too soon; the next heartbeat interval will retry
+        lowPriority = mtype == 'ping' or (mtype == 'state' and message.get('reason') in ('heartbeat', 'sync'))
+        if lowPriority and now - lastMessageSent < SEND_MIN_MS:
+            return False
         lastMessageSent = now
         message.update({'game': onlineGame, 'version': onlineVersion, 'role': multiplayerRole, 'sender': myPlayerId})
         if account.signedIn:  # lets the opponent show our name and report the result for ratings
             message['player'] = {'uid': account.profile['id'], 'name': account.username,
                                  'rating': account.profile['rating']}
         asyncio.ensure_future(net.send(message))
+        return True
 
-    # the whole game, so a player who missed messages or rejoined can rebuild it
+    # the whole game, so a player who missed messages or rejoined can rebuild it. A heartbeat or sync reply held
+    # back by SEND_MIN_MS is owed, not dropped (a sync_request is asked only once): the frame sends it later
     def sendState(reason):
-        nonlocal lastStateSent
-        sendOnline({
+        nonlocal lastStateSent, stateOwed, heartbeatSent
+        sent = sendOnline({
             'type': 'state',
             'reason': reason,
             'gid': onlineGameId,
@@ -1874,7 +1879,12 @@ async def main():
             'result': list(gameResult) if gameResult else None,
             'hw': hostWhite,
         })
-        lastStateSent = p.time.get_ticks()
+        if sent:
+            lastStateSent = p.time.get_ticks()
+            stateOwed = None
+            heartbeatSent = heartbeatSent or reason == 'heartbeat'
+        elif stateOwed is None:
+            stateOwed = (reason, p.time.get_ticks())
 
     # after every local change to an online game
     def publishChange(reason):
@@ -1928,8 +1938,9 @@ async def main():
     def connectOnline(role):
         nonlocal multiplayerRole, networkConnected, onlineGame, onlineVersion, onlineGameId, savedSession, lastStateHeard
         nonlocal opponentInfo, opponentSeen, caughtUp, chatOpen, joinId, joinedAt, connectedAt, hostWhite, adoptedOnce
-        nonlocal joinAdopted
+        nonlocal joinAdopted, stateOwed
         multiplayerRole = role
+        stateOwed = None  # it was for the last room
         hostWhite = True
         adoptedOnce = False
         joinAdopted = None
@@ -2973,9 +2984,17 @@ async def main():
             if max(lastStateSent, lastStateHeard) > lastHeartbeat:
                 quietHeartbeats = 0  # a change of ours, or an answer: back to the quick pace
             interval = heartbeatInterval(quietHeartbeats, gameOver)
-            if (gameOver or not humanTurn) and p.time.get_ticks() - max(lastStateSent, lastStateHeard) > interval:
+            if stateOwed is not None and p.time.get_ticks() - lastMessageSent >= SEND_MIN_MS:
+                if lastStateSent > stateOwed[1]:
+                    stateOwed = None  # a state went out since: it says the same
+                else:
+                    sendState(stateOwed[0])
+            if (stateOwed is None and (gameOver or not humanTurn)
+                    and p.time.get_ticks() - max(lastStateSent, lastStateHeard) > interval):
                 sendState('heartbeat')
-                lastHeartbeat = p.time.get_ticks()
+            if heartbeatSent:  # counted when it really goes out, so a held-back one doesn't count as a change
+                heartbeatSent = False
+                lastHeartbeat = lastStateSent
                 quietHeartbeats += 1
             # a player who has sent nothing for a while (say, thinking about a move) says they're still here,
             # so the opponent can tell them apart from a player who left
@@ -3760,7 +3779,7 @@ async def main():
                     hintIdea = {'text': text, 'san': gs.getSan(hintMove, validMoves) if validMoves else "", 'open': True}
             except (asyncio.CancelledError, Exception) as e:
                 pass
-        # and, in a drawish position, the coach's pick among the moves Stockfish rates safe
+        # and, in a drawish position, Stockfish's winning try with the coach's explanation of it
         if hintAltTask is not None and hintAltTask.done():
             task, hintAltTask = hintAltTask, None
             try:
