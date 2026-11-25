@@ -3104,6 +3104,13 @@ class GameLoopTest(unittest.TestCase):
         self.assertIsNone(judge(state("e2e4 e7e5"), flagged), "their move came in time")
         self.assertIn("ends the end", judge(state("e2e4"), flagged), "but nothing new from them")
         self.assertIn("ends the end", judge(state("e2e4 e7e5"), view(result=tuple(slow))), "a time-out against us stays")
+        # once a result is taken, the opponent's heartbeats repeat it: the game exactly as we have it is no claim
+        agreed = view(moves=['e2e4', 'e7e5'], result=tuple(draw))
+        self.assertIsNone(judge(state("e2e4 e7e5", result=draw), agreed), "the draw we took, repeated")
+        resigned = view(moves=['e2e4', 'e7e5'], result=tuple(black))
+        self.assertIsNone(judge(state("e2e4 e7e5", result=black), resigned), "our resignation, repeated")
+        self.assertIn("a move of ours", judge(state("e2e4 e7e5 g1f3", result=draw), agreed), "but not with more moves")
+        self.assertIn("changes the result", judge(state("e2e4 e7e5", result=white), agreed))
 
     def test_a_stranger_cannot_end_the_game(self):
         main = self.main

@@ -80,6 +80,26 @@ SESSION_MAX_AGE = 12 * 3600  # seconds; ntfy.sh keeps messages about this long
 SEEN_IDS_KEPT = 200  # newest ntfy message ids remembered for deduplication
 SEND_RATE_LIMIT_S = 5.0  # ntfy.sh free tier: ~1 message per 5 s; back off after a 429
 
+def _proxy(fn):
+    """A Python function JavaScript can call back. Pyodide needs a proxy (freed with destroy()); pygbag's
+    create_proxy, a builtin there, hands the function back as it is."""
+    try:
+        return create_proxy(fn)
+    except NameError:
+        return fn
+
+
+def _release(proxy):
+    """Frees a callback made by _proxy. Only Pyodide's proxies have destroy(): calling it on pygbag's plain function
+    raised AttributeError, which killed the game the second time a room was joined in the same page."""
+    destroy = getattr(proxy, 'destroy', None)
+    if callable(destroy):
+        try:
+            destroy()
+        except Exception:
+            pass
+
+
 print(f"DEBUG: sys.platform={sys.platform}, WASM={WASM}, modules={'js' in sys.modules}")
 print("Network: v13.0 Loaded (Proxy-Unified)")
 
@@ -140,9 +160,10 @@ class NetworkManager:
 
         if WASM:
             js.window.stop_ntfy_sse()
-            if self._sse_cb: self._sse_cb.destroy()
-            if self._sse_eb: self._sse_eb.destroy()
-            
+            _release(self._sse_cb)
+            _release(self._sse_eb)
+            self._sse_cb = self._sse_eb = None
+
             def on_sse_msg(data):
                 if not self.running: return
                 self.msg_count += 1
@@ -158,8 +179,8 @@ class NetworkManager:
                 if not self.running: return
                 self.last_status = "SYNC RECONNECTING"
                 
-            self._sse_cb = create_proxy(on_sse_msg)
-            self._sse_eb = create_proxy(on_sse_err)
+            self._sse_cb = _proxy(on_sse_msg)
+            self._sse_eb = _proxy(on_sse_err)
             
             print("Network: Starting Direct SSE Connection...")
             self.last_status = "SYNC HEALTHY"

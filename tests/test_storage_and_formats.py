@@ -56,6 +56,27 @@ class NetworkTest(unittest.TestCase):
         self.assertEqual([m['_time'] for m in self.net.get_messages()], [1000, 900, None])
         self.assertEqual(self.net.server_time, 1000)
 
+    def test_a_second_room_in_the_same_page_does_not_crash(self):
+        # the browser build: pygbag hands callbacks to JavaScript as plain functions (no destroy()); joining a second
+        # room used to call destroy() on the first room's and raise AttributeError, which ended the game
+        from unittest import mock
+        started = []
+        window = mock.Mock()
+        window.start_ntfy_sse.side_effect = lambda topic, since, cb, eb: started.append((topic, cb))
+        with mock.patch.object(network, 'WASM', True), mock.patch.object(network, 'js', mock.Mock(window=window)), \
+                mock.patch.object(network, 'create_proxy', lambda fn: fn, create=True):  # pygbag's: no proxy
+            self.net.set_topic('111111')
+            self.net.set_topic('222222')
+            self.assertEqual([topic for topic, _ in started],
+                             ['chess_app_multiplayer_111111', 'chess_app_multiplayer_222222'])
+            self.assertEqual(window.stop_ntfy_sse.call_count, 2)
+            # a Pyodide proxy is freed when the room changes
+            proxy = mock.Mock()
+            self.net._sse_cb = proxy
+            self.net.set_topic('333333')
+            proxy.destroy.assert_called_once()
+        self.net.running = False
+
     def test_room_names_fit_ntfy_topics(self):
         self.assertEqual(roomName(' ab c/1é_- '), 'ABC1_-')
 

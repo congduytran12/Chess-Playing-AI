@@ -6675,6 +6675,8 @@ def judgeState(state, view):
         if current is not None and not loose and not (timeoutLoser(current) == opponent and len(codes) > len(mine)):
             return "ends the end of the game"
         return None
+    if current is not None and claimed == tuple(current) and not fresh and codes == mine:
+        return None  # the game exactly as we have it (their heartbeat after a draw or our resignation): nothing new
     if current is not None and claimed != current and not loose:
         return "changes the result of the game"
     if claimed == resignationResult(opponent) or (joining and claimed == resignationResult(view['color'])):
