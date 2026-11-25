@@ -64,7 +64,7 @@ FAKE_ENGINE = textwrap.dedent('''
                 say('bestmove e2e4')
             else:
                 say('info depth 5 score cp 10 upperbound pv a2a3')
-                say('info depth 6 score cp 42 pv e2e4')
+                say('info depth 6 score cp 42 nps 123456 pv e2e4')
                 say('bestmove ' + ('e2e4' if not moves else 'e7e5'))
         elif line == 'quit':
             break
@@ -403,6 +403,18 @@ class StockfishTest(unittest.TestCase):
             return await stockfish.engine.go([], 0.05, search_moves=['e2e4'])
         self.assertEqual(asyncio.run(run()), ('e2e4', 0.42))
         self.assertIn('go movetime 50 searchmoves e2e4', self.commands(), "searchmoves last: it takes every word after it")
+
+    def test_a_node_budget_for_the_tools(self):
+        # tools/hint_match: a search of `seconds` becomes a node count, so a loaded machine doesn't change its result
+        stockfish.engine.nodesPerSecond = 200000
+
+        async def run():
+            self.assertTrue(await stockfish.engine.ready(10))
+            return await stockfish.engine.go([], 0.5, search_moves=['e2e4'])
+        self.assertEqual(asyncio.run(run()), ('e2e4', 0.42))
+        self.assertIn('go nodes 100000 searchmoves e2e4', self.commands(), "searchmoves still last")
+        self.assertEqual(stockfish.engine.lastNps, 123456, "the nodes per second it reported")
+        self.assertEqual(stockfish.lineNps('info depth 6 score cp 42 pv e2e4'), None)
 
     def test_without_an_engine_the_games_own_ai_plays(self):
         stockfish.engine = stockfish.Engine([sys.executable, '-c', 'pass'])  # exits at once

@@ -52,6 +52,7 @@ START_SECONDS = 30  # the engine has this long to answer 'uci' (the browser down
 HINT_START_SECONDS = 180  # the same for the hint engine, which downloads 137 MB first (99 MB threaded)
 READY_WAIT = 10  # a search waits this long for an engine that is still starting, then uses chessAi (hints don't wait)
 ANSWER_GRACE = 5  # seconds past the search time before a silent engine counts as broken
+NODES_DEADLINE_FACTOR = 10  # tools: a node-limited search may take this many times its seconds on a loaded machine
 POLL_SECONDS = 0.02
 HASH_MB = 16
 
@@ -254,6 +255,15 @@ def lineDepth(line):
         return 0
 
 
+# the nodes per second a UCI 'info' line reports, or None
+def lineNps(line):
+    parts = line.split()
+    try:
+        return int(parts[parts.index('nps') + 1])
+    except (ValueError, IndexError):
+        return None
+
+
 # the (win, draw, loss) chances in per mille, for the side to move, of a UCI 'info' line sent with UCI_ShowWDL
 # (None when it has none)
 def parseWdl(line):
@@ -315,6 +325,10 @@ class Engine:
         self._elo = 'unset'  # the strength limit set last
         self._multipv = 'unset'  # the number of lines it was told to search last
         self._searching = False  # a 'go' whose bestmove hasn't been read yet (its search was cancelled)
+        # tools (hint_match): searches of `seconds` become 'go nodes seconds*nodesPerSecond', so several matches can
+        # share a machine without the load changing what each search finds; None: 'go movetime' (the game)
+        self.nodesPerSecond = None
+        self.lastNps = None  # nodes per second in the last search's last report (calibration)
 
     @property
     def busy(self):
@@ -385,18 +399,26 @@ class Engine:
             self._multipv = lines
         self._send(('position fen ' + start if start else 'position startpos')
                    + (' moves ' + ' '.join(moves) if moves else ''))
-        go = 'go movetime %d' % max(1, round(seconds * 1000))
+        if self.nodesPerSecond:
+            go = 'go nodes %d' % max(1, round(seconds * self.nodesPerSecond))
+            wait = max(1.0, seconds) * NODES_DEADLINE_FACTOR  # a loaded machine may take a while for those nodes
+        else:
+            go = 'go movetime %d' % max(1, round(seconds * 1000))
+            wait = seconds
         if search_moves:  # last: Stockfish reads every word after searchmoves as a move, movetime too
             go += ' searchmoves ' + ' '.join(search_moves)
         self._send(go)
         self._searching = True
         score = None
         ranked = {}  # multipv: depth -> {rank -> (first move of its line, score, wdl or None)}
-        deadline = time.time() + seconds + ANSWER_GRACE
+        deadline = time.time() + wait + ANSWER_GRACE
         while True:
             for line in self._take():
                 if line.startswith('info'):
                     score = parseScore(line) or score
+                    nps = lineNps(line)
+                    if nps:
+                        self.lastNps = nps
                     if lines > 1:
                         found = parseLine(line)
                         if found:

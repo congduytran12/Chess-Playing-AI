@@ -1,0 +1,13 @@
+{
+ "computer": {
+  "browser": 556652,
+  "desktop": 773533
+ },
+ "hint": {
+  "8": 2407122,
+  "4": 2452597
+ },
+ "machine": "ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc",
+ "cores": 12,
+ "date": "2026-11-25"
+}

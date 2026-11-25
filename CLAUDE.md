@@ -40,10 +40,11 @@ python tools/e2e_online.py [--games N]
 
 It runs two clients through scripted games against local stand-ins (an ntfy relay via `CHESS_NTFY_URL`, the real `api/account.py` on an in-memory Supabase via `CHESS_API_URL`) and reports whether both agree and what the rating server counted. It reads the game through `main.GAME_VIEW`.
 
-How often following the hint beats Impossible (native Stockfish in `engines/` for both sides, through the game's own `stockfish.py`; about an hour for 16 games at `--scale 0.15`):
+How often following the hint beats Impossible, through the game's own `stockfish.py` (hint: native Stockfish in `engines/`; computer: `--profile browser` runs the site's own Stockfish 19 Lite WASM under Node from the git-ignored `engines/browser-lite/lite/`, `desktop` the native engine on one thread). `--budget nodes` turns each search's seconds into node counts from `calibrate` (`tools/hint_match_calibration.json`, machine-specific), so `--parallel` can't change results; `--hint-nps` gives the hint the browser's speed. Runs go to the git-ignored `tools/hint_match_runs/` (`--resume`), `--record` adds a row to `tools/hint_match_results.md`, `--sprt 0.5,0.65` stops once the test on wins decides, `compare A B` pairs two runs (McNemar). Low `--scale` flatters the hint (it gets far more nodes than Impossible relative to its strength), so judge at a scale near 1. Plain Anaconda Python runs it (no pygame).
 
 ```bash
-python tools/hint_match.py --policy baseline|adaptive|adaptive-wdl --games 16 --parallel 2 --scale 0.15
+python tools/hint_match.py calibrate
+python tools/hint_match.py --policy adaptive-wdl --profile browser --budget nodes --games 64 --parallel 3 --scale 0.5 --record
 ```
 
 ## Architecture
